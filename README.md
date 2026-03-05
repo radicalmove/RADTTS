@@ -87,6 +87,16 @@ Key endpoints:
 Web UI:
 - `GET /` (RADTTS Studio dashboard)
 
+Shared login bridge (optional):
+- `GET /auth/bridge?token=...` (accept PsyChek signed token)
+- `GET /auth/logout`
+
+Bridge/auth env vars:
+- `RADTTS_AUTH_REQUIRED=true|false` (default `false`)
+- `RADTTS_SESSION_SECRET=...`
+- `RADTTS_BRIDGE_SECRET=...` (must match PsyChek `APP_BRIDGE_SECRET`)
+- `PSYCHEK_LOGIN_URL=http://.../login`
+
 ## Notes
 - Voice cloning requires explicit authorization in your workflow.
 - Qwen voice cloning is restricted to Base models in this app.

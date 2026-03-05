@@ -8,6 +8,7 @@ gunicorn==23.0.0
 jinja2==3.1.4
 python-multipart==0.0.22
 pydantic==2.12.5
+itsdangerous==2.2.0
 
 # Core audio
 numpy==2.4.2

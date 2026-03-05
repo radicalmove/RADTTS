@@ -16,7 +16,14 @@
         <p class="eyebrow">Local-First Voice Production</p>
         <h1>RADTTS Studio</h1>
       </div>
-      <div class="chip">API + UI</div>
+      <div style="display:flex; gap:10px; align-items:center;">
+        {% if current_user %}
+        <div class="chip">{{ current_user.display_name or current_user.email or "Signed in" }}</div>
+        <a class="chip" style="text-decoration:none;" href="/auth/logout">Log out</a>
+        {% else %}
+        <div class="chip">API + UI</div>
+        {% endif %}
+      </div>
     </header>
 
     <main class="layout">
