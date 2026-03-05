@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 from urllib.parse import urlencode
@@ -93,6 +94,39 @@ def _login_redirect() -> RedirectResponse:
     return RedirectResponse(f"{PSYCHEK_LOGIN_URL}{separator}{query}", status_code=302)
 
 
+def _scope_prefix(request: Request) -> str | None:
+    user = _current_user(request)
+    if not user:
+        return None
+    sub = str(user.get("sub") or "").strip()
+    email = str(user.get("email") or "").strip().lower()
+    identity = f"{sub}|{email}".strip("|")
+    if not identity:
+        return None
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
+    return f"u{digest}"
+
+
+def _scope_project_id(request: Request, project_id: str) -> str:
+    prefix = _scope_prefix(request)
+    if not prefix:
+        return project_id
+    scoped = f"{prefix}__{project_id}"
+    if project_id.startswith(f"{prefix}__"):
+        return project_id
+    return scoped
+
+
+def _descope_project_id(request: Request, project_id: str) -> str:
+    prefix = _scope_prefix(request)
+    if not prefix:
+        return project_id
+    marker = f"{prefix}__"
+    if project_id.startswith(marker):
+        return project_id[len(marker):]
+    return project_id
+
+
 @app.get("/auth/bridge")
 def auth_bridge(request: Request, token: str):
     try:
@@ -140,31 +174,38 @@ def home(request: Request):
 @app.post("/projects")
 def create_project(request: Request, req: ProjectCreateRequest):
     _require_auth(request)
-    return pipeline.create_project(req)
+    scoped_req = req.model_copy(update={"project_id": _scope_project_id(request, req.project_id)})
+    payload = pipeline.create_project(scoped_req)
+    payload["project_id"] = req.project_id
+    return payload
 
 
 @app.post("/transcribe")
 def transcribe(request: Request, req: TranscribeRequest):
     _require_auth(request)
-    return pipeline.transcribe(req)
+    scoped_req = req.model_copy(update={"project_id": _scope_project_id(request, req.project_id)})
+    return pipeline.transcribe(scoped_req)
 
 
 @app.post("/clip")
 def clip(request: Request, req: ClipRequest):
     _require_auth(request)
-    return pipeline.clip(req)
+    scoped_req = req.model_copy(update={"project_id": _scope_project_id(request, req.project_id)})
+    return pipeline.clip(scoped_req)
 
 
 @app.post("/synthesize")
 def synthesize(request: Request, req: SynthesisRequest):
     _require_auth(request)
-    return pipeline.synthesize(req)
+    scoped_req = req.model_copy(update={"project_id": _scope_project_id(request, req.project_id)})
+    return pipeline.synthesize(scoped_req)
 
 
 @app.post("/synthesize/worker")
 def synthesize_worker(request: Request, req: WorkerSynthesisEnqueueRequest):
     _require_auth(request)
-    job_id = worker_manager.enqueue_synthesis_job(req)
+    scoped_req = req.model_copy(update={"project_id": _scope_project_id(request, req.project_id)})
+    job_id = worker_manager.enqueue_synthesis_job(scoped_req)
     return {
         "job_id": job_id,
         "status": "queued",
@@ -176,22 +217,30 @@ def synthesize_worker(request: Request, req: WorkerSynthesisEnqueueRequest):
 @app.post("/captions")
 def captions(request: Request, req: CaptionRequest):
     _require_auth(request)
-    return pipeline.captions(req)
+    scoped_req = req.model_copy(update={"project_id": _scope_project_id(request, req.project_id)})
+    return pipeline.captions(scoped_req)
 
 
 @app.get("/jobs/{job_id}")
 def get_job(request: Request, job_id: str, project_id: str):
     _require_auth(request)
-    job = pipeline.get_job(project_id, job_id)
+    scoped_project_id = _scope_project_id(request, project_id)
+    job = pipeline.get_job(scoped_project_id, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="job not found")
+    if isinstance(job, dict) and isinstance(job.get("project_id"), str):
+        job["project_id"] = _descope_project_id(request, job["project_id"])
     return job
 
 
 @app.post("/jobs/{job_id}/cancel")
 def cancel_job(request: Request, job_id: str, project_id: str):
     _require_auth(request)
-    return pipeline.cancel_job(project_id, job_id)
+    scoped_project_id = _scope_project_id(request, project_id)
+    payload = pipeline.cancel_job(scoped_project_id, job_id)
+    if isinstance(payload, dict) and isinstance(payload.get("project_id"), str):
+        payload["project_id"] = _descope_project_id(request, payload["project_id"])
+    return payload
 
 
 @app.get("/workers")
