@@ -177,6 +177,7 @@ class TTSService:
 
         text_keys = ["text", "target_text", "input_text", "content"]
         audio_keys = [
+            "ref_audio",
             "reference_audio_path",
             "prompt_wav_path",
             "prompt_audio_path",
@@ -251,9 +252,24 @@ class TTSService:
             pass
 
         if isinstance(audio, list):
-            audio = np.array(audio, dtype=np.float32)
+            if not audio:
+                raise RuntimeError("Unable to parse generated audio from qwen-tts output: empty list")
+            if len(audio) == 1:
+                audio = audio[0]
+            else:
+                # Multi-utterance output: flatten into one continuous waveform.
+                audio = np.concatenate([np.asarray(item, dtype=np.float32).reshape(-1) for item in audio])
         if not isinstance(audio, np.ndarray):
+            audio = np.asarray(audio, dtype=np.float32)
+        if audio.ndim == 0:
             raise RuntimeError("Unable to parse generated audio from qwen-tts output")
         if audio.ndim > 1:
-            audio = np.mean(audio, axis=-1)
+            if audio.shape[0] == 1:
+                audio = audio[0]
+            elif audio.shape[-1] in (1, 2):
+                audio = np.mean(audio, axis=-1)
+            elif audio.shape[0] in (1, 2):
+                audio = np.mean(audio, axis=0)
+            else:
+                audio = audio.reshape(-1)
         return audio.astype(np.float32), sample_rate
