@@ -1,0 +1,259 @@
+"""Qwen3-TTS voice cloning wrapper with sentence-chunk mode."""
+
+from __future__ import annotations
+
+import inspect
+import tempfile
+from pathlib import Path
+from random import Random
+from typing import Any, Callable
+
+import numpy as np
+
+from radtts.constants import SUPPORTED_BASE_MODELS
+from radtts.exceptions import DependencyMissingError
+from radtts.models import ChunkMode, PauseConfig, SynthesisRequest
+from radtts.services.asr import ASRService
+from radtts.utils.audio import concat_with_silence, convert_audio, write_wav
+from radtts.utils.text import split_sentences, word_count
+
+
+class PausePlanner:
+    def build(self, chunks: list[str], config: PauseConfig) -> list[float]:
+        rng = Random(config.seed)
+        pauses: list[float] = []
+        for idx, sentence in enumerate(chunks[:-1]):
+            base = rng.uniform(config.min_seconds, config.max_seconds)
+            words = max(1, word_count(sentence))
+            length_bonus = min(0.25, (words / 35.0) * 0.15)
+            punctuation_bonus = 0.0
+            if sentence.rstrip().endswith("?"):
+                punctuation_bonus += 0.08
+            if sentence.rstrip().endswith("!"):
+                punctuation_bonus += 0.06
+            pause = min(config.max_seconds, max(config.min_seconds, base + length_bonus + punctuation_bonus))
+            pauses.append(round(pause, 3))
+        return pauses
+
+
+class TTSService:
+    def __init__(self, *, auto_reference_asr_model: str = "small"):
+        self._model_cache: dict[str, Any] = {}
+        self._pause_planner = PausePlanner()
+        self._asr_service = ASRService(model_size=auto_reference_asr_model)
+
+    def ensure_supported_model(self, model_id: str) -> None:
+        if model_id not in SUPPORTED_BASE_MODELS:
+            raise ValueError(f"Unsupported model id: {model_id}")
+
+    def synthesize(
+        self,
+        req: SynthesisRequest,
+        output_dir: Path,
+        *,
+        on_progress: Callable[[str], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> tuple[Path, list[float], str]:
+        self.ensure_supported_model(req.model_id)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        reference_text = req.reference_text or self._auto_reference_text(req.reference_audio_path)
+        chunks = self._build_chunks(req.text, req.chunk_mode)
+        pauses = self._pause_planner.build(chunks, req.pause_config) if req.chunk_mode == ChunkMode.SENTENCE else []
+
+        model = self._load_model(req.model_id)
+        chunk_audio: list[tuple[np.ndarray, int]] = []
+        for idx, chunk in enumerate(chunks):
+            if cancel_check and cancel_check():
+                raise RuntimeError("job cancelled")
+            if on_progress:
+                on_progress(f"generation chunk {idx + 1}/{len(chunks)}")
+            audio, sample_rate = self._synthesize_chunk(
+                model=model,
+                text=chunk,
+                reference_audio_path=req.reference_audio_path,
+                reference_text=reference_text,
+                max_new_tokens=req.max_new_tokens,
+            )
+            chunk_audio.append((audio, sample_rate))
+
+        if on_progress:
+            on_progress("stitching chunks")
+        sample_rate = chunk_audio[0][1]
+        stitched = concat_with_silence(chunk_audio, pauses, sample_rate)
+
+        base_name = req.output_name
+        wav_path = output_dir / f"{base_name}.wav"
+        write_wav(wav_path, stitched, sample_rate)
+
+        if req.output_format.value == "wav":
+            return wav_path, pauses, reference_text
+
+        if on_progress:
+            on_progress("stitching encoding mp3")
+        mp3_path = output_dir / f"{base_name}.mp3"
+        convert_audio(wav_path, mp3_path)
+        return mp3_path, pauses, reference_text
+
+    def _auto_reference_text(self, reference_audio_path: Path) -> str:
+        with tempfile.TemporaryDirectory(prefix="radtts_ref_asr_") as tmp:
+            artifacts, _ = self._asr_service.transcribe(
+                reference_audio_path,
+                Path(tmp),
+                name="reference",
+                language=None,
+                beam_size=3,
+            )
+            return artifacts.txt_path.read_text(encoding="utf-8").strip()
+
+    @staticmethod
+    def _build_chunks(text: str, chunk_mode: ChunkMode) -> list[str]:
+        if chunk_mode == ChunkMode.SINGLE:
+            return [text.strip()]
+        chunks = split_sentences(text)
+        if not chunks:
+            return [text.strip()]
+        return chunks
+
+    def _load_model(self, model_id: str) -> Any:
+        if model_id in self._model_cache:
+            return self._model_cache[model_id]
+        try:
+            from qwen_tts import Qwen3TTSModel
+        except ImportError as exc:
+            raise DependencyMissingError(
+                "qwen-tts is required for synthesis. Install with 'pip install -e .[tts]'."
+            ) from exc
+
+        if hasattr(Qwen3TTSModel, "from_pretrained"):
+            model = Qwen3TTSModel.from_pretrained(model_id)
+        else:
+            model = Qwen3TTSModel(model_id)
+        self._model_cache[model_id] = model
+        return model
+
+    def _synthesize_chunk(
+        self,
+        *,
+        model: Any,
+        text: str,
+        reference_audio_path: Path,
+        reference_text: str,
+        max_new_tokens: int,
+    ) -> tuple[np.ndarray, int]:
+        fn = getattr(model, "generate_voice_clone", None)
+        if fn is None:
+            raise RuntimeError("Loaded model does not expose generate_voice_clone")
+
+        kwargs = self._build_clone_kwargs(
+            fn=fn,
+            text=text,
+            reference_audio_path=reference_audio_path,
+            reference_text=reference_text,
+            max_new_tokens=max_new_tokens,
+        )
+
+        try:
+            result = fn(**kwargs)
+        except TypeError:
+            result = fn(text, str(reference_audio_path), reference_text)
+
+        return self._parse_generation_result(result, model)
+
+    @staticmethod
+    def _build_clone_kwargs(
+        *,
+        fn: Callable[..., Any],
+        text: str,
+        reference_audio_path: Path,
+        reference_text: str,
+        max_new_tokens: int,
+    ) -> dict[str, Any]:
+        sig = inspect.signature(fn)
+        params = sig.parameters
+        names = set(params.keys())
+
+        kwargs: dict[str, Any] = {}
+
+        text_keys = ["text", "target_text", "input_text", "content"]
+        audio_keys = [
+            "reference_audio_path",
+            "prompt_wav_path",
+            "prompt_audio_path",
+            "reference_wav_path",
+            "ref_wav_path",
+            "audio_prompt_path",
+            "prompt_speech_path",
+            "prompt_audio",
+        ]
+        ref_text_keys = ["reference_text", "prompt_text", "ref_text", "audio_prompt_text"]
+        token_keys = ["max_new_tokens", "max_tokens"]
+
+        for key in text_keys:
+            if key in names:
+                kwargs[key] = text
+                break
+        for key in audio_keys:
+            if key in names:
+                kwargs[key] = str(reference_audio_path)
+                break
+        for key in ref_text_keys:
+            if key in names:
+                kwargs[key] = reference_text
+                break
+        for key in token_keys:
+            if key in names:
+                kwargs[key] = int(max_new_tokens)
+                break
+
+        if not kwargs and any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+            kwargs = {
+                "text": text,
+                "reference_audio_path": str(reference_audio_path),
+                "reference_text": reference_text,
+                "max_new_tokens": int(max_new_tokens),
+            }
+
+        return kwargs
+
+    @staticmethod
+    def _parse_generation_result(result: Any, model: Any) -> tuple[np.ndarray, int]:
+        sample_rate = int(
+            getattr(model, "sampling_rate", None)
+            or getattr(model, "sample_rate", None)
+            or 24000
+        )
+
+        audio: Any
+        if isinstance(result, tuple) and len(result) >= 2:
+            audio, sample_rate = result[0], int(result[1])
+        elif isinstance(result, dict):
+            audio = (
+                result.get("audio")
+                or result.get("wav")
+                or result.get("waveform")
+                or result.get("output")
+            )
+            sample_rate = int(
+                result.get("sample_rate")
+                or result.get("sampling_rate")
+                or sample_rate
+            )
+        else:
+            audio = result
+
+        try:
+            import torch
+
+            if isinstance(audio, torch.Tensor):
+                audio = audio.detach().cpu().numpy()
+        except Exception:
+            pass
+
+        if isinstance(audio, list):
+            audio = np.array(audio, dtype=np.float32)
+        if not isinstance(audio, np.ndarray):
+            raise RuntimeError("Unable to parse generated audio from qwen-tts output")
+        if audio.ndim > 1:
+            audio = np.mean(audio, axis=-1)
+        return audio.astype(np.float32), sample_rate

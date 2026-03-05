@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RADTTS Studio</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;800&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/static/ui.css" />
+  </head>
+  <body>
+    <div class="bg-grid"></div>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Local-First Voice Production</p>
+        <h1>RADTTS Studio</h1>
+      </div>
+      <div class="chip">API + UI</div>
+    </header>
+
+    <main class="layout">
+      <section class="panel">
+        <h2>Create Project</h2>
+        <form id="create-form" class="stack">
+          <input name="project_id" placeholder="project id (e.g., crju150-m9)" required />
+          <input name="course" placeholder="course (optional)" />
+          <input name="module" placeholder="module (optional)" />
+          <input name="lesson" placeholder="lesson (optional)" />
+          <button type="submit">Create Project</button>
+        </form>
+      </section>
+
+      <section class="panel">
+        <h2>Synthesize Voice Clone</h2>
+        <form id="synth-form" class="stack">
+          <input name="project_id" placeholder="project id" required />
+          <input name="output_name" placeholder="output name" required />
+          <textarea name="text" placeholder="script text" required></textarea>
+          <input name="reference_audio_path" placeholder="absolute reference audio path" required />
+          <textarea name="reference_text" placeholder="reference transcript (optional, leave blank for auto-ASR)"></textarea>
+
+          <div class="row">
+            <select id="preset-select">
+              <option value="">Preset (optional)</option>
+              {% for preset_name, cfg in presets.items() %}
+              <option
+                value="{{ preset_name }}"
+                data-chunk-mode="{{ cfg.chunk_mode }}"
+                data-pause-min="{{ cfg.pause_config.min_seconds }}"
+                data-pause-max="{{ cfg.pause_config.max_seconds }}"
+                data-max-tokens="{{ cfg.max_new_tokens }}"
+                data-model-mode="{{ cfg.model_mode }}"
+              >
+                {{ preset_name }}
+              </option>
+              {% endfor %}
+            </select>
+
+            <select id="mode-select">
+              <option value="quality">Quality Mode</option>
+              <option value="fast">Fast Mode</option>
+            </select>
+          </div>
+
+          <select id="model-id" name="model_id" required>
+            {% for model in models %}
+            <option value="{{ model }}">{{ model }}</option>
+            {% endfor %}
+          </select>
+
+          <div class="row">
+            <input name="max_new_tokens" type="number" value="1200" min="64" max="8192" required />
+            <select name="chunk_mode">
+              <option value="sentence">sentence</option>
+              <option value="single">single</option>
+            </select>
+            <select name="output_format">
+              <option value="mp3">mp3</option>
+              <option value="wav">wav</option>
+            </select>
+          </div>
+
+          <div class="row">
+            <input name="pause_min" type="number" step="0.01" value="0.45" min="0.01" required />
+            <input name="pause_max" type="number" step="0.01" value="1.10" min="0.01" required />
+            <input name="pause_seed" type="number" placeholder="seed (optional)" />
+          </div>
+
+          <label class="checkline">
+            <input name="ack_voice_clone" type="checkbox" required />
+            I confirm I am authorized to clone this voice.
+          </label>
+
+          <button type="submit">Start Synthesis Job</button>
+        </form>
+      </section>
+
+      <section class="panel">
+        <h2>Transcribe</h2>
+        <form id="transcribe-form" class="stack">
+          <input name="project_id" placeholder="project id" required />
+          <input name="audio_path" placeholder="absolute audio path" required />
+          <input name="name" placeholder="artifact name" />
+          <div class="row">
+            <input name="model" value="small" />
+            <input name="language" placeholder="language (optional)" />
+            <input name="beam_size" type="number" value="5" min="1" max="10" />
+          </div>
+          <button type="submit">Run Transcription</button>
+        </form>
+      </section>
+
+      <section class="panel">
+        <h2>Clip Builder</h2>
+        <form id="clip-form" class="stack">
+          <input name="project_id" placeholder="project id" required />
+          <input name="audio_path" placeholder="absolute source audio path" required />
+          <input name="segments_json_path" placeholder="segments json path" required />
+          <input name="output_name" placeholder="output name" required />
+          <div class="row">
+            <input name="start_phrase" placeholder="start phrase (optional)" />
+            <input name="end_phrase" placeholder="end phrase (optional)" />
+          </div>
+          <div class="row">
+            <input name="start_time" type="number" step="0.01" placeholder="start time (s) optional" />
+            <input name="end_time" type="number" step="0.01" placeholder="end time (s) optional" />
+          </div>
+          <div class="row">
+            <select name="verification_mode">
+              <option value="strict">strict</option>
+              <option value="lenient">lenient</option>
+            </select>
+            <select name="output_format">
+              <option value="mp3">mp3</option>
+              <option value="wav">wav</option>
+            </select>
+          </div>
+          <button type="submit">Extract Verified Clip</button>
+        </form>
+      </section>
+
+      <section class="panel">
+        <h2>Captions</h2>
+        <form id="captions-form" class="stack">
+          <input name="project_id" placeholder="project id" required />
+          <input name="audio_path" placeholder="absolute audio path" required />
+          <input name="name" placeholder="caption artifact name" />
+          <div class="row">
+            <input name="model" value="small" />
+            <input name="language" placeholder="language (optional)" />
+          </div>
+          <button type="submit">Generate Captions</button>
+        </form>
+      </section>
+
+      <section class="panel">
+        <h2>Job Status</h2>
+        <form id="job-form" class="stack">
+          <input name="project_id" placeholder="project id" required />
+          <input name="job_id" placeholder="job id" required />
+          <div class="row">
+            <button type="submit">Get Job</button>
+            <button type="button" id="job-cancel">Cancel Job</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel output-panel">
+        <h2>Response</h2>
+        <pre id="response">{
+  "status": "ready"
+}</pre>
+      </section>
+    </main>
+
+    <script>
+      window.RADTTS_UI = {
+        modes: {{ model_modes | tojson }},
+      };
+    </script>
+    <script src="/static/ui.js" defer></script>
+  </body>
+</html>

@@ -1,0 +1,16 @@
+[Unit]
+Description=RADTTS production service
+After=network.target
+
+[Service]
+Type=simple
+User=fldadmin
+Group=fldadmin
+WorkingDirectory=/home/fldadmin/radtts
+EnvironmentFile=/home/fldadmin/radtts/.env
+ExecStart=/home/fldadmin/radtts/.venv/bin/gunicorn -k uvicorn.workers.UvicornWorker -w 1 -b 127.0.0.1:8010 radtts.api:app
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
