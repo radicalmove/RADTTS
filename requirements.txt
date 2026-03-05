@@ -12,7 +12,7 @@ itsdangerous==2.2.0
 requests==2.32.5
 
 # Core audio
-numpy==2.4.2
+numpy==1.26.4
 soundfile==0.13.1
 imageio-ffmpeg==0.6.0
 
