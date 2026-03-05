@@ -30,6 +30,10 @@ class JobStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+class WorkerCapability(str, Enum):
+    SYNTHESIZE = "synthesize"
+
+
 class PauseConfig(BaseModel):
     strategy: str = "random_uniform_with_length_adjustment"
     min_seconds: float = Field(default=0.45, gt=0)
@@ -97,6 +101,31 @@ class SynthesisRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_model(self) -> "SynthesisRequest":
+        if self.model_id not in SUPPORTED_BASE_MODELS:
+            raise ValueError(
+                f"Unsupported model_id: {self.model_id}. Supported: {', '.join(SUPPORTED_BASE_MODELS)}"
+            )
+        if not self.voice_clone_authorized:
+            raise ValueError("voice_clone_authorized must be true before synthesis")
+        return self
+
+
+class WorkerSynthesisEnqueueRequest(BaseModel):
+    project_id: str = Field(min_length=2)
+    text: str = Field(min_length=1)
+    reference_audio_b64: str = Field(min_length=32)
+    reference_audio_filename: str = Field(min_length=1)
+    reference_text: str | None = None
+    model_id: str = SUPPORTED_BASE_MODELS[1]
+    max_new_tokens: int = Field(default=1200, ge=64, le=8192)
+    chunk_mode: ChunkMode = ChunkMode.SENTENCE
+    pause_config: PauseConfig = Field(default_factory=PauseConfig)
+    output_format: OutputFormat = OutputFormat.MP3
+    output_name: str = "synthesized_output"
+    voice_clone_authorized: bool = False
+
+    @model_validator(mode="after")
+    def validate_model(self) -> "WorkerSynthesisEnqueueRequest":
         if self.model_id not in SUPPORTED_BASE_MODELS:
             raise ValueError(
                 f"Unsupported model_id: {self.model_id}. Supported: {', '.join(SUPPORTED_BASE_MODELS)}"
@@ -193,6 +222,74 @@ class JobRecord(BaseModel):
     error: str | None = None
     logs: list[str] = Field(default_factory=list)
     outputs: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkerInviteResponse(BaseModel):
+    invite_token: str
+    expires_in_seconds: int
+    install_command: str
+
+
+class WorkerInviteRequest(BaseModel):
+    capabilities: list[WorkerCapability] = Field(default_factory=lambda: [WorkerCapability.SYNTHESIZE])
+
+
+class WorkerRegisterRequest(BaseModel):
+    invite_token: str = Field(min_length=10)
+    worker_name: str = Field(min_length=2)
+    capabilities: list[WorkerCapability] = Field(default_factory=lambda: [WorkerCapability.SYNTHESIZE])
+
+
+class WorkerRegisterResponse(BaseModel):
+    worker_id: str
+    api_key: str
+    poll_interval_seconds: int = 5
+
+
+class WorkerPullRequest(BaseModel):
+    worker_id: str
+    api_key: str
+
+
+class WorkerQueuedJob(BaseModel):
+    job_id: str
+    project_id: str
+    type: Literal["synthesize"]
+    payload: dict[str, Any]
+
+
+class WorkerPullResponse(BaseModel):
+    job: WorkerQueuedJob | None = None
+
+
+class WorkerJobCompleteRequest(BaseModel):
+    worker_id: str
+    api_key: str
+    output_audio_b64: str = Field(min_length=32)
+    output_format: OutputFormat
+    duration_seconds: float = Field(gt=0)
+    reference_text: str
+    pause_seconds: list[float] = Field(default_factory=list)
+    captions_txt: str | None = None
+    captions_srt: str | None = None
+    captions_vtt: str | None = None
+    quality: dict[str, Any] | None = None
+    stage_durations_seconds: dict[str, float] = Field(default_factory=dict)
+
+
+class WorkerJobFailRequest(BaseModel):
+    worker_id: str
+    api_key: str
+    error: str = Field(min_length=1)
+
+
+class WorkerSummary(BaseModel):
+    worker_id: str
+    worker_name: str
+    capabilities: list[WorkerCapability]
+    status: str
+    last_seen_at: str | None = None
+    created_at: str
 
 
 def now_utc_iso() -> str:

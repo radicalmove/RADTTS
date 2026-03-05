@@ -44,7 +44,14 @@
           <input name="project_id" placeholder="project id" required />
           <input name="output_name" placeholder="output name" required />
           <textarea name="text" placeholder="script text" required></textarea>
-          <input name="reference_audio_path" placeholder="absolute reference audio path" required />
+          <div class="row">
+            <select name="execution_mode" id="execution-mode">
+              <option value="local">Local server execution</option>
+              <option value="worker">Worker execution (offloaded)</option>
+            </select>
+            <input name="reference_audio_path" id="reference-audio-path" placeholder="server path (local mode)" required />
+          </div>
+          <input type="file" id="reference-audio-file" accept=".wav,.mp3,.m4a,.flac,.ogg" style="display:none;" />
           <textarea name="reference_text" placeholder="reference transcript (optional, leave blank for auto-ASR)"></textarea>
 
           <div class="row">
@@ -100,6 +107,15 @@
           </label>
 
           <button type="submit">Start Synthesis Job</button>
+        </form>
+      </section>
+
+      <section class="panel">
+        <h2>Workers</h2>
+        <form id="worker-form" class="stack">
+          <button type="button" id="worker-invite-btn">Generate Worker Invite</button>
+          <button type="button" id="worker-refresh-btn">Refresh Worker List</button>
+          <textarea id="worker-install-command" placeholder="Invite install command appears here" readonly></textarea>
         </form>
       </section>
 

@@ -16,6 +16,23 @@ function showResponse(title, payload) {
   responseNode.textContent = JSON.stringify({ title, payload }, null, 2);
 }
 
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const value = String(reader.result || "");
+      const parts = value.split(",", 2);
+      if (parts.length !== 2) {
+        reject(new Error("Failed to read file as base64"));
+        return;
+      }
+      resolve(parts[1]);
+    };
+    reader.onerror = () => reject(new Error("Failed to read file"));
+    reader.readAsDataURL(file);
+  });
+}
+
 async function requestJSON(url, method, payload) {
   const res = await fetch(url, {
     method,
@@ -112,6 +129,17 @@ function bindSynthesize() {
   const modeSelect = document.getElementById("mode-select");
   const modelSelect = document.getElementById("model-id");
   const presetSelect = document.getElementById("preset-select");
+  const executionModeSelect = document.getElementById("execution-mode");
+  const referencePathInput = document.getElementById("reference-audio-path");
+  const referenceFileInput = document.getElementById("reference-audio-file");
+
+  function applyExecutionMode() {
+    const workerMode = executionModeSelect.value === "worker";
+    referencePathInput.style.display = workerMode ? "none" : "block";
+    referenceFileInput.style.display = workerMode ? "block" : "none";
+    referencePathInput.required = !workerMode;
+    referenceFileInput.required = workerMode;
+  }
 
   function applyMode() {
     const mode = modeSelect.value;
@@ -141,7 +169,9 @@ function bindSynthesize() {
 
   modeSelect.addEventListener("change", applyMode);
   presetSelect.addEventListener("change", applyPreset);
+  executionModeSelect.addEventListener("change", applyExecutionMode);
   applyMode();
+  applyExecutionMode();
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -150,7 +180,6 @@ function bindSynthesize() {
     const payload = {
       project_id: fd.get("project_id").trim(),
       text: fd.get("text").trim(),
-      reference_audio_path: fd.get("reference_audio_path").trim(),
       reference_text: cleanOptional(fd.get("reference_text")),
       model_id: fd.get("model_id"),
       max_new_tokens: cleanNumber(fd.get("max_new_tokens")) || 1200,
@@ -167,8 +196,24 @@ function bindSynthesize() {
     };
 
     try {
-      const data = await requestJSON("/synthesize", "POST", payload);
-      showResponse("synthesis job started", data);
+      if (executionModeSelect.value === "worker") {
+        const file = referenceFileInput.files && referenceFileInput.files[0];
+        if (!file) {
+          throw new Error("Select a reference audio file for worker mode");
+        }
+        const b64 = await fileToBase64(file);
+        const workerPayload = {
+          ...payload,
+          reference_audio_b64: b64,
+          reference_audio_filename: file.name,
+        };
+        const data = await requestJSON("/synthesize/worker", "POST", workerPayload);
+        showResponse("worker synthesis job queued", data);
+      } else {
+        payload.reference_audio_path = fd.get("reference_audio_path").trim();
+        const data = await requestJSON("/synthesize", "POST", payload);
+        showResponse("synthesis job started", data);
+      }
     } catch (err) {
       showResponse("synthesis failed", { error: String(err) });
     }
@@ -230,9 +275,35 @@ function bindJobLookup() {
   });
 }
 
+function bindWorkers() {
+  const inviteBtn = document.getElementById("worker-invite-btn");
+  const refreshBtn = document.getElementById("worker-refresh-btn");
+  const commandArea = document.getElementById("worker-install-command");
+
+  inviteBtn.addEventListener("click", async () => {
+    try {
+      const data = await requestJSON("/workers/invite", "POST", { capabilities: ["synthesize"] });
+      commandArea.value = data.install_command;
+      showResponse("worker invite generated", data);
+    } catch (err) {
+      showResponse("worker invite failed", { error: String(err) });
+    }
+  });
+
+  refreshBtn.addEventListener("click", async () => {
+    try {
+      const data = await requestJSON("/workers", "GET");
+      showResponse("workers", data);
+    } catch (err) {
+      showResponse("worker list failed", { error: String(err) });
+    }
+  });
+}
+
 bindCreateProject();
 bindTranscribe();
 bindClip();
 bindSynthesize();
 bindCaptions();
 bindJobLookup();
+bindWorkers();

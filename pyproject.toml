@@ -16,6 +16,7 @@ dependencies = [
   "soundfile>=0.12",
   "imageio-ffmpeg>=0.5",
   "itsdangerous>=2.2,<3",
+  "requests>=2.32,<3",
 ]
 
 [project.optional-dependencies]
@@ -64,6 +65,7 @@ all = [
 [project.scripts]
 radtts = "radtts.cli:main"
 radtts-api = "radtts.api:main"
+radtts-worker = "radtts.worker_client:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

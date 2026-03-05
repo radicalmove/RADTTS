@@ -12,9 +12,18 @@ from radtts.models import (
     ProjectCreateRequest,
     SynthesisRequest,
     TranscribeRequest,
+    WorkerInviteRequest,
+    WorkerInviteResponse,
+    WorkerJobCompleteRequest,
+    WorkerJobFailRequest,
+    WorkerPullRequest,
+    WorkerPullResponse,
+    WorkerRegisterRequest,
+    WorkerSynthesisEnqueueRequest,
 )
 from radtts.pipeline import RADTTSPipeline
 from radtts.constants import DEFAULT_PRESETS, MODEL_MODE_ALIASES, SUPPORTED_BASE_MODELS
+from radtts.worker_manager import WorkerManager
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 try:
@@ -42,8 +51,15 @@ SESSION_SECURE = _env_bool("RADTTS_SESSION_SECURE", False)
 PSYCHEK_LOGIN_URL = os.environ.get("PSYCHEK_LOGIN_URL", "http://127.0.0.1:8000/login")
 BRIDGE_SECRET = os.environ.get("RADTTS_BRIDGE_SECRET", SESSION_SECRET)
 BRIDGE_MAX_AGE_SECONDS = int(os.environ.get("RADTTS_BRIDGE_MAX_AGE_SECONDS", "120"))
+WORKER_SECRET = os.environ.get("RADTTS_WORKER_SECRET", SESSION_SECRET)
+WORKER_INVITE_MAX_AGE_SECONDS = int(os.environ.get("RADTTS_WORKER_INVITE_MAX_AGE_SECONDS", "86400"))
 
 pipeline = RADTTSPipeline(projects_root=PROJECTS_ROOT)
+worker_manager = WorkerManager(
+    projects_root=PROJECTS_ROOT,
+    worker_secret=WORKER_SECRET,
+    invite_max_age_seconds=WORKER_INVITE_MAX_AGE_SECONDS,
+)
 app = FastAPI(title="RADTTS API", version="0.1.0")
 app.add_middleware(
     SessionMiddleware,
@@ -145,6 +161,18 @@ def synthesize(request: Request, req: SynthesisRequest):
     return pipeline.synthesize(req)
 
 
+@app.post("/synthesize/worker")
+def synthesize_worker(request: Request, req: WorkerSynthesisEnqueueRequest):
+    _require_auth(request)
+    job_id = worker_manager.enqueue_synthesis_job(req)
+    return {
+        "job_id": job_id,
+        "status": "queued",
+        "stage": "queued_remote",
+        "worker_mode": True,
+    }
+
+
 @app.post("/captions")
 def captions(request: Request, req: CaptionRequest):
     _require_auth(request)
@@ -164,6 +192,52 @@ def get_job(request: Request, job_id: str, project_id: str):
 def cancel_job(request: Request, job_id: str, project_id: str):
     _require_auth(request)
     return pipeline.cancel_job(project_id, job_id)
+
+
+@app.get("/workers")
+def list_workers(request: Request):
+    _require_auth(request)
+    workers = worker_manager.list_workers()
+    return {"workers": [worker.model_dump(mode="json") for worker in workers]}
+
+
+@app.post("/workers/invite", response_model=WorkerInviteResponse)
+def worker_invite(request: Request, req: WorkerInviteRequest):
+    _require_auth(request)
+    token = worker_manager.issue_invite_token(req.capabilities)
+    install_command = (
+        "radtts-worker "
+        f"--server-url {str(request.base_url).rstrip('/')} "
+        f"--invite-token {token}"
+    )
+    return WorkerInviteResponse(
+        invite_token=token,
+        expires_in_seconds=WORKER_INVITE_MAX_AGE_SECONDS,
+        install_command=install_command,
+    )
+
+
+@app.post("/workers/register")
+def worker_register(req: WorkerRegisterRequest):
+    return worker_manager.register_worker(req).model_dump(mode="json")
+
+
+@app.post("/workers/pull", response_model=WorkerPullResponse)
+def worker_pull(req: WorkerPullRequest):
+    job = worker_manager.pull_job(req)
+    return WorkerPullResponse(job=job)
+
+
+@app.post("/workers/jobs/{job_id}/complete")
+def worker_complete(job_id: str, req: WorkerJobCompleteRequest):
+    worker_manager.complete_job(job_id, req)
+    return {"job_id": job_id, "status": "completed"}
+
+
+@app.post("/workers/jobs/{job_id}/fail")
+def worker_fail(job_id: str, req: WorkerJobFailRequest):
+    worker_manager.fail_job(job_id, req)
+    return {"job_id": job_id, "status": "failed"}
 
 
 def main() -> None:

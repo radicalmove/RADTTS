@@ -97,6 +97,26 @@ Bridge/auth env vars:
 - `RADTTS_BRIDGE_SECRET=...` (must match PsyChek `APP_BRIDGE_SECRET`)
 - `PSYCHEK_LOGIN_URL=http://.../login`
 
+## Distributed workers (offload TTS/ASR)
+
+Use the server as control plane and run heavy synthesis on stronger worker machines.
+
+Worker flow:
+1. In web UI, generate worker invite (`Workers` panel).
+2. On worker machine, install deps and run:
+   ```bash
+   radtts-worker --server-url http://<server-host>:8080 --invite-token <token>
+   ```
+3. Submit synthesis jobs in `Worker execution` mode from the UI.
+
+Key worker endpoints:
+- `POST /workers/invite`
+- `POST /workers/register`
+- `POST /workers/pull`
+- `POST /workers/jobs/{id}/complete`
+- `POST /workers/jobs/{id}/fail`
+- `POST /synthesize/worker`
+
 ## Notes
 - Voice cloning requires explicit authorization in your workflow.
 - Qwen voice cloning is restricted to Base models in this app.
