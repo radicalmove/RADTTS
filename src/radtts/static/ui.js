@@ -365,6 +365,56 @@ function stripLogTimestamp(line) {
   return String(line || "").replace(/^\d{4}-\d{2}-\d{2}T[^\s]+\s+/, "").trim();
 }
 
+function friendlyStageDetail(stage) {
+  const key = String(stage || "").trim().toLowerCase();
+  if (key === "queued") return "Preparing your job";
+  if (key === "queued_remote") return "Waiting for a worker device";
+  if (key === "worker_running") return "Processing on a worker device";
+  if (key === "fallback_local") return "Switching to server fallback";
+  if (key === "model_load") return "Loading voice model";
+  if (key === "generation") return "Generating speech";
+  if (key === "stitching") return "Finalizing audio";
+  if (key === "captioning") return "Creating transcript";
+  if (key === "completed") return "Completed";
+  if (key === "cancelled") return "Cancelled";
+  if (key === "failed") return "Processing failed";
+  return "Processing";
+}
+
+function detailFromLogLine(line, currentStage) {
+  const cleaned = stripLogTimestamp(line);
+  if (!cleaned) return "";
+  const lower = cleaned.toLowerCase();
+
+  if (lower.startsWith("heartbeat:")) {
+    const stageMatch = lower.match(/stage=([a-z_]+)/);
+    const stage = stageMatch?.[1] || currentStage;
+    return `${friendlyStageDetail(stage)}...`;
+  }
+
+  if (lower.includes("queued for worker execution")) {
+    return "Queued and waiting for a worker device.";
+  }
+
+  if (lower.includes("started processing") && lower.includes("worker")) {
+    return "Worker device has started processing.";
+  }
+
+  if (lower.includes("switching to local server fallback")) {
+    return "No worker responded, starting on server fallback.";
+  }
+
+  const stageMatch = lower.match(/stage=([a-z_]+)/);
+  if (stageMatch?.[1]) {
+    const stageText = friendlyStageDetail(stageMatch[1]);
+    if (lower.includes("starting")) return `${stageText}...`;
+    if (lower.includes("complete")) return `${stageText} complete.`;
+    return `${stageText}.`;
+  }
+
+  return cleaned;
+}
+
 function formatEta(seconds) {
   if (!Number.isFinite(seconds) || seconds <= 0) return "--:--";
   const total = Math.max(0, Math.round(seconds));
@@ -837,7 +887,7 @@ function applyJobSnapshot(job) {
   }
 
   const logs = Array.isArray(job.logs) ? job.logs : [];
-  const latestLog = logs.length ? stripLogTimestamp(logs[logs.length - 1]) : "";
+  const latestLog = logs.length ? detailFromLogLine(logs[logs.length - 1], stage) : "";
   const mode = detectComputeMode(job);
   if (mode) {
     state.computeMode = mode;
