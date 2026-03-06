@@ -71,6 +71,55 @@ body {
   background: #111;
 }
 
+.topbar-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.topbar-user {
+  white-space: nowrap;
+}
+
+/* CDC-POC utility button style for top-right account actions */
+.topbar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--uc-grey-300);
+  border-radius: var(--uc-radius-md);
+  background: var(--uc-white);
+  color: var(--uc-black);
+  text-decoration: none;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.1;
+  box-shadow: none;
+  transition: all 0.2s ease;
+}
+
+.topbar-btn:hover,
+.topbar-btn:active {
+  background: var(--uc-grey-600);
+  color: var(--uc-white);
+  border-color: var(--uc-grey-600);
+}
+
+.topbar-btn.topbar-btn-danger {
+  background: var(--uc-red);
+  border-color: var(--uc-red);
+  color: var(--uc-white);
+}
+
+.topbar-btn.topbar-btn-danger:hover,
+.topbar-btn.topbar-btn-danger:active {
+  background: #a73527;
+  border-color: #a73527;
+  color: var(--uc-white);
+}
+
 .layout {
   position: relative;
   z-index: 1;
@@ -210,6 +259,11 @@ pre {
 
   .chip {
     display: none;
+  }
+
+  .topbar-btn {
+    padding: 5px 9px;
+    font-size: 11px;
   }
 
   .row {

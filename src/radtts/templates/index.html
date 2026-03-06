@@ -16,10 +16,13 @@
         <p class="eyebrow">Local-First Voice Production</p>
         <h1>RADTTS Studio</h1>
       </div>
-      <div style="display:flex; gap:10px; align-items:center;">
+      <div class="topbar-actions">
         {% if current_user %}
-        <div class="chip">{{ current_user.display_name or current_user.email or "Signed in" }}</div>
-        <a class="chip" style="text-decoration:none;" href="/auth/logout">Log out</a>
+        <div class="chip topbar-user">{{ current_user.display_name or current_user.email or "Signed in" }}</div>
+        {% if current_user.is_admin and psychek_admin_url %}
+        <a class="topbar-btn" href="{{ psychek_admin_url }}">Admin</a>
+        {% endif %}
+        <a class="topbar-btn topbar-btn-danger" href="/auth/logout">Log out</a>
         {% else %}
         <div class="chip">API + UI</div>
         {% endif %}

@@ -55,6 +55,16 @@ BRIDGE_MAX_AGE_SECONDS = int(os.environ.get("RADTTS_BRIDGE_MAX_AGE_SECONDS", "12
 WORKER_SECRET = os.environ.get("RADTTS_WORKER_SECRET", SESSION_SECRET)
 WORKER_INVITE_MAX_AGE_SECONDS = int(os.environ.get("RADTTS_WORKER_INVITE_MAX_AGE_SECONDS", "86400"))
 
+
+def _infer_psychek_admin_url(login_url: str) -> str:
+    cleaned = login_url.strip()
+    if cleaned.endswith("/login"):
+        return f"{cleaned[:-len('/login')]}/admin"
+    return f"{cleaned.rstrip('/')}/admin"
+
+
+PSYCHEK_ADMIN_URL = os.environ.get("PSYCHEK_ADMIN_URL", "").strip() or _infer_psychek_admin_url(PSYCHEK_LOGIN_URL)
+
 pipeline = RADTTSPipeline(projects_root=PROJECTS_ROOT)
 worker_manager = WorkerManager(
     projects_root=PROJECTS_ROOT,
@@ -167,6 +177,7 @@ def home(request: Request):
             "presets": DEFAULT_PRESETS,
             "auth_required": AUTH_REQUIRED,
             "current_user": current_user,
+            "psychek_admin_url": PSYCHEK_ADMIN_URL,
         },
     )
 
