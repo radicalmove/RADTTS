@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from radtts.manifests import ManifestStore
 from radtts.models import (
     BoundaryReport,
     CaptionArtifacts,
@@ -39,6 +40,11 @@ class RADTTSPipeline:
 
     def list_projects(self) -> list[str]:
         return self.project_manager.list_projects()
+
+    def list_outputs(self, project_id: str) -> list[dict[str, object]]:
+        paths = self.project_manager.ensure_project(project_id)
+        store = ManifestStore(paths.manifests)
+        return store.list_outputs()
 
     def transcribe(self, req: TranscribeRequest) -> dict[str, str]:
         paths = self.project_manager.ensure_project(req.project_id)

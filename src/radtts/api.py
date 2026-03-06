@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import os
+import random
+import re
+import threading
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from radtts.models import (
     CaptionRequest,
     ClipRequest,
+    PauseConfig,
     ProjectCreateRequest,
+    SimpleSynthesisRequest,
     SynthesisRequest,
     TranscribeRequest,
     WorkerInviteRequest,
@@ -29,7 +37,7 @@ from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 try:
     from fastapi import FastAPI, HTTPException, Request
-    from fastapi.responses import HTMLResponse, RedirectResponse
+    from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
     from starlette.middleware.sessions import SessionMiddleware
     from fastapi.staticfiles import StaticFiles
     from fastapi.templating import Jinja2Templates
@@ -137,6 +145,44 @@ def _descope_project_id(request: Request, project_id: str) -> str:
     return project_id
 
 
+def _safe_filename(filename: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", filename.strip())
+    cleaned = cleaned.strip("._")
+    return cleaned or "reference_audio.wav"
+
+
+def _slug_text(value: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", value.strip().lower())
+    return slug.strip("-")
+
+
+def _build_output_name(text: str, output_name: str | None) -> str:
+    if output_name and output_name.strip():
+        raw = output_name.strip()
+    else:
+        prefix = _slug_text(" ".join(text.split()[:8]))[:32] or "generated-audio"
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        raw = f"{prefix}-{stamp}"
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", raw).strip("._-")
+    return cleaned or f"generated-audio-{uuid.uuid4().hex[:8]}"
+
+
+def _inject_fillers(text: str) -> str:
+    parts = [part.strip() for part in re.split(r"(?<=[.!?])\s+", text.strip()) if part.strip()]
+    if len(parts) <= 1:
+        return text
+    rng = random.Random(hashlib.sha256(text.encode("utf-8")).hexdigest())
+    fillers = ["Um,", "Ah,"]
+    patched: list[str] = []
+    for idx, sentence in enumerate(parts):
+        if idx > 0 and len(sentence) > 20 and rng.random() < 0.22:
+            filler = fillers[0] if rng.random() < 0.5 else fillers[1]
+            patched.append(f"{filler} {sentence}")
+        else:
+            patched.append(sentence)
+    return " ".join(patched)
+
+
 @app.get("/auth/bridge")
 def auth_bridge(request: Request, token: str):
     try:
@@ -231,6 +277,73 @@ def synthesize(request: Request, req: SynthesisRequest):
     return pipeline.synthesize(scoped_req)
 
 
+@app.post("/synthesize/simple")
+def synthesize_simple(request: Request, req: SimpleSynthesisRequest):
+    _require_auth(request)
+    scoped_project_id = _scope_project_id(request, req.project_id)
+
+    try:
+        paths = pipeline.project_manager.ensure_project(scoped_project_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+
+    try:
+        reference_audio = base64.b64decode(req.reference_audio_b64.encode("utf-8"), validate=True)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=422, detail="invalid reference_audio_b64 payload") from exc
+
+    output_name = _build_output_name(req.text, req.output_name)
+    reference_filename = _safe_filename(req.reference_audio_filename)
+    reference_path = paths.assets_reference_audio / f"{output_name}_{reference_filename}"
+    reference_path.parent.mkdir(parents=True, exist_ok=True)
+    reference_path.write_bytes(reference_audio)
+
+    model_id = MODEL_MODE_ALIASES["quality"] if req.quality == "high" else MODEL_MODE_ALIASES["fast"]
+    scripted_text = _inject_fillers(req.text) if req.add_fillers else req.text
+    min_gap = round(max(0.15, req.average_gap_seconds * 0.7), 3)
+    max_gap = round(min(2.5, req.average_gap_seconds * 1.3), 3)
+
+    synth_req = SynthesisRequest(
+        project_id=scoped_project_id,
+        text=scripted_text,
+        reference_audio_path=reference_path,
+        reference_text=None,
+        model_id=model_id,
+        max_new_tokens=1400 if req.quality == "high" else 1000,
+        chunk_mode="sentence",
+        pause_config=PauseConfig(
+            strategy="random_uniform_with_length_adjustment",
+            min_seconds=min_gap,
+            max_seconds=max_gap,
+            seed=None,
+        ),
+        output_format=req.output_format,
+        output_name=output_name,
+        voice_clone_authorized=req.voice_clone_authorized,
+    )
+
+    job_id = f"job_{uuid.uuid4().hex[:12]}"
+
+    def run_local_job() -> None:
+        try:
+            pipeline.orchestrator.run_synthesis_job(synth_req, job_id=job_id)
+        except Exception:
+            # Job failure details are persisted in manifest by orchestrator.
+            return
+
+    thread = threading.Thread(target=run_local_job, name=f"radtts-{job_id}", daemon=True)
+    thread.start()
+
+    return {
+        "job_id": job_id,
+        "status": "queued",
+        "stage": "queued",
+        "progress": 0.0,
+        "project_id": req.project_id,
+        "output_name": output_name,
+    }
+
+
 @app.post("/synthesize/worker")
 def synthesize_worker(request: Request, req: WorkerSynthesisEnqueueRequest):
     _require_auth(request)
@@ -249,6 +362,71 @@ def captions(request: Request, req: CaptionRequest):
     _require_auth(request)
     scoped_req = req.model_copy(update={"project_id": _scope_project_id(request, req.project_id)})
     return pipeline.captions(scoped_req)
+
+
+@app.get("/projects/{project_id}/outputs")
+def list_project_outputs(request: Request, project_id: str):
+    _require_auth(request)
+    scoped_project_id = _scope_project_id(request, project_id)
+    try:
+        rows = pipeline.list_outputs(scoped_project_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+
+    outputs: list[dict[str, object]] = []
+    for item in reversed(rows):
+        audio_path = str(item.get("output_file") or "")
+        captions_raw = item.get("captions") if isinstance(item.get("captions"), dict) else {}
+        captions = {key: str(value) for key, value in (captions_raw or {}).items()}
+        folder_path = str(Path(audio_path).parent) if audio_path else ""
+
+        audio_download_url = (
+            f"/projects/{project_id}/artifact?path={quote(audio_path, safe='')}" if audio_path else None
+        )
+        srt_path = captions.get("srt")
+        srt_download_url = (
+            f"/projects/{project_id}/artifact?path={quote(srt_path, safe='')}" if srt_path else None
+        )
+
+        outputs.append(
+            {
+                "job_id": item.get("job_id"),
+                "created_at": item.get("created_at"),
+                "output_name": Path(audio_path).stem if audio_path else None,
+                "audio_path": audio_path,
+                "folder_path": folder_path,
+                "audio_download_url": audio_download_url,
+                "captions": captions,
+                "srt_download_url": srt_download_url,
+            }
+        )
+
+    return {"project_id": project_id, "outputs": outputs}
+
+
+@app.get("/projects/{project_id}/artifact")
+def get_project_artifact(request: Request, project_id: str, path: str):
+    _require_auth(request)
+    scoped_project_id = _scope_project_id(request, project_id)
+    try:
+        project_paths = pipeline.project_manager.ensure_project(scoped_project_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+
+    raw_path = Path(path)
+    candidate = raw_path if raw_path.is_absolute() else (Path.cwd() / raw_path)
+    candidate = candidate.resolve()
+
+    project_root = project_paths.root.resolve()
+    try:
+        candidate.relative_to(project_root)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail="artifact path is outside project") from exc
+
+    if not candidate.exists() or not candidate.is_file():
+        raise HTTPException(status_code=404, detail="artifact not found")
+
+    return FileResponse(path=candidate, filename=candidate.name)
 
 
 @app.get("/jobs/{job_id}")

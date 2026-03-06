@@ -135,6 +135,26 @@ class WorkerSynthesisEnqueueRequest(BaseModel):
         return self
 
 
+class SimpleSynthesisRequest(BaseModel):
+    project_id: str = Field(min_length=2)
+    text: str = Field(min_length=1)
+    reference_audio_b64: str = Field(min_length=32)
+    reference_audio_filename: str = Field(min_length=1)
+    output_name: str | None = None
+    quality: Literal["normal", "high"] = "normal"
+    add_fillers: bool = False
+    average_gap_seconds: float = Field(default=0.8, ge=0.15, le=2.5)
+    generate_transcript: bool = True
+    output_format: OutputFormat = OutputFormat.MP3
+    voice_clone_authorized: bool = False
+
+    @model_validator(mode="after")
+    def validate_authorization(self) -> "SimpleSynthesisRequest":
+        if not self.voice_clone_authorized:
+            raise ValueError("voice_clone_authorized must be true before synthesis")
+        return self
+
+
 class CaptionRequest(BaseModel):
     project_id: str = Field(min_length=2)
     audio_path: Path

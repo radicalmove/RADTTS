@@ -38,12 +38,12 @@ class PipelineOrchestrator:
         self.stage_retries = {**DEFAULT_STAGE_RETRIES, **(stage_retries or {})}
         self._cancelled: set[str] = set()
 
-    def run_synthesis_job(self, req: SynthesisRequest) -> JobRecord:
+    def run_synthesis_job(self, req: SynthesisRequest, *, job_id: str | None = None) -> JobRecord:
         paths = self.project_manager.ensure_project(req.project_id)
         store = ManifestStore(paths.manifests)
 
         job = JobRecord(
-            id=f"job_{uuid.uuid4().hex[:12]}",
+            id=job_id or f"job_{uuid.uuid4().hex[:12]}",
             project_id=req.project_id,
             status=JobStatus.QUEUED,
             stage="queued",

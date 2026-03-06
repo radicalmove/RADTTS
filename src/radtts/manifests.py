@@ -46,6 +46,9 @@ class ManifestStore:
         items.append(metadata.model_dump(mode="json"))
         self._write(self.outputs_file, items)
 
+    def list_outputs(self) -> list[dict[str, Any]]:
+        return self._read(self.outputs_file)
+
     def write_output_file(self, path: Path, metadata: OutputMetadata) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(

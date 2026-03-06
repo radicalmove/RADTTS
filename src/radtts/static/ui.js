@@ -1,37 +1,85 @@
-const responseNode = document.getElementById("response");
 const projectGatewayNode = document.getElementById("project-gateway");
 const workspaceNode = document.getElementById("workspace");
 const switchProjectBtn = document.getElementById("switch-project-btn");
 const activeProjectChip = document.getElementById("active-project-chip");
 const activeProjectLabelNode = document.getElementById("active-project-label");
+
 const existingProjectSelectNode = document.getElementById("existing-project-select");
 const openProjectFormNode = document.getElementById("open-project-form");
 const refreshProjectsBtn = document.getElementById("refresh-projects-btn");
 const projectGatewayStatusNode = document.getElementById("project-gateway-status");
 
-let activeProjectId = null;
+const audioDropzoneNode = document.getElementById("audio-dropzone");
+const audioFileInputNode = document.getElementById("reference-audio-file");
+const audioDropzoneTitleNode = document.getElementById("audio-dropzone-title");
+const audioFileNameNode = document.getElementById("audio-file-name");
+
+const scriptTextNode = document.getElementById("script-text");
+const scriptFileInputNode = document.getElementById("script-file");
+const scriptFileStatusNode = document.getElementById("script-file-status");
+
+const qualityNode = document.getElementById("quality-level");
+const outputFormatNode = document.getElementById("output-format");
+const fillersToggleNode = document.getElementById("fillers-toggle");
+const transcriptToggleNode = document.getElementById("transcript-toggle");
+const gapSliderNode = document.getElementById("gap-slider");
+const gapValueNode = document.getElementById("gap-value");
+
+const generateBtn = document.getElementById("generate-btn");
+const generateStatusNode = document.getElementById("generate-status");
+const progressWrapNode = document.getElementById("progress-wrap");
+const progressStageNode = document.getElementById("progress-stage");
+const progressPercentNode = document.getElementById("progress-percent");
+const progressFillNode = document.getElementById("progress-fill");
+
+const latestOutputNode = document.getElementById("latest-output");
+const latestOutputLinksNode = document.getElementById("latest-output-links");
+const outputListNode = document.getElementById("output-list");
+
+const stageLabels = {
+  queued: "Queued",
+  model_load: "Loading voice model",
+  generation: "Generating audio",
+  stitching: "Finalizing audio",
+  captioning: "Creating transcript",
+  completed: "Completed",
+  failed: "Failed",
+  cancelled: "Cancelled",
+};
+
+const stageFallbackProgress = {
+  queued: 0,
+  model_load: 10,
+  generation: 45,
+  stitching: 72,
+  captioning: 85,
+  completed: 100,
+  failed: 100,
+  cancelled: 0,
+};
+
+const state = {
+  activeProjectId: null,
+  selectedAudioFile: null,
+  activeJobId: null,
+  pollTimer: null,
+};
 
 function cleanOptional(value) {
   const trimmed = (value ?? "").trim();
   return trimmed.length ? trimmed : null;
 }
 
-function cleanNumber(value) {
-  const trimmed = (value ?? "").trim();
-  if (!trimmed.length) return null;
-  const parsed = Number(trimmed);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function showResponse(title, payload) {
-  if (!responseNode) return;
-  responseNode.textContent = JSON.stringify({ title, payload }, null, 2);
-}
-
 function setGatewayStatus(message, isError = false) {
   if (!projectGatewayStatusNode) return;
   projectGatewayStatusNode.textContent = message || "";
   projectGatewayStatusNode.style.color = isError ? "#a73527" : "#555";
+}
+
+function setGenerateStatus(message, isError = false) {
+  if (!generateStatusNode) return;
+  generateStatusNode.textContent = message || "";
+  generateStatusNode.style.color = isError ? "#a73527" : "#444";
 }
 
 function setWorkspaceVisible(visible) {
@@ -41,38 +89,70 @@ function setWorkspaceVisible(visible) {
   if (activeProjectChip) activeProjectChip.hidden = !visible;
 }
 
+function setGenerateEnabled(enabled) {
+  if (generateBtn) generateBtn.disabled = !enabled;
+}
+
+function clearPolling() {
+  if (state.pollTimer) {
+    clearInterval(state.pollTimer);
+    state.pollTimer = null;
+  }
+  state.activeJobId = null;
+}
+
+function resetRunUi() {
+  if (progressWrapNode) progressWrapNode.hidden = true;
+  if (progressFillNode) progressFillNode.style.width = "0%";
+  if (progressPercentNode) progressPercentNode.textContent = "0%";
+  if (progressStageNode) progressStageNode.textContent = "Queued";
+}
+
+function setProgress(progressPercent, stage) {
+  const clamped = Math.max(0, Math.min(100, progressPercent));
+  if (progressWrapNode) progressWrapNode.hidden = false;
+  if (progressFillNode) progressFillNode.style.width = `${clamped}%`;
+  if (progressPercentNode) progressPercentNode.textContent = `${clamped}%`;
+  if (progressStageNode) progressStageNode.textContent = stageLabels[stage] || stage || "Processing";
+}
+
 function applyActiveProject(projectId) {
-  activeProjectId = projectId;
+  state.activeProjectId = projectId;
   if (activeProjectLabelNode) activeProjectLabelNode.textContent = projectId;
-  document
-    .querySelectorAll('form[data-project-bound="true"] input[name="project_id"]')
-    .forEach((input) => {
-      input.value = projectId;
-    });
+  setWorkspaceVisible(true);
+  setGenerateStatus("");
+  resetRunUi();
+  clearPolling();
+  loadOutputs();
 }
 
 function requireActiveProject() {
-  if (!activeProjectId) {
+  if (!state.activeProjectId) {
     throw new Error("Select or create a project first.");
   }
-  return activeProjectId;
+  return state.activeProjectId;
 }
 
-function fileToBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const value = String(reader.result || "");
-      const parts = value.split(",", 2);
-      if (parts.length !== 2) {
-        reject(new Error("Failed to read file as base64"));
-        return;
-      }
-      resolve(parts[1]);
-    };
-    reader.onerror = () => reject(new Error("Failed to read file"));
-    reader.readAsDataURL(file);
-  });
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function formatIso(isoValue) {
+  if (!isoValue) return "";
+  const date = new Date(isoValue);
+  if (Number.isNaN(date.getTime())) return String(isoValue);
+  return date.toLocaleString();
+}
+
+function updateOpenButtonState() {
+  const hasSelection = Boolean(existingProjectSelectNode && existingProjectSelectNode.value);
+  const openBtn = document.getElementById("open-project-btn");
+  if (openBtn) openBtn.disabled = !hasSelection;
 }
 
 async function requestJSON(url, method, payload) {
@@ -95,10 +175,56 @@ async function requestJSON(url, method, payload) {
   return data;
 }
 
-function updateOpenButtonState() {
-  const hasSelection = Boolean(existingProjectSelectNode && existingProjectSelectNode.value);
-  const openBtn = document.getElementById("open-project-btn");
-  if (openBtn) openBtn.disabled = !hasSelection;
+async function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const value = String(reader.result || "");
+      const parts = value.split(",", 2);
+      if (parts.length !== 2) {
+        reject(new Error("Failed to read file as base64"));
+        return;
+      }
+      resolve(parts[1]);
+    };
+    reader.onerror = () => reject(new Error("Failed to read file"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function setSelectedAudioFile(file) {
+  state.selectedAudioFile = file || null;
+  if (!audioFileNameNode || !audioDropzoneTitleNode) return;
+
+  if (!state.selectedAudioFile) {
+    audioDropzoneTitleNode.textContent = "Drop audio here or click to choose";
+    audioFileNameNode.textContent = "No file selected.";
+    return;
+  }
+
+  audioDropzoneTitleNode.textContent = "Voice sample selected";
+  const mb = (state.selectedAudioFile.size / (1024 * 1024)).toFixed(2);
+  audioFileNameNode.textContent = `${state.selectedAudioFile.name} (${mb} MB)`;
+}
+
+async function readScriptFile(file) {
+  const lower = file.name.toLowerCase();
+
+  if (lower.endsWith(".docx") || lower.endsWith(".doc")) {
+    if (!window.mammoth || typeof window.mammoth.extractRawText !== "function") {
+      throw new Error("DOCX parser not available. Use .txt or .md instead.");
+    }
+    const buffer = await file.arrayBuffer();
+    const result = await window.mammoth.extractRawText({ arrayBuffer: buffer });
+    return result.value || "";
+  }
+
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Failed to read text file"));
+    reader.readAsText(file);
+  });
 }
 
 async function loadProjects(preselectProjectId = null) {
@@ -142,6 +268,175 @@ async function loadProjects(preselectProjectId = null) {
   }
 }
 
+function renderLatestOutput(output) {
+  if (!latestOutputNode || !latestOutputLinksNode) return;
+  if (!output) {
+    latestOutputNode.hidden = true;
+    latestOutputLinksNode.innerHTML = "";
+    return;
+  }
+
+  const links = [];
+  if (output.audio_download_url) {
+    links.push(`<a href="${escapeHtml(output.audio_download_url)}" target="_blank" rel="noopener">Open audio</a>`);
+  }
+  if (output.srt_download_url) {
+    links.push(`<a href="${escapeHtml(output.srt_download_url)}" target="_blank" rel="noopener">Open transcript (.srt)</a>`);
+  }
+  if (output.folder_path) {
+    links.push(`<button class="copy-folder-btn" data-folder="${escapeHtml(output.folder_path)}" type="button">Copy folder path</button>`);
+  }
+
+  latestOutputLinksNode.innerHTML = links.join(" ");
+  latestOutputNode.hidden = false;
+}
+
+function renderOutputs(outputs) {
+  if (!outputListNode) return;
+
+  if (!outputs.length) {
+    outputListNode.innerHTML = '<li class="output-item">No generated files in this project yet.</li>';
+    renderLatestOutput(null);
+    return;
+  }
+
+  renderLatestOutput(outputs[0]);
+
+  const rows = outputs.map((item) => {
+    const actions = [];
+    if (item.audio_download_url) {
+      actions.push(`<a href="${escapeHtml(item.audio_download_url)}" target="_blank" rel="noopener">Open audio</a>`);
+    }
+    if (item.srt_download_url) {
+      actions.push(`<a href="${escapeHtml(item.srt_download_url)}" target="_blank" rel="noopener">Open transcript (.srt)</a>`);
+    }
+    if (item.folder_path) {
+      actions.push(`<button class="copy-folder-btn" data-folder="${escapeHtml(item.folder_path)}" type="button">Copy folder path</button>`);
+    }
+
+    return `
+      <li class="output-item">
+        <div class="output-meta">
+          <span class="output-name">${escapeHtml(item.output_name || "audio output")}</span>
+          <span class="output-date">${escapeHtml(formatIso(item.created_at))}</span>
+        </div>
+        <div class="output-actions">${actions.join(" ")}</div>
+        <div class="folder-line">${escapeHtml(item.folder_path || "")}</div>
+      </li>
+    `;
+  });
+
+  outputListNode.innerHTML = rows.join("");
+}
+
+async function loadOutputs() {
+  const projectId = state.activeProjectId;
+  if (!projectId) return;
+
+  try {
+    const data = await requestJSON(`/projects/${encodeURIComponent(projectId)}/outputs`, "GET");
+    const outputs = Array.isArray(data.outputs) ? data.outputs : [];
+    renderOutputs(outputs);
+  } catch (err) {
+    renderOutputs([]);
+    setGenerateStatus(`Could not load output history: ${String(err)}`, true);
+  }
+}
+
+async function pollJob() {
+  if (!state.activeJobId || !state.activeProjectId) return;
+
+  try {
+    const data = await requestJSON(
+      `/jobs/${encodeURIComponent(state.activeJobId)}?project_id=${encodeURIComponent(state.activeProjectId)}`,
+      "GET"
+    );
+
+    const stage = String(data.stage || "queued");
+    const percentage = Number.isFinite(Number(data.progress))
+      ? Math.round(Number(data.progress) * 100)
+      : stageFallbackProgress[stage] || 0;
+
+    setProgress(percentage, stage);
+
+    if (data.status === "completed") {
+      clearPolling();
+      setGenerateEnabled(true);
+      setProgress(100, "completed");
+      setGenerateStatus("Audio generation complete.");
+      await loadOutputs();
+      return;
+    }
+
+    if (data.status === "failed") {
+      clearPolling();
+      setGenerateEnabled(true);
+      setGenerateStatus(`Generation failed: ${data.error || "Unknown error"}`, true);
+      return;
+    }
+
+    if (data.status === "cancelled") {
+      clearPolling();
+      setGenerateEnabled(true);
+      setGenerateStatus("Generation was cancelled.", true);
+    }
+  } catch (err) {
+    if (String(err).includes("404")) {
+      return;
+    }
+    clearPolling();
+    setGenerateEnabled(true);
+    setGenerateStatus(`Progress check failed: ${String(err)}`, true);
+  }
+}
+
+function startPolling(jobId) {
+  clearPolling();
+  state.activeJobId = jobId;
+  setProgress(0, "queued");
+  state.pollTimer = setInterval(pollJob, 2000);
+  pollJob();
+}
+
+async function handleGenerate() {
+  try {
+    const projectId = requireActiveProject();
+    const scriptText = cleanOptional(scriptTextNode?.value || "");
+
+    if (!state.selectedAudioFile) {
+      throw new Error("Please select an audio sample.");
+    }
+    if (!scriptText) {
+      throw new Error("Please provide script text.");
+    }
+
+    setGenerateEnabled(false);
+    setGenerateStatus("Uploading files and creating job...");
+    resetRunUi();
+
+    const referenceAudioB64 = await fileToBase64(state.selectedAudioFile);
+    const payload = {
+      project_id: projectId,
+      text: scriptText,
+      reference_audio_b64: referenceAudioB64,
+      reference_audio_filename: state.selectedAudioFile.name,
+      quality: qualityNode?.value || "normal",
+      add_fillers: Boolean(fillersToggleNode?.checked),
+      average_gap_seconds: Number(gapSliderNode?.value || 0.8),
+      output_format: outputFormatNode?.value || "mp3",
+      voice_clone_authorized: true,
+      generate_transcript: Boolean(transcriptToggleNode?.checked),
+    };
+
+    const data = await requestJSON("/synthesize/simple", "POST", payload);
+    setGenerateStatus("Generation job started.");
+    startPolling(data.job_id);
+  } catch (err) {
+    setGenerateEnabled(true);
+    setGenerateStatus(String(err), true);
+  }
+}
+
 function bindProjectGateway() {
   const createForm = document.getElementById("create-form");
   if (createForm) {
@@ -163,15 +458,12 @@ function bindProjectGateway() {
       };
 
       try {
-        const data = await requestJSON("/projects", "POST", payload);
+        await requestJSON("/projects", "POST", payload);
         applyActiveProject(projectId);
-        setWorkspaceVisible(true);
         setGatewayStatus("");
-        showResponse("project created", data);
         await loadProjects(projectId);
       } catch (err) {
         setGatewayStatus(`Project create failed: ${String(err)}`, true);
-        showResponse("project create failed", { error: String(err) });
       }
     });
   }
@@ -189,9 +481,7 @@ function bindProjectGateway() {
         return;
       }
       applyActiveProject(projectId);
-      setWorkspaceVisible(true);
       setGatewayStatus("");
-      showResponse("project selected", { project_id: projectId });
     });
   }
 
@@ -203,10 +493,12 @@ function bindProjectGateway() {
 
   if (switchProjectBtn) {
     switchProjectBtn.addEventListener("click", async () => {
-      activeProjectId = null;
+      clearPolling();
+      state.activeProjectId = null;
       if (activeProjectLabelNode) activeProjectLabelNode.textContent = "";
       setWorkspaceVisible(false);
-      setGatewayStatus("");
+      setGenerateStatus("");
+      resetRunUi();
       await loadProjects();
     });
   }
@@ -215,246 +507,106 @@ function bindProjectGateway() {
   loadProjects();
 }
 
-function bindTranscribe() {
-  const form = document.getElementById("transcribe-form");
-  if (!form) return;
+function bindAudioSelection() {
+  if (audioFileInputNode) {
+    audioFileInputNode.addEventListener("change", () => {
+      const file = audioFileInputNode.files && audioFileInputNode.files[0];
+      setSelectedAudioFile(file || null);
+    });
+  }
 
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const fd = new FormData(form);
-    const payload = {
-      project_id: requireActiveProject(),
-      audio_path: (fd.get("audio_path") || "").trim(),
-      name: cleanOptional(fd.get("name")),
-      model: cleanOptional(fd.get("model")) || "small",
-      language: cleanOptional(fd.get("language")),
-      beam_size: cleanNumber(fd.get("beam_size")) || 5,
-    };
+  if (!audioDropzoneNode) return;
 
-    try {
-      const data = await requestJSON("/transcribe", "POST", payload);
-      showResponse("transcription complete", data);
-    } catch (err) {
-      showResponse("transcription failed", { error: String(err) });
-    }
+  ["dragenter", "dragover"].forEach((eventName) => {
+    audioDropzoneNode.addEventListener(eventName, (event) => {
+      event.preventDefault();
+      audioDropzoneNode.classList.add("drag-over");
+    });
+  });
+
+  ["dragleave", "drop"].forEach((eventName) => {
+    audioDropzoneNode.addEventListener(eventName, (event) => {
+      event.preventDefault();
+      audioDropzoneNode.classList.remove("drag-over");
+    });
+  });
+
+  audioDropzoneNode.addEventListener("drop", (event) => {
+    const dt = event.dataTransfer;
+    const file = dt && dt.files && dt.files[0];
+    if (!file) return;
+    setSelectedAudioFile(file);
   });
 }
 
-function bindClip() {
-  const form = document.getElementById("clip-form");
-  if (!form) return;
+function bindScriptFileLoader() {
+  if (!scriptFileInputNode) return;
 
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const fd = new FormData(form);
-    const payload = {
-      project_id: requireActiveProject(),
-      audio_path: (fd.get("audio_path") || "").trim(),
-      segments_json_path: (fd.get("segments_json_path") || "").trim(),
-      output_name: (fd.get("output_name") || "").trim(),
-      start_time: cleanNumber(fd.get("start_time")),
-      end_time: cleanNumber(fd.get("end_time")),
-      start_phrase: cleanOptional(fd.get("start_phrase")),
-      end_phrase: cleanOptional(fd.get("end_phrase")),
-      verification_mode: fd.get("verification_mode"),
-      output_format: fd.get("output_format"),
-    };
+  scriptFileInputNode.addEventListener("change", async () => {
+    const file = scriptFileInputNode.files && scriptFileInputNode.files[0];
+    if (!file) return;
+
+    if (scriptFileStatusNode) scriptFileStatusNode.textContent = "Reading file...";
 
     try {
-      const data = await requestJSON("/clip", "POST", payload);
-      showResponse("clip extracted", data);
-    } catch (err) {
-      showResponse("clip failed", { error: String(err) });
-    }
-  });
-}
-
-function bindSynthesize() {
-  const form = document.getElementById("synth-form");
-  if (!form) return;
-
-  const modeSelect = document.getElementById("mode-select");
-  const modelSelect = document.getElementById("model-id");
-  const presetSelect = document.getElementById("preset-select");
-  const executionModeSelect = document.getElementById("execution-mode");
-  const referencePathInput = document.getElementById("reference-audio-path");
-  const referenceFileInput = document.getElementById("reference-audio-file");
-
-  function applyExecutionMode() {
-    const workerMode = executionModeSelect.value === "worker";
-    referencePathInput.style.display = workerMode ? "none" : "block";
-    referenceFileInput.style.display = workerMode ? "block" : "none";
-    referencePathInput.required = !workerMode;
-    referenceFileInput.required = workerMode;
-  }
-
-  function applyMode() {
-    const mode = modeSelect.value;
-    const mapped = window.RADTTS_UI?.modes?.[mode];
-    if (mapped) modelSelect.value = mapped;
-  }
-
-  function applyPreset() {
-    const option = presetSelect.selectedOptions[0];
-    if (!option || !option.value) return;
-
-    const chunkMode = option.dataset.chunkMode;
-    const pauseMin = option.dataset.pauseMin;
-    const pauseMax = option.dataset.pauseMax;
-    const maxTokens = option.dataset.maxTokens;
-    const modelMode = option.dataset.modelMode;
-
-    if (chunkMode) form.elements.chunk_mode.value = chunkMode;
-    if (pauseMin) form.elements.pause_min.value = pauseMin;
-    if (pauseMax) form.elements.pause_max.value = pauseMax;
-    if (maxTokens) form.elements.max_new_tokens.value = maxTokens;
-    if (modelMode) {
-      modeSelect.value = modelMode;
-      applyMode();
-    }
-  }
-
-  modeSelect.addEventListener("change", applyMode);
-  presetSelect.addEventListener("change", applyPreset);
-  executionModeSelect.addEventListener("change", applyExecutionMode);
-  applyMode();
-  applyExecutionMode();
-
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const fd = new FormData(form);
-
-    const payload = {
-      project_id: requireActiveProject(),
-      text: (fd.get("text") || "").trim(),
-      reference_text: cleanOptional(fd.get("reference_text")),
-      model_id: fd.get("model_id"),
-      max_new_tokens: cleanNumber(fd.get("max_new_tokens")) || 1200,
-      chunk_mode: fd.get("chunk_mode"),
-      pause_config: {
-        strategy: "random_uniform_with_length_adjustment",
-        min_seconds: cleanNumber(fd.get("pause_min")) || 0.45,
-        max_seconds: cleanNumber(fd.get("pause_max")) || 1.1,
-        seed: cleanNumber(fd.get("pause_seed")),
-      },
-      output_format: fd.get("output_format"),
-      output_name: (fd.get("output_name") || "").trim(),
-      voice_clone_authorized: fd.get("ack_voice_clone") === "on",
-    };
-
-    try {
-      if (executionModeSelect.value === "worker") {
-        const file = referenceFileInput.files && referenceFileInput.files[0];
-        if (!file) {
-          throw new Error("Select a reference audio file for worker mode");
-        }
-        const b64 = await fileToBase64(file);
-        const workerPayload = {
-          ...payload,
-          reference_audio_b64: b64,
-          reference_audio_filename: file.name,
-        };
-        const data = await requestJSON("/synthesize/worker", "POST", workerPayload);
-        showResponse("worker synthesis job queued", data);
-      } else {
-        payload.reference_audio_path = (fd.get("reference_audio_path") || "").trim();
-        const data = await requestJSON("/synthesize", "POST", payload);
-        showResponse("synthesis job started", data);
+      const text = await readScriptFile(file);
+      if (scriptTextNode) {
+        scriptTextNode.value = text.trim();
+      }
+      if (scriptFileStatusNode) {
+        scriptFileStatusNode.textContent = `Loaded ${file.name}`;
       }
     } catch (err) {
-      showResponse("synthesis failed", { error: String(err) });
+      if (scriptFileStatusNode) {
+        scriptFileStatusNode.textContent = `Failed to load ${file.name}: ${String(err)}`;
+      }
     }
   });
 }
 
-function bindCaptions() {
-  const form = document.getElementById("captions-form");
-  if (!form) return;
+function bindGapSlider() {
+  if (!gapSliderNode || !gapValueNode) return;
 
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const fd = new FormData(form);
+  const update = () => {
+    gapValueNode.textContent = Number(gapSliderNode.value).toFixed(2);
+  };
 
-    const payload = {
-      project_id: requireActiveProject(),
-      audio_path: (fd.get("audio_path") || "").trim(),
-      name: cleanOptional(fd.get("name")),
-      model: cleanOptional(fd.get("model")) || "small",
-      language: cleanOptional(fd.get("language")),
-    };
-
-    try {
-      const data = await requestJSON("/captions", "POST", payload);
-      showResponse("captions generated", data);
-    } catch (err) {
-      showResponse("captions failed", { error: String(err) });
-    }
-  });
+  gapSliderNode.addEventListener("input", update);
+  update();
 }
 
-function bindJobLookup() {
-  const form = document.getElementById("job-form");
-  const cancelBtn = document.getElementById("job-cancel");
-  if (!form || !cancelBtn) return;
-
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const fd = new FormData(form);
-    const projectId = requireActiveProject();
-    const jobId = (fd.get("job_id") || "").trim();
-
-    try {
-      const data = await requestJSON(`/jobs/${encodeURIComponent(jobId)}?project_id=${encodeURIComponent(projectId)}`, "GET");
-      showResponse("job status", data);
-    } catch (err) {
-      showResponse("job fetch failed", { error: String(err) });
-    }
-  });
-
-  cancelBtn.addEventListener("click", async () => {
-    const fd = new FormData(form);
-    const projectId = requireActiveProject();
-    const jobId = (fd.get("job_id") || "").trim();
-
-    try {
-      const data = await requestJSON(`/jobs/${encodeURIComponent(jobId)}/cancel?project_id=${encodeURIComponent(projectId)}`, "POST");
-      showResponse("job cancel requested", data);
-    } catch (err) {
-      showResponse("job cancel failed", { error: String(err) });
-    }
-  });
+function bindGenerate() {
+  if (!generateBtn) return;
+  generateBtn.addEventListener("click", handleGenerate);
 }
 
-function bindWorkers() {
-  const inviteBtn = document.getElementById("worker-invite-btn");
-  const refreshBtn = document.getElementById("worker-refresh-btn");
-  const commandArea = document.getElementById("worker-install-command");
-  if (!inviteBtn || !refreshBtn || !commandArea) return;
+function bindFolderCopy() {
+  const delegate = (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (!target.classList.contains("copy-folder-btn")) return;
 
-  inviteBtn.addEventListener("click", async () => {
-    try {
-      const data = await requestJSON("/workers/invite", "POST", { capabilities: ["synthesize"] });
-      commandArea.value = data.install_command;
-      showResponse("worker invite generated", data);
-    } catch (err) {
-      showResponse("worker invite failed", { error: String(err) });
-    }
-  });
+    const folderPath = target.dataset.folder || "";
+    if (!folderPath) return;
 
-  refreshBtn.addEventListener("click", async () => {
-    try {
-      const data = await requestJSON("/workers", "GET");
-      showResponse("workers", data);
-    } catch (err) {
-      showResponse("worker list failed", { error: String(err) });
-    }
-  });
+    navigator.clipboard
+      .writeText(folderPath)
+      .then(() => {
+        setGenerateStatus("Folder path copied to clipboard.");
+      })
+      .catch(() => {
+        setGenerateStatus("Could not copy folder path.", true);
+      });
+  };
+
+  if (outputListNode) outputListNode.addEventListener("click", delegate);
+  if (latestOutputLinksNode) latestOutputLinksNode.addEventListener("click", delegate);
 }
 
 bindProjectGateway();
-bindTranscribe();
-bindClip();
-bindSynthesize();
-bindCaptions();
-bindJobLookup();
-bindWorkers();
+bindAudioSelection();
+bindScriptFileLoader();
+bindGapSlider();
+bindGenerate();
+bindFolderCopy();
+setSelectedAudioFile(null);
