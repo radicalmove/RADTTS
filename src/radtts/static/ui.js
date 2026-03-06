@@ -40,6 +40,7 @@ const cancelBtn = document.getElementById("cancel-btn");
 const generateStatusNode = document.getElementById("generate-status");
 const progressWrapNode = document.getElementById("progress-wrap");
 const progressStageNode = document.getElementById("progress-stage");
+const progressComputeNode = document.getElementById("progress-compute");
 const progressEtaNode = document.getElementById("progress-eta");
 const progressPercentNode = document.getElementById("progress-percent");
 const progressFillNode = document.getElementById("progress-fill");
@@ -126,6 +127,9 @@ const state = {
   lastAnnouncedComputeMode: "idle",
   etaSeconds: null,
   etaUpdatedAtMs: null,
+  workerFallbackTimeoutSeconds: 0,
+  queuedRemoteSinceMs: null,
+  lastRunningStatusKey: null,
   scriptVersions: [],
   currentScriptVersionId: "",
   scriptSaveTimer: null,
@@ -229,11 +233,15 @@ function resetProgressUi() {
   state.lastAnnouncedComputeMode = "idle";
   state.etaSeconds = null;
   state.etaUpdatedAtMs = null;
+  state.workerFallbackTimeoutSeconds = 0;
+  state.queuedRemoteSinceMs = null;
+  state.lastRunningStatusKey = null;
 
   if (progressWrapNode) progressWrapNode.hidden = true;
   if (progressFillNode) progressFillNode.style.width = "0%";
   if (progressPercentNode) progressPercentNode.textContent = "0%";
   if (progressStageNode) progressStageNode.textContent = "Queued";
+  if (progressComputeNode) progressComputeNode.textContent = "Processing on: --";
   if (progressEtaNode) progressEtaNode.textContent = "Time left to process: --:--";
   if (progressDetailNode) progressDetailNode.textContent = "Preparing generation...";
 }
@@ -357,17 +365,75 @@ function detectComputeMode(job) {
   return "waiting_worker";
 }
 
-function computeModeLabel() {
+function computeModeProgressLabel() {
   if (state.computeMode === "worker") {
-    return "Compute: worker device (usually your local computer)";
+    return "Processing on: local worker device";
   }
   if (state.computeMode === "server") {
-    return "Compute: RADTTS server (Mac mini fallback)";
+    return "Processing on: RADTTS server (Mac mini)";
   }
   if (state.computeMode === "waiting_worker") {
-    return "Compute: waiting for a worker device";
+    return "Processing on: waiting for worker device";
   }
-  return "";
+  return "Processing on: --";
+}
+
+function fallbackWaitRemainingSeconds() {
+  if (
+    !state.expectedRemoteWorker ||
+    !state.workerFallbackTimeoutSeconds ||
+    !state.queuedRemoteSinceMs
+  ) {
+    return null;
+  }
+  const elapsed = (Date.now() - state.queuedRemoteSinceMs) / 1000;
+  return Math.max(0, state.workerFallbackTimeoutSeconds - elapsed);
+}
+
+function updateRunningStatusMessage() {
+  if (state.currentStatus !== "running") return;
+
+  if (state.computeMode === "worker") {
+    if (state.lastRunningStatusKey !== "worker") {
+      setGenerateStatus("Worker connected. Processing on your local worker device.");
+      state.lastRunningStatusKey = "worker";
+    }
+    return;
+  }
+
+  if (state.computeMode === "server") {
+    if (state.lastRunningStatusKey !== "server") {
+      if (state.expectedRemoteWorker) {
+        setGenerateStatus("No worker accepted this job. Processing on the RADTTS server (Mac mini).");
+      } else {
+        setGenerateStatus("Processing on the RADTTS server (Mac mini).");
+      }
+      state.lastRunningStatusKey = "server";
+    }
+    return;
+  }
+
+  if (state.computeMode === "waiting_worker") {
+    const remaining = fallbackWaitRemainingSeconds();
+    if (remaining === null) {
+      if (state.lastRunningStatusKey !== "waiting_worker") {
+        setGenerateStatus("Waiting for a worker device.");
+        state.lastRunningStatusKey = "waiting_worker";
+      }
+      return;
+    }
+
+    const remainingLabel = formatEta(remaining);
+    const waitingKey = `waiting_${Math.ceil(remaining)}`;
+    if (state.lastRunningStatusKey !== waitingKey) {
+      if (remaining > 0) {
+        setGenerateStatus(`Waiting for a worker device. Server fallback in ${remainingLabel}.`);
+      } else {
+        setGenerateStatus("No worker connected yet. Switching to server fallback...");
+      }
+      state.lastRunningStatusKey = waitingKey;
+    }
+  }
 }
 
 function formatIso(isoValue) {
@@ -1055,6 +1121,7 @@ function updateProgressVisuals(progressPercent, stage) {
   if (progressFillNode) progressFillNode.style.width = `${clamped}%`;
   if (progressPercentNode) progressPercentNode.textContent = `${Math.round(clamped)}%`;
   if (progressStageNode) progressStageNode.textContent = stageLabels[stage] || stage || "Processing";
+  if (progressComputeNode) progressComputeNode.textContent = computeModeProgressLabel();
 
   if (progressEtaNode) {
     if (state.currentStatus === "running") {
@@ -1068,14 +1135,7 @@ function updateProgressVisuals(progressPercent, stage) {
   }
 
   if (progressDetailNode) {
-    const compute = computeModeLabel();
-    if (compute && state.latestDetail) {
-      progressDetailNode.textContent = `${compute}. ${state.latestDetail}`;
-    } else if (compute) {
-      progressDetailNode.textContent = compute;
-    } else {
-      progressDetailNode.textContent = state.latestDetail || "Processing...";
-    }
+    progressDetailNode.textContent = state.latestDetail || "Processing...";
   }
 }
 
@@ -1106,6 +1166,7 @@ function progressAnimationTick() {
   }
 
   updateProgressVisuals(state.displayProgress, state.currentStage);
+  updateRunningStatusMessage();
 }
 
 function startProgressAnimator() {
@@ -1139,15 +1200,6 @@ function applyJobSnapshot(job) {
     state.computeMode = mode;
   }
 
-  if (state.computeMode !== state.lastAnnouncedComputeMode) {
-    if (state.computeMode === "worker") {
-      setGenerateStatus("Worker picked up this job. It is running on a worker device.");
-    } else if (state.computeMode === "server") {
-      setGenerateStatus("No worker accepted this job. It is now running on the RADTTS server (Mac mini).");
-    }
-    state.lastAnnouncedComputeMode = state.computeMode;
-  }
-
   if (latestLog) {
     state.latestDetail = latestLog;
   } else {
@@ -1168,6 +1220,8 @@ function applyJobSnapshot(job) {
   if (status === "cancelled") {
     state.latestDetail = "Cancellation complete.";
   }
+
+  updateRunningStatusMessage();
 }
 
 async function pollJob() {
@@ -1219,6 +1273,7 @@ async function pollJob() {
 function startPolling(jobId, options = {}) {
   const initialStage = options.initialStage || "queued";
   const initialDetail = options.initialDetail || "Job queued. Preparing model...";
+  const fallbackTimeoutSeconds = Number(options.fallbackTimeoutSeconds || 0);
   clearJobTracking();
   state.activeJobId = jobId;
   state.currentStatus = "running";
@@ -1231,8 +1286,12 @@ function startPolling(jobId, options = {}) {
   state.expectedRemoteWorker = Boolean(options.expectedRemoteWorker);
   state.computeMode = state.expectedRemoteWorker ? "waiting_worker" : "server";
   state.lastAnnouncedComputeMode = "idle";
+  state.workerFallbackTimeoutSeconds = fallbackTimeoutSeconds > 0 ? fallbackTimeoutSeconds : 0;
+  state.queuedRemoteSinceMs = state.expectedRemoteWorker ? Date.now() : null;
+  state.lastRunningStatusKey = null;
 
   updateProgressVisuals(0, initialStage);
+  updateRunningStatusMessage();
   startProgressAnimator();
   state.pollTimer = setInterval(pollJob, 2000);
   void pollJob();
@@ -1282,13 +1341,7 @@ async function handleGenerate() {
     const fallbackTimeout = Number(data.fallback_timeout_seconds || 0);
 
     if (workerMode) {
-      if (fallbackEnabled && fallbackTimeout > 0) {
-        setGenerateStatus(
-          `Waiting for a worker device. If none starts within ${fallbackTimeout}s, this server will run it automatically.`
-        );
-      } else {
-        setGenerateStatus("Waiting for a worker device to start processing.");
-      }
+      setGenerateStatus("Job queued. Waiting for a worker device...");
     } else {
       setGenerateStatus("Generation started on this server.");
     }
@@ -1300,6 +1353,7 @@ async function handleGenerate() {
         ? "Job queued for worker processing."
         : "Job queued. Preparing model...",
       expectedRemoteWorker: workerMode,
+      fallbackTimeoutSeconds: workerMode && fallbackEnabled ? fallbackTimeout : 0,
     });
   } catch (err) {
     setGenerateEnabled(true);

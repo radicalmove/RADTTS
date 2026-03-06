@@ -559,6 +559,11 @@ button:hover {
   font-size: 0.86rem;
   color: #444;
   gap: 10px;
+  flex-wrap: wrap;
+}
+
+#progress-compute {
+  font-weight: 600;
 }
 
 .progress-track {
