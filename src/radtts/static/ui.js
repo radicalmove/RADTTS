@@ -219,7 +219,7 @@ function resetProgressUi() {
   if (progressFillNode) progressFillNode.style.width = "0%";
   if (progressPercentNode) progressPercentNode.textContent = "0%";
   if (progressStageNode) progressStageNode.textContent = "Queued";
-  if (progressEtaNode) progressEtaNode.textContent = "ETA: --:--";
+  if (progressEtaNode) progressEtaNode.textContent = "Time left to process: --:--";
   if (progressDetailNode) progressDetailNode.textContent = "Preparing generation...";
 }
 
@@ -813,11 +813,11 @@ function updateProgressVisuals(progressPercent, stage) {
   if (progressEtaNode) {
     if (state.currentStatus === "running") {
       const eta = smoothEtaDisplay(estimateEtaSeconds(clamped, stage));
-      progressEtaNode.textContent = `ETA: ${formatEta(eta)}`;
+      progressEtaNode.textContent = `Time left to process: ${formatEta(eta)}`;
     } else {
       state.etaSeconds = null;
       state.etaUpdatedAtMs = null;
-      progressEtaNode.textContent = "ETA: --:--";
+      progressEtaNode.textContent = "Time left to process: --:--";
     }
   }
 
