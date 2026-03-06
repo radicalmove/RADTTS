@@ -17,6 +17,7 @@ from radtts.models import (
     CaptionRequest,
     ClipRequest,
     PauseConfig,
+    ProjectReferenceAudioUploadRequest,
     ProjectCreateRequest,
     SimpleSynthesisRequest,
     SynthesisRequest,
@@ -254,6 +255,36 @@ def list_projects(request: Request):
         projects.append({"project_id": visible_project_id})
 
     return {"projects": projects}
+
+
+@app.post("/projects/{project_id}/reference-audio")
+def upload_reference_audio(request: Request, project_id: str, req: ProjectReferenceAudioUploadRequest):
+    _require_auth(request)
+    scoped_project_id = _scope_project_id(request, project_id)
+
+    try:
+        paths = pipeline.project_manager.ensure_project(scoped_project_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+
+    try:
+        audio_bytes = base64.b64decode(req.audio_b64.encode("utf-8"), validate=True)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=422, detail="invalid audio_b64 payload") from exc
+
+    safe_name = _safe_filename(req.filename)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    output_path = paths.assets_reference_audio / f"reference-{stamp}-{safe_name}"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_bytes(audio_bytes)
+
+    artifact_url = f"/projects/{project_id}/artifact?path={quote(str(output_path), safe='')}"
+    return {
+        "project_id": project_id,
+        "filename": output_path.name,
+        "saved_path": str(output_path),
+        "artifact_url": artifact_url,
+    }
 
 
 @app.post("/transcribe")

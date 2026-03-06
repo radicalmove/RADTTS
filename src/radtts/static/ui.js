@@ -13,6 +13,9 @@ const audioDropzoneNode = document.getElementById("audio-dropzone");
 const audioFileInputNode = document.getElementById("reference-audio-file");
 const audioDropzoneTitleNode = document.getElementById("audio-dropzone-title");
 const audioFileNameNode = document.getElementById("audio-file-name");
+const recordAudioBtn = document.getElementById("record-audio-btn");
+const recordStatusNode = document.getElementById("record-status");
+const recordPreviewNode = document.getElementById("record-preview");
 
 const scriptTextNode = document.getElementById("script-text");
 const scriptFileInputNode = document.getElementById("script-file");
@@ -63,6 +66,10 @@ const state = {
   selectedAudioFile: null,
   activeJobId: null,
   pollTimer: null,
+  mediaRecorder: null,
+  recordingStream: null,
+  recordingChunks: [],
+  recordingPreviewUrl: null,
 };
 
 function cleanOptional(value) {
@@ -82,6 +89,12 @@ function setGenerateStatus(message, isError = false) {
   generateStatusNode.style.color = isError ? "#a73527" : "#444";
 }
 
+function setRecordStatus(message, isError = false) {
+  if (!recordStatusNode) return;
+  recordStatusNode.textContent = message || "";
+  recordStatusNode.style.color = isError ? "#a73527" : "#555";
+}
+
 function setWorkspaceVisible(visible) {
   if (projectGatewayNode) projectGatewayNode.hidden = visible;
   if (workspaceNode) workspaceNode.classList.toggle("workspace-hidden", !visible);
@@ -91,6 +104,12 @@ function setWorkspaceVisible(visible) {
 
 function setGenerateEnabled(enabled) {
   if (generateBtn) generateBtn.disabled = !enabled;
+}
+
+function updateRecordButtonState(isRecording) {
+  if (!recordAudioBtn) return;
+  recordAudioBtn.classList.toggle("is-recording", isRecording);
+  recordAudioBtn.textContent = isRecording ? "Stop Recording" : "Record Audio";
 }
 
 function clearPolling() {
@@ -106,6 +125,30 @@ function resetRunUi() {
   if (progressFillNode) progressFillNode.style.width = "0%";
   if (progressPercentNode) progressPercentNode.textContent = "0%";
   if (progressStageNode) progressStageNode.textContent = "Queued";
+}
+
+function getRecorderMimeType() {
+  if (typeof window.MediaRecorder === "undefined") return "";
+  const candidates = [
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/ogg;codecs=opus",
+    "audio/mp4",
+  ];
+  for (const value of candidates) {
+    if (window.MediaRecorder.isTypeSupported(value)) {
+      return value;
+    }
+  }
+  return "";
+}
+
+function extensionForMimeType(mimeType) {
+  const lowered = String(mimeType || "").toLowerCase();
+  if (lowered.includes("ogg")) return "ogg";
+  if (lowered.includes("mp4") || lowered.includes("mpeg")) return "m4a";
+  if (lowered.includes("wav")) return "wav";
+  return "webm";
 }
 
 function setProgress(progressPercent, stage) {
@@ -192,6 +235,22 @@ async function fileToBase64(file) {
   });
 }
 
+async function attachAudioFileToProject(file, originLabel = "Audio") {
+  try {
+    const projectId = requireActiveProject();
+    const audioB64 = await fileToBase64(file);
+    const payload = { filename: file.name, audio_b64: audioB64 };
+    const data = await requestJSON(
+      `/projects/${encodeURIComponent(projectId)}/reference-audio`,
+      "POST",
+      payload
+    );
+    setRecordStatus(`${originLabel} saved to project as ${data.filename}.`);
+  } catch (err) {
+    setRecordStatus(`${originLabel} selected, but could not be saved yet: ${String(err)}`, true);
+  }
+}
+
 function setSelectedAudioFile(file) {
   state.selectedAudioFile = file || null;
   if (!audioFileNameNode || !audioDropzoneTitleNode) return;
@@ -205,6 +264,35 @@ function setSelectedAudioFile(file) {
   audioDropzoneTitleNode.textContent = "Voice sample selected";
   const mb = (state.selectedAudioFile.size / (1024 * 1024)).toFixed(2);
   audioFileNameNode.textContent = `${state.selectedAudioFile.name} (${mb} MB)`;
+}
+
+function clearRecordingPreview() {
+  if (!recordPreviewNode) return;
+  recordPreviewNode.hidden = true;
+  recordPreviewNode.pause();
+  recordPreviewNode.removeAttribute("src");
+  recordPreviewNode.load();
+  if (state.recordingPreviewUrl) {
+    URL.revokeObjectURL(state.recordingPreviewUrl);
+    state.recordingPreviewUrl = null;
+  }
+}
+
+function stopRecordingStreamTracks() {
+  if (!state.recordingStream) return;
+  for (const track of state.recordingStream.getTracks()) {
+    track.stop();
+  }
+  state.recordingStream = null;
+}
+
+function stopRecordingIfActive() {
+  if (state.mediaRecorder && state.mediaRecorder.state !== "inactive") {
+    state.mediaRecorder.stop();
+  } else {
+    stopRecordingStreamTracks();
+    updateRecordButtonState(false);
+  }
 }
 
 async function readScriptFile(file) {
@@ -493,6 +581,7 @@ function bindProjectGateway() {
 
   if (switchProjectBtn) {
     switchProjectBtn.addEventListener("click", async () => {
+      stopRecordingIfActive();
       clearPolling();
       state.activeProjectId = null;
       if (activeProjectLabelNode) activeProjectLabelNode.textContent = "";
@@ -509,9 +598,12 @@ function bindProjectGateway() {
 
 function bindAudioSelection() {
   if (audioFileInputNode) {
-    audioFileInputNode.addEventListener("change", () => {
+    audioFileInputNode.addEventListener("change", async () => {
       const file = audioFileInputNode.files && audioFileInputNode.files[0];
       setSelectedAudioFile(file || null);
+      if (file) {
+        await attachAudioFileToProject(file, "Uploaded audio");
+      }
     });
   }
 
@@ -536,6 +628,93 @@ function bindAudioSelection() {
     const file = dt && dt.files && dt.files[0];
     if (!file) return;
     setSelectedAudioFile(file);
+    void attachAudioFileToProject(file, "Dropped audio");
+  });
+}
+
+function bindRecording() {
+  if (!recordAudioBtn) return;
+
+  updateRecordButtonState(false);
+
+  recordAudioBtn.addEventListener("click", async () => {
+    const recorder = state.mediaRecorder;
+    if (recorder && recorder.state !== "inactive") {
+      recorder.stop();
+      return;
+    }
+
+    if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== "function") {
+      setRecordStatus("Microphone recording is not supported in this browser.", true);
+      return;
+    }
+    if (typeof window.MediaRecorder === "undefined") {
+      setRecordStatus("MediaRecorder is not available in this browser.", true);
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      state.recordingStream = stream;
+      state.recordingChunks = [];
+
+      const mimeType = getRecorderMimeType();
+      const options = mimeType ? { mimeType } : undefined;
+      const mediaRecorder = options ? new MediaRecorder(stream, options) : new MediaRecorder(stream);
+      state.mediaRecorder = mediaRecorder;
+
+      mediaRecorder.addEventListener("dataavailable", (event) => {
+        if (event.data && event.data.size > 0) {
+          state.recordingChunks.push(event.data);
+        }
+      });
+
+      mediaRecorder.addEventListener("stop", async () => {
+        updateRecordButtonState(false);
+        stopRecordingStreamTracks();
+
+        if (!state.recordingChunks.length) {
+          setRecordStatus("No audio captured. Try recording again.", true);
+          state.mediaRecorder = null;
+          return;
+        }
+
+        const recordedMimeType = mediaRecorder.mimeType || "audio/webm";
+        const blob = new Blob(state.recordingChunks, { type: recordedMimeType });
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+        const extension = extensionForMimeType(recordedMimeType);
+        const filename = `recorded-voice-${stamp}.${extension}`;
+        const file = new File([blob], filename, { type: recordedMimeType });
+
+        clearRecordingPreview();
+        if (recordPreviewNode) {
+          state.recordingPreviewUrl = URL.createObjectURL(blob);
+          recordPreviewNode.src = state.recordingPreviewUrl;
+          recordPreviewNode.hidden = false;
+        }
+
+        setSelectedAudioFile(file);
+        await attachAudioFileToProject(file, "Recorded audio");
+        state.recordingChunks = [];
+        state.mediaRecorder = null;
+      });
+
+      mediaRecorder.addEventListener("error", () => {
+        updateRecordButtonState(false);
+        stopRecordingStreamTracks();
+        setRecordStatus("Recording failed. Please try again.", true);
+        state.mediaRecorder = null;
+      });
+
+      mediaRecorder.start();
+      updateRecordButtonState(true);
+      setRecordStatus("Recording... click Stop Recording when finished.");
+    } catch (err) {
+      stopRecordingStreamTracks();
+      updateRecordButtonState(false);
+      setRecordStatus(`Could not access microphone: ${String(err)}`, true);
+      state.mediaRecorder = null;
+    }
   });
 }
 
@@ -605,8 +784,10 @@ function bindFolderCopy() {
 
 bindProjectGateway();
 bindAudioSelection();
+bindRecording();
 bindScriptFileLoader();
 bindGapSlider();
 bindGenerate();
 bindFolderCopy();
 setSelectedAudioFile(null);
+setRecordStatus("Use Record Audio to capture a sample from your microphone.");

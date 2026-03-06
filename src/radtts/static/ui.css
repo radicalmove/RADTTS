@@ -280,6 +280,30 @@ body {
   font-size: 0.86rem;
 }
 
+.record-controls {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.record-btn {
+  min-width: 140px;
+}
+
+.record-btn.is-recording {
+  background: var(--uc-red);
+  border-color: var(--uc-red);
+  color: var(--uc-white);
+}
+
+#record-preview {
+  width: 100%;
+  max-width: 320px;
+  height: 34px;
+}
+
 .upload-line {
   display: flex;
   align-items: center;

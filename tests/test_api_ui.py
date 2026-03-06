@@ -64,3 +64,30 @@ def test_simple_synthesize_requires_voice_clone_authorization():
     finally:
         if project_root.exists():
             shutil.rmtree(project_root)
+
+
+def test_project_reference_audio_upload_persists_file():
+    client = TestClient(app)
+    project_id = f"ui-{uuid.uuid4().hex[:8]}"
+    project_root = Path("projects") / project_id
+
+    try:
+        created = client.post("/projects", json={"project_id": project_id})
+        assert created.status_code == 200
+
+        response = client.post(
+            f"/projects/{project_id}/reference-audio",
+            json={
+                "filename": "voice-sample.wav",
+                "audio_b64": "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw",
+            },
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["project_id"] == project_id
+        assert payload["filename"].startswith("reference-")
+        assert payload["saved_path"].endswith(".wav")
+        assert Path(payload["saved_path"]).exists()
+    finally:
+        if project_root.exists():
+            shutil.rmtree(project_root)

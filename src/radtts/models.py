@@ -155,6 +155,11 @@ class SimpleSynthesisRequest(BaseModel):
         return self
 
 
+class ProjectReferenceAudioUploadRequest(BaseModel):
+    filename: str = Field(min_length=1)
+    audio_b64: str = Field(min_length=32)
+
+
 class CaptionRequest(BaseModel):
     project_id: str = Field(min_length=2)
     audio_path: Path

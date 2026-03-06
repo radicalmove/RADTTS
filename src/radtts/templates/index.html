@@ -45,10 +45,10 @@
         <div class="gateway-grid">
           <form id="create-form" class="stack">
             <h3>Create New</h3>
-            <input name="project_id" placeholder="project id (e.g., crju150-m9)" required />
-            <input name="course" placeholder="course (optional)" />
-            <input name="module" placeholder="module (optional)" />
-            <input name="lesson" placeholder="lesson (optional)" />
+            <input name="project_id" placeholder="Project ID (e.g., crju150-m9)" required />
+            <input name="course" placeholder="Course (optional)" />
+            <input name="module" placeholder="Module (optional)" />
+            <input name="lesson" placeholder="Lesson (optional)" />
             <button type="submit">Create Project</button>
           </form>
 
@@ -83,6 +83,11 @@
               <small>WAV, MP3, M4A, FLAC, OGG</small>
             </label>
             <p id="audio-file-name" class="field-note">No file selected.</p>
+            <div class="record-controls">
+              <button id="record-audio-btn" class="record-btn" type="button">Record Audio</button>
+              <audio id="record-preview" controls hidden></audio>
+            </div>
+            <p id="record-status" class="field-note">Use Record Audio to capture a sample from your microphone.</p>
           </section>
 
           <section class="input-card">
