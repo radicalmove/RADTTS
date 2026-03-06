@@ -118,6 +118,11 @@ const state = {
   recordingChunks: [],
   recordingPreviewUrl: null,
   referenceSamples: [],
+  expectedRemoteWorker: false,
+  computeMode: "idle",
+  lastAnnouncedComputeMode: "idle",
+  etaSeconds: null,
+  etaUpdatedAtMs: null,
 };
 
 function cleanOptional(value) {
@@ -204,6 +209,11 @@ function resetProgressUi() {
   state.jobStartedAtMs = null;
   state.stageStartedAtMs = null;
   state.latestDetail = "Preparing generation...";
+  state.expectedRemoteWorker = false;
+  state.computeMode = "idle";
+  state.lastAnnouncedComputeMode = "idle";
+  state.etaSeconds = null;
+  state.etaUpdatedAtMs = null;
 
   if (progressWrapNode) progressWrapNode.hidden = true;
   if (progressFillNode) progressFillNode.style.width = "0%";
@@ -211,6 +221,128 @@ function resetProgressUi() {
   if (progressStageNode) progressStageNode.textContent = "Queued";
   if (progressEtaNode) progressEtaNode.textContent = "ETA: --:--";
   if (progressDetailNode) progressDetailNode.textContent = "Preparing generation...";
+}
+
+const etaStageOrder = [
+  "queued",
+  "queued_remote",
+  "fallback_local",
+  "worker_running",
+  "model_load",
+  "generation",
+  "stitching",
+  "captioning",
+  "completed",
+];
+
+function estimateEtaSeconds(progressPercent, stage) {
+  if (state.currentStatus !== "running") return null;
+  const nowMs = Date.now();
+  const clamped = Math.max(0, Math.min(100, progressPercent));
+
+  let progressBased = null;
+  if (state.jobStartedAtMs && clamped > 1 && clamped < 100) {
+    const elapsedSec = (nowMs - state.jobStartedAtMs) / 1000;
+    const candidate = elapsedSec * ((100 - clamped) / clamped);
+    if (Number.isFinite(candidate) && candidate >= 0) {
+      progressBased = candidate;
+    }
+  }
+
+  const stageExpected = stageExpectedSeconds[stage] ?? null;
+  let stageBased = null;
+  if (stageExpected && state.stageStartedAtMs) {
+    const elapsedStageSec = Math.max(0, (nowMs - state.stageStartedAtMs) / 1000);
+    let remainingStage = stageExpected - elapsedStageSec;
+    if (remainingStage < 0) {
+      // Keep ETA moving even if a stage runs longer than expected.
+      remainingStage = Math.min(240, 20 + Math.abs(remainingStage) * 0.6);
+    }
+
+    let remainingFuture = 0;
+    const idx = etaStageOrder.indexOf(stage);
+    if (idx >= 0) {
+      for (const nextStage of etaStageOrder.slice(idx + 1)) {
+        if (nextStage === "completed") continue;
+        remainingFuture += stageExpectedSeconds[nextStage] ?? 0;
+      }
+    }
+    stageBased = Math.max(0, remainingStage + remainingFuture);
+  }
+
+  if (progressBased === null) return stageBased;
+  if (stageBased === null) return progressBased;
+  // Prefer the more conservative estimate to avoid overly optimistic ETAs.
+  return Math.max(progressBased, stageBased * 0.75);
+}
+
+function smoothEtaDisplay(etaSeconds) {
+  if (!Number.isFinite(etaSeconds) || etaSeconds <= 0) {
+    state.etaSeconds = null;
+    state.etaUpdatedAtMs = null;
+    return null;
+  }
+
+  const nowMs = Date.now();
+  if (state.etaSeconds === null || state.etaUpdatedAtMs === null) {
+    state.etaSeconds = etaSeconds;
+    state.etaUpdatedAtMs = nowMs;
+    return state.etaSeconds;
+  }
+
+  const elapsedSec = Math.max(0, (nowMs - state.etaUpdatedAtMs) / 1000);
+  const decayed = Math.max(0, state.etaSeconds - elapsedSec);
+  const diff = Math.abs(etaSeconds - decayed);
+
+  if (diff <= 4) {
+    state.etaSeconds = decayed;
+  } else {
+    state.etaSeconds = (decayed * 0.65) + (etaSeconds * 0.35);
+  }
+  state.etaUpdatedAtMs = nowMs;
+  return state.etaSeconds;
+}
+
+function detectComputeMode(job) {
+  if (state.computeMode === "worker" || state.computeMode === "server") {
+    return state.computeMode;
+  }
+
+  const stage = String(job.stage || state.currentStage || "");
+  const logs = Array.isArray(job.logs) ? job.logs : [];
+  const joinedLogs = logs.join("\n").toLowerCase();
+
+  if (
+    stage === "worker_running" ||
+    joinedLogs.includes("worker ") && joinedLogs.includes("started processing")
+  ) {
+    return "worker";
+  }
+
+  if (
+    stage === "fallback_local" ||
+    joinedLogs.includes("switching to local server fallback")
+  ) {
+    return "server";
+  }
+
+  if (!state.expectedRemoteWorker) {
+    return "server";
+  }
+  return "waiting_worker";
+}
+
+function computeModeLabel() {
+  if (state.computeMode === "worker") {
+    return "Compute: worker device (usually your local computer)";
+  }
+  if (state.computeMode === "server") {
+    return "Compute: RADTTS server (Mac mini fallback)";
+  }
+  if (state.computeMode === "waiting_worker") {
+    return "Compute: waiting for a worker device";
+  }
+  return "";
 }
 
 function formatIso(isoValue) {
@@ -629,17 +761,25 @@ function updateProgressVisuals(progressPercent, stage) {
   if (progressStageNode) progressStageNode.textContent = stageLabels[stage] || stage || "Processing";
 
   if (progressEtaNode) {
-    if (state.currentStatus === "running" && state.jobStartedAtMs && clamped > 1 && clamped < 100) {
-      const elapsedSec = (Date.now() - state.jobStartedAtMs) / 1000;
-      const etaSeconds = elapsedSec * ((100 - clamped) / clamped);
-      progressEtaNode.textContent = `ETA: ${formatEta(etaSeconds)}`;
+    if (state.currentStatus === "running") {
+      const eta = smoothEtaDisplay(estimateEtaSeconds(clamped, stage));
+      progressEtaNode.textContent = `ETA: ${formatEta(eta)}`;
     } else {
+      state.etaSeconds = null;
+      state.etaUpdatedAtMs = null;
       progressEtaNode.textContent = "ETA: --:--";
     }
   }
 
   if (progressDetailNode) {
-    progressDetailNode.textContent = state.latestDetail || "Processing...";
+    const compute = computeModeLabel();
+    if (compute && state.latestDetail) {
+      progressDetailNode.textContent = `${compute}. ${state.latestDetail}`;
+    } else if (compute) {
+      progressDetailNode.textContent = compute;
+    } else {
+      progressDetailNode.textContent = state.latestDetail || "Processing...";
+    }
   }
 }
 
@@ -698,6 +838,20 @@ function applyJobSnapshot(job) {
 
   const logs = Array.isArray(job.logs) ? job.logs : [];
   const latestLog = logs.length ? stripLogTimestamp(logs[logs.length - 1]) : "";
+  const mode = detectComputeMode(job);
+  if (mode) {
+    state.computeMode = mode;
+  }
+
+  if (state.computeMode !== state.lastAnnouncedComputeMode) {
+    if (state.computeMode === "worker") {
+      setGenerateStatus("Worker picked up this job. It is running on a worker device.");
+    } else if (state.computeMode === "server") {
+      setGenerateStatus("No worker accepted this job. It is now running on the RADTTS server (Mac mini).");
+    }
+    state.lastAnnouncedComputeMode = state.computeMode;
+  }
+
   if (latestLog) {
     state.latestDetail = latestLog;
   } else {
@@ -778,6 +932,9 @@ function startPolling(jobId, options = {}) {
   state.actualProgress = 0;
   state.displayProgress = 0;
   state.latestDetail = initialDetail;
+  state.expectedRemoteWorker = Boolean(options.expectedRemoteWorker);
+  state.computeMode = state.expectedRemoteWorker ? "waiting_worker" : "server";
+  state.lastAnnouncedComputeMode = "idle";
 
   updateProgressVisuals(0, initialStage);
   startProgressAnimator();
@@ -844,6 +1001,7 @@ async function handleGenerate() {
       initialDetail: workerMode
         ? "Job queued for worker processing."
         : "Job queued. Preparing model...",
+      expectedRemoteWorker: workerMode,
     });
   } catch (err) {
     setGenerateEnabled(true);
