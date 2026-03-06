@@ -22,11 +22,14 @@
           <h1>RADTTS Studio</h1>
         </div>
       </div>
+      <div class="topbar-center">
+        <div id="active-project-chip" class="chip chip-project" hidden>
+          <span class="chip-label">Project</span>
+          <span id="active-project-label"></span>
+        </div>
+      </div>
       <div class="topbar-actions">
         <button id="switch-project-btn" class="topbar-btn" type="button" hidden>Projects</button>
-        <div id="active-project-chip" class="chip chip-project" hidden>
-          Project: <span id="active-project-label"></span>
-        </div>
         {% if current_user %}
         {% if current_user.is_admin and psychek_admin_url %}
         <a class="topbar-btn" href="{{ psychek_admin_url }}">Admin</a>
@@ -40,11 +43,11 @@
 
     <section id="project-gateway" class="gateway-wrap">
       <section class="gateway-card">
-        <h2>Choose Project</h2>
+        <h2>Choose project</h2>
         <p class="gateway-copy">Create a new project or open an existing one to continue.</p>
         <div class="gateway-grid">
           <form id="create-form" class="stack">
-            <h3>Create New</h3>
+            <h3>Create new</h3>
             <input name="project_id" placeholder="Project ID (e.g., crju150-m9)" required />
             <input name="course" placeholder="Course (optional)" />
             <input name="module" placeholder="Module (optional)" />
@@ -53,7 +56,7 @@
           </form>
 
           <form id="open-project-form" class="stack">
-            <h3>Open Existing</h3>
+            <h3>Open existing</h3>
             <select id="existing-project-select" required>
               <option value="">Loading projects...</option>
             </select>
@@ -69,14 +72,14 @@
 
     <main id="workspace" class="layout workspace-hidden simple-layout">
       <section class="panel workspace-intro">
-        <h2>Generate Audio</h2>
+        <h2>Generate audio</h2>
         <p>Upload a voice sample, add your script, choose simple settings, then generate audio and transcript files.</p>
       </section>
 
       <section class="panel input-grid-panel">
         <div class="input-grid">
           <section class="input-card">
-            <h3>1. Voice Sample</h3>
+            <h3>1. Voice sample</h3>
             <label id="audio-dropzone" class="dropzone" for="reference-audio-file">
               <input id="reference-audio-file" type="file" accept="audio/*" hidden />
               <span id="audio-dropzone-title">Drop audio here or click to choose</span>
@@ -84,14 +87,14 @@
             </label>
             <p id="audio-file-name" class="field-note">No file selected.</p>
             <div class="record-controls">
-              <button id="record-audio-btn" class="record-btn" type="button">Record Audio</button>
+              <button id="record-audio-btn" class="record-btn" type="button">Record audio</button>
               <audio id="record-preview" controls hidden></audio>
             </div>
-            <p id="record-status" class="field-note">Use Record Audio to capture a sample from your microphone.</p>
+            <p id="record-status" class="field-note">Use Record audio to capture a sample from your microphone.</p>
           </section>
 
           <section class="input-card">
-            <h3>2. Script Text</h3>
+            <h3>2. Script text</h3>
             <textarea id="script-text" placeholder="Paste your script text here..."></textarea>
             <label class="upload-line" for="script-file">
               <span>Load from file (.txt, .md, .rtf, .docx)</span>
@@ -103,7 +106,7 @@
       </section>
 
       <section class="panel options-panel">
-        <h3>3. Voice Settings</h3>
+        <h3>3. Voice settings</h3>
         <div class="options-grid">
           <label class="stack">
             <span>Quality</span>
@@ -122,13 +125,18 @@
           </label>
 
           <label class="checkline simple-check">
-            <input id="fillers-toggle" type="checkbox" />
-            Add occasional "um" and "ah"
+            <input id="ums-toggle" type="checkbox" />
+            Add occasional "um"
           </label>
 
           <label class="checkline simple-check">
-            <input id="transcript-toggle" type="checkbox" checked disabled />
-            Timestamped transcript (.srt) is always generated
+            <input id="ahs-toggle" type="checkbox" />
+            Add occasional "ah"
+          </label>
+
+          <label class="checkline simple-check">
+            <input id="transcript-toggle" type="checkbox" checked />
+            Generate timestamped transcript (.srt)
           </label>
 
           <div class="slider-block">
@@ -143,26 +151,27 @@
       </section>
 
       <section class="panel action-panel">
-        <button id="generate-btn" class="generate-btn" type="button">Generate Audio</button>
+        <div class="action-buttons">
+          <button id="generate-btn" class="generate-btn" type="button">Generate audio</button>
+          <button id="cancel-btn" class="cancel-btn" type="button" hidden>Cancel</button>
+        </div>
         <p id="generate-status" class="generate-status"></p>
 
         <div id="progress-wrap" class="progress-wrap" hidden>
           <div class="progress-meta">
             <span id="progress-stage">Queued</span>
+            <span id="progress-eta">ETA: --:--</span>
             <span id="progress-percent">0%</span>
           </div>
           <div class="progress-track">
             <div id="progress-fill" class="progress-fill"></div>
           </div>
+          <p id="progress-detail" class="progress-detail">Preparing generation...</p>
         </div>
       </section>
 
       <section class="panel output-panel">
-        <h2>Completed Versions</h2>
-        <div id="latest-output" class="latest-output" hidden>
-          <p class="latest-title">Latest output is ready.</p>
-          <div id="latest-output-links" class="latest-links"></div>
-        </div>
+        <h2>Completed versions</h2>
         <ul id="output-list" class="output-list"></ul>
       </section>
     </main>

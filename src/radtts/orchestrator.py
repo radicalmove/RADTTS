@@ -119,17 +119,19 @@ class PipelineOrchestrator:
                 self._update_job(store, job, status=JobStatus.CANCELLED, stage="cancelled", progress=0.0)
                 return job
 
-            def captioning():
-                if ensure_not_cancelled():
-                    raise JobCancelledError("cancelled before captioning")
-                return self.caption_service.generate(
-                    audio_path=output_path,
-                    output_dir=paths.captions,
-                    name=req.output_name,
-                    language=None,
-                )
+            captions = None
+            if req.generate_transcript:
+                def captioning():
+                    if ensure_not_cancelled():
+                        raise JobCancelledError("cancelled before captioning")
+                    return self.caption_service.generate(
+                        audio_path=output_path,
+                        output_dir=paths.captions,
+                        name=req.output_name,
+                        language=None,
+                    )
 
-            captions = run_stage("captioning", 0.85, captioning)
+                captions = run_stage("captioning", 0.85, captioning)
             output_duration = probe_duration_seconds(output_path)
 
             quality = self.quality_service.evaluate(
@@ -152,11 +154,15 @@ class PipelineOrchestrator:
                 seed=req.pause_config.seed,
                 project_id=req.project_id,
                 job_id=job.id,
-                captions={
-                    "txt": captions.txt_path,
-                    "srt": captions.srt_path,
-                    "vtt": captions.vtt_path,
-                },
+                captions=(
+                    {
+                        "txt": captions.txt_path,
+                        "srt": captions.srt_path,
+                        "vtt": captions.vtt_path,
+                    }
+                    if captions is not None
+                    else None
+                ),
                 quality=quality,
                 stage_durations_seconds=stage_durations,
             )
@@ -165,15 +171,17 @@ class PipelineOrchestrator:
             store.write_output_file(metadata_path, metadata)
             store.append_output(metadata)
 
-            job.outputs = {
+            job_outputs = {
                 "audio_path": str(output_path),
-                "captions": {
+                "metadata_path": str(metadata_path),
+            }
+            if captions is not None:
+                job_outputs["captions"] = {
                     "txt": str(captions.txt_path),
                     "srt": str(captions.srt_path),
                     "vtt": str(captions.vtt_path),
-                },
-                "metadata_path": str(metadata_path),
-            }
+                }
+            job.outputs = job_outputs
             self._update_job(
                 store,
                 job,

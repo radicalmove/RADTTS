@@ -97,6 +97,7 @@ class SynthesisRequest(BaseModel):
     pause_config: PauseConfig = Field(default_factory=PauseConfig)
     output_format: OutputFormat = OutputFormat.MP3
     output_name: str = "synthesized_output"
+    generate_transcript: bool = True
     voice_clone_authorized: bool = False
 
     @model_validator(mode="after")
@@ -142,6 +143,8 @@ class SimpleSynthesisRequest(BaseModel):
     reference_audio_filename: str = Field(min_length=1)
     output_name: str | None = None
     quality: Literal["normal", "high"] = "normal"
+    add_ums: bool = False
+    add_ahs: bool = False
     add_fillers: bool = False
     average_gap_seconds: float = Field(default=0.8, ge=0.15, le=2.5)
     generate_transcript: bool = True

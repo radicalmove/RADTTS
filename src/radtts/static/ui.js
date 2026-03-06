@@ -23,26 +23,28 @@ const scriptFileStatusNode = document.getElementById("script-file-status");
 
 const qualityNode = document.getElementById("quality-level");
 const outputFormatNode = document.getElementById("output-format");
-const fillersToggleNode = document.getElementById("fillers-toggle");
+const umsToggleNode = document.getElementById("ums-toggle");
+const ahsToggleNode = document.getElementById("ahs-toggle");
 const transcriptToggleNode = document.getElementById("transcript-toggle");
 const gapSliderNode = document.getElementById("gap-slider");
 const gapValueNode = document.getElementById("gap-value");
 
 const generateBtn = document.getElementById("generate-btn");
+const cancelBtn = document.getElementById("cancel-btn");
 const generateStatusNode = document.getElementById("generate-status");
 const progressWrapNode = document.getElementById("progress-wrap");
 const progressStageNode = document.getElementById("progress-stage");
+const progressEtaNode = document.getElementById("progress-eta");
 const progressPercentNode = document.getElementById("progress-percent");
 const progressFillNode = document.getElementById("progress-fill");
+const progressDetailNode = document.getElementById("progress-detail");
 
-const latestOutputNode = document.getElementById("latest-output");
-const latestOutputLinksNode = document.getElementById("latest-output-links");
 const outputListNode = document.getElementById("output-list");
 
 const stageLabels = {
   queued: "Queued",
   model_load: "Loading voice model",
-  generation: "Generating audio",
+  generation: "Generating speech",
   stitching: "Finalizing audio",
   captioning: "Creating transcript",
   completed: "Completed",
@@ -50,10 +52,10 @@ const stageLabels = {
   cancelled: "Cancelled",
 };
 
-const stageFallbackProgress = {
+const stageProgressFloors = {
   queued: 0,
-  model_load: 10,
-  generation: 45,
+  model_load: 5,
+  generation: 35,
   stitching: 72,
   captioning: 85,
   completed: 100,
@@ -61,11 +63,38 @@ const stageFallbackProgress = {
   cancelled: 0,
 };
 
+const stageProgressCaps = {
+  queued: 8,
+  model_load: 34,
+  generation: 79,
+  stitching: 84,
+  captioning: 98,
+  completed: 100,
+  failed: 100,
+  cancelled: 0,
+};
+
+const stageExpectedSeconds = {
+  queued: 6,
+  model_load: 60,
+  generation: 300,
+  stitching: 45,
+  captioning: 120,
+};
+
 const state = {
   activeProjectId: null,
   selectedAudioFile: null,
   activeJobId: null,
   pollTimer: null,
+  progressAnimator: null,
+  currentStatus: "idle",
+  currentStage: "queued",
+  jobStartedAtMs: null,
+  stageStartedAtMs: null,
+  actualProgress: 0,
+  displayProgress: 0,
+  latestDetail: "Preparing generation...",
   mediaRecorder: null,
   recordingStream: null,
   recordingChunks: [],
@@ -106,74 +135,64 @@ function setGenerateEnabled(enabled) {
   if (generateBtn) generateBtn.disabled = !enabled;
 }
 
+function setCancelVisible(visible) {
+  if (!cancelBtn) return;
+  cancelBtn.hidden = !visible;
+}
+
+function setCancelEnabled(enabled) {
+  if (!cancelBtn) return;
+  cancelBtn.disabled = !enabled;
+}
+
 function updateRecordButtonState(isRecording) {
   if (!recordAudioBtn) return;
   recordAudioBtn.classList.toggle("is-recording", isRecording);
-  recordAudioBtn.textContent = isRecording ? "Stop Recording" : "Record Audio";
+  recordAudioBtn.textContent = isRecording ? "Stop recording" : "Record audio";
 }
 
-function clearPolling() {
+function stopProgressAnimator() {
+  if (state.progressAnimator) {
+    clearInterval(state.progressAnimator);
+    state.progressAnimator = null;
+  }
+}
+
+function stopPolling() {
   if (state.pollTimer) {
     clearInterval(state.pollTimer);
     state.pollTimer = null;
   }
-  state.activeJobId = null;
 }
 
-function resetRunUi() {
+function clearJobTracking() {
+  stopPolling();
+  stopProgressAnimator();
+  state.activeJobId = null;
+  state.currentStatus = "idle";
+}
+
+function resetProgressUi() {
+  state.currentStage = "queued";
+  state.actualProgress = 0;
+  state.displayProgress = 0;
+  state.jobStartedAtMs = null;
+  state.stageStartedAtMs = null;
+  state.latestDetail = "Preparing generation...";
+
   if (progressWrapNode) progressWrapNode.hidden = true;
   if (progressFillNode) progressFillNode.style.width = "0%";
   if (progressPercentNode) progressPercentNode.textContent = "0%";
   if (progressStageNode) progressStageNode.textContent = "Queued";
+  if (progressEtaNode) progressEtaNode.textContent = "ETA: --:--";
+  if (progressDetailNode) progressDetailNode.textContent = "Preparing generation...";
 }
 
-function getRecorderMimeType() {
-  if (typeof window.MediaRecorder === "undefined") return "";
-  const candidates = [
-    "audio/webm;codecs=opus",
-    "audio/webm",
-    "audio/ogg;codecs=opus",
-    "audio/mp4",
-  ];
-  for (const value of candidates) {
-    if (window.MediaRecorder.isTypeSupported(value)) {
-      return value;
-    }
-  }
-  return "";
-}
-
-function extensionForMimeType(mimeType) {
-  const lowered = String(mimeType || "").toLowerCase();
-  if (lowered.includes("ogg")) return "ogg";
-  if (lowered.includes("mp4") || lowered.includes("mpeg")) return "m4a";
-  if (lowered.includes("wav")) return "wav";
-  return "webm";
-}
-
-function setProgress(progressPercent, stage) {
-  const clamped = Math.max(0, Math.min(100, progressPercent));
-  if (progressWrapNode) progressWrapNode.hidden = false;
-  if (progressFillNode) progressFillNode.style.width = `${clamped}%`;
-  if (progressPercentNode) progressPercentNode.textContent = `${clamped}%`;
-  if (progressStageNode) progressStageNode.textContent = stageLabels[stage] || stage || "Processing";
-}
-
-function applyActiveProject(projectId) {
-  state.activeProjectId = projectId;
-  if (activeProjectLabelNode) activeProjectLabelNode.textContent = projectId;
-  setWorkspaceVisible(true);
-  setGenerateStatus("");
-  resetRunUi();
-  clearPolling();
-  loadOutputs();
-}
-
-function requireActiveProject() {
-  if (!state.activeProjectId) {
-    throw new Error("Select or create a project first.");
-  }
-  return state.activeProjectId;
+function formatIso(isoValue) {
+  if (!isoValue) return "";
+  const date = new Date(isoValue);
+  if (Number.isNaN(date.getTime())) return String(isoValue);
+  return date.toLocaleString();
 }
 
 function escapeHtml(value) {
@@ -185,11 +204,20 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
-function formatIso(isoValue) {
-  if (!isoValue) return "";
-  const date = new Date(isoValue);
-  if (Number.isNaN(date.getTime())) return String(isoValue);
-  return date.toLocaleString();
+function stripLogTimestamp(line) {
+  return String(line || "").replace(/^\d{4}-\d{2}-\d{2}T[^\s]+\s+/, "").trim();
+}
+
+function formatEta(seconds) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "--:--";
+  const total = Math.max(0, Math.round(seconds));
+  const hours = Math.floor(total / 3600);
+  const mins = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (hours > 0) {
+    return `${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  }
+  return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
 }
 
 function updateOpenButtonState() {
@@ -235,20 +263,43 @@ async function fileToBase64(file) {
   });
 }
 
-async function attachAudioFileToProject(file, originLabel = "Audio") {
-  try {
-    const projectId = requireActiveProject();
-    const audioB64 = await fileToBase64(file);
-    const payload = { filename: file.name, audio_b64: audioB64 };
-    const data = await requestJSON(
-      `/projects/${encodeURIComponent(projectId)}/reference-audio`,
-      "POST",
-      payload
-    );
-    setRecordStatus(`${originLabel} saved to project as ${data.filename}.`);
-  } catch (err) {
-    setRecordStatus(`${originLabel} selected, but could not be saved yet: ${String(err)}`, true);
+async function readScriptFile(file) {
+  const lower = file.name.toLowerCase();
+
+  if (lower.endsWith(".docx") || lower.endsWith(".doc")) {
+    if (!window.mammoth || typeof window.mammoth.extractRawText !== "function") {
+      throw new Error("DOCX parser not available. Use .txt or .md instead.");
+    }
+    const buffer = await file.arrayBuffer();
+    const result = await window.mammoth.extractRawText({ arrayBuffer: buffer });
+    return result.value || "";
   }
+
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Failed to read text file"));
+    reader.readAsText(file);
+  });
+}
+
+function applyActiveProject(projectId) {
+  state.activeProjectId = projectId;
+  if (activeProjectLabelNode) activeProjectLabelNode.textContent = projectId;
+  setWorkspaceVisible(true);
+  setGenerateStatus("");
+  resetProgressUi();
+  clearJobTracking();
+  setGenerateEnabled(true);
+  setCancelVisible(false);
+  loadOutputs();
+}
+
+function requireActiveProject() {
+  if (!state.activeProjectId) {
+    throw new Error("Select or create a project first.");
+  }
+  return state.activeProjectId;
 }
 
 function setSelectedAudioFile(file) {
@@ -264,6 +315,22 @@ function setSelectedAudioFile(file) {
   audioDropzoneTitleNode.textContent = "Voice sample selected";
   const mb = (state.selectedAudioFile.size / (1024 * 1024)).toFixed(2);
   audioFileNameNode.textContent = `${state.selectedAudioFile.name} (${mb} MB)`;
+}
+
+async function attachAudioFileToProject(file, originLabel = "Audio") {
+  try {
+    const projectId = requireActiveProject();
+    const audioB64 = await fileToBase64(file);
+    const payload = { filename: file.name, audio_b64: audioB64 };
+    const data = await requestJSON(
+      `/projects/${encodeURIComponent(projectId)}/reference-audio`,
+      "POST",
+      payload
+    );
+    setRecordStatus(`${originLabel} saved to project as ${data.filename}.`);
+  } catch (err) {
+    setRecordStatus(`${originLabel} selected, but could not be saved yet: ${String(err)}`, true);
+  }
 }
 
 function clearRecordingPreview() {
@@ -295,24 +362,28 @@ function stopRecordingIfActive() {
   }
 }
 
-async function readScriptFile(file) {
-  const lower = file.name.toLowerCase();
-
-  if (lower.endsWith(".docx") || lower.endsWith(".doc")) {
-    if (!window.mammoth || typeof window.mammoth.extractRawText !== "function") {
-      throw new Error("DOCX parser not available. Use .txt or .md instead.");
+function getRecorderMimeType() {
+  if (typeof window.MediaRecorder === "undefined") return "";
+  const candidates = [
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/ogg;codecs=opus",
+    "audio/mp4",
+  ];
+  for (const value of candidates) {
+    if (window.MediaRecorder.isTypeSupported(value)) {
+      return value;
     }
-    const buffer = await file.arrayBuffer();
-    const result = await window.mammoth.extractRawText({ arrayBuffer: buffer });
-    return result.value || "";
   }
+  return "";
+}
 
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ""));
-    reader.onerror = () => reject(new Error("Failed to read text file"));
-    reader.readAsText(file);
-  });
+function extensionForMimeType(mimeType) {
+  const lowered = String(mimeType || "").toLowerCase();
+  if (lowered.includes("ogg")) return "ogg";
+  if (lowered.includes("mp4") || lowered.includes("mpeg")) return "m4a";
+  if (lowered.includes("wav")) return "wav";
+  return "webm";
 }
 
 async function loadProjects(preselectProjectId = null) {
@@ -347,6 +418,7 @@ async function loadProjects(preselectProjectId = null) {
     if (preselectProjectId) {
       existingProjectSelectNode.value = preselectProjectId;
     }
+
     setGatewayStatus("");
     updateOpenButtonState();
   } catch (err) {
@@ -356,39 +428,13 @@ async function loadProjects(preselectProjectId = null) {
   }
 }
 
-function renderLatestOutput(output) {
-  if (!latestOutputNode || !latestOutputLinksNode) return;
-  if (!output) {
-    latestOutputNode.hidden = true;
-    latestOutputLinksNode.innerHTML = "";
-    return;
-  }
-
-  const links = [];
-  if (output.audio_download_url) {
-    links.push(`<a href="${escapeHtml(output.audio_download_url)}" target="_blank" rel="noopener">Open audio</a>`);
-  }
-  if (output.srt_download_url) {
-    links.push(`<a href="${escapeHtml(output.srt_download_url)}" target="_blank" rel="noopener">Open transcript (.srt)</a>`);
-  }
-  if (output.folder_path) {
-    links.push(`<button class="copy-folder-btn" data-folder="${escapeHtml(output.folder_path)}" type="button">Copy folder path</button>`);
-  }
-
-  latestOutputLinksNode.innerHTML = links.join(" ");
-  latestOutputNode.hidden = false;
-}
-
 function renderOutputs(outputs) {
   if (!outputListNode) return;
 
   if (!outputs.length) {
     outputListNode.innerHTML = '<li class="output-item">No generated files in this project yet.</li>';
-    renderLatestOutput(null);
     return;
   }
-
-  renderLatestOutput(outputs[0]);
 
   const rows = outputs.map((item) => {
     const actions = [];
@@ -431,6 +477,105 @@ async function loadOutputs() {
   }
 }
 
+function updateProgressVisuals(progressPercent, stage) {
+  const clamped = Math.max(0, Math.min(100, progressPercent));
+  if (progressWrapNode) progressWrapNode.hidden = false;
+  if (progressFillNode) progressFillNode.style.width = `${clamped}%`;
+  if (progressPercentNode) progressPercentNode.textContent = `${Math.round(clamped)}%`;
+  if (progressStageNode) progressStageNode.textContent = stageLabels[stage] || stage || "Processing";
+
+  if (progressEtaNode) {
+    if (state.currentStatus === "running" && state.jobStartedAtMs && clamped > 1 && clamped < 100) {
+      const elapsedSec = (Date.now() - state.jobStartedAtMs) / 1000;
+      const etaSeconds = elapsedSec * ((100 - clamped) / clamped);
+      progressEtaNode.textContent = `ETA: ${formatEta(etaSeconds)}`;
+    } else {
+      progressEtaNode.textContent = "ETA: --:--";
+    }
+  }
+
+  if (progressDetailNode) {
+    progressDetailNode.textContent = state.latestDetail || "Processing...";
+  }
+}
+
+function calculateSyntheticTarget() {
+  if (state.currentStatus !== "running") {
+    return state.actualProgress;
+  }
+
+  const stage = state.currentStage || "queued";
+  const floor = stageProgressFloors[stage] ?? 0;
+  const cap = stageProgressCaps[stage] ?? state.actualProgress;
+  const expectedSec = stageExpectedSeconds[stage] ?? 90;
+  const stageStart = state.stageStartedAtMs || Date.now();
+  const elapsedSec = Math.max(0, (Date.now() - stageStart) / 1000);
+  const ratio = Math.min(1, elapsedSec / expectedSec);
+  const synthetic = floor + (cap - floor) * ratio;
+  return Math.max(state.actualProgress, synthetic);
+}
+
+function progressAnimationTick() {
+  const target = calculateSyntheticTarget();
+  const delta = target - state.displayProgress;
+
+  if (delta > 0) {
+    state.displayProgress += Math.min(delta, 0.6);
+  } else {
+    state.displayProgress = target;
+  }
+
+  updateProgressVisuals(state.displayProgress, state.currentStage);
+}
+
+function startProgressAnimator() {
+  stopProgressAnimator();
+  state.progressAnimator = setInterval(progressAnimationTick, 120);
+}
+
+function applyJobSnapshot(job) {
+  const status = String(job.status || "running");
+  const stage = String(job.stage || state.currentStage || "queued");
+
+  state.currentStatus = status;
+
+  if (!state.jobStartedAtMs) {
+    state.jobStartedAtMs = Date.now();
+  }
+
+  if (state.currentStage !== stage) {
+    state.currentStage = stage;
+    state.stageStartedAtMs = Date.now();
+  }
+
+  if (Number.isFinite(Number(job.progress))) {
+    state.actualProgress = Math.max(state.actualProgress, Number(job.progress) * 100);
+  }
+
+  const logs = Array.isArray(job.logs) ? job.logs : [];
+  const latestLog = logs.length ? stripLogTimestamp(logs[logs.length - 1]) : "";
+  if (latestLog) {
+    state.latestDetail = latestLog;
+  } else {
+    state.latestDetail = stageLabels[stage] || "Processing...";
+  }
+
+  if (status === "completed") {
+    state.actualProgress = 100;
+    state.displayProgress = Math.max(state.displayProgress, 100);
+    updateProgressVisuals(100, "completed");
+  }
+
+  if (status === "failed") {
+    state.actualProgress = Math.max(state.actualProgress, 100);
+    state.latestDetail = job.error ? `Error: ${job.error}` : "Generation failed.";
+  }
+
+  if (status === "cancelled") {
+    state.latestDetail = "Cancellation complete.";
+  }
+}
+
 async function pollJob() {
   if (!state.activeJobId || !state.activeProjectId) return;
 
@@ -440,50 +585,58 @@ async function pollJob() {
       "GET"
     );
 
-    const stage = String(data.stage || "queued");
-    const percentage = Number.isFinite(Number(data.progress))
-      ? Math.round(Number(data.progress) * 100)
-      : stageFallbackProgress[stage] || 0;
-
-    setProgress(percentage, stage);
+    applyJobSnapshot(data);
 
     if (data.status === "completed") {
-      clearPolling();
+      clearJobTracking();
       setGenerateEnabled(true);
-      setProgress(100, "completed");
+      setCancelVisible(false);
       setGenerateStatus("Audio generation complete.");
       await loadOutputs();
       return;
     }
 
     if (data.status === "failed") {
-      clearPolling();
+      clearJobTracking();
       setGenerateEnabled(true);
+      setCancelVisible(false);
       setGenerateStatus(`Generation failed: ${data.error || "Unknown error"}`, true);
       return;
     }
 
     if (data.status === "cancelled") {
-      clearPolling();
+      clearJobTracking();
       setGenerateEnabled(true);
-      setGenerateStatus("Generation was cancelled.", true);
+      setCancelVisible(false);
+      setGenerateStatus("Generation cancelled.", true);
+      return;
     }
   } catch (err) {
     if (String(err).includes("404")) {
       return;
     }
-    clearPolling();
+    clearJobTracking();
     setGenerateEnabled(true);
+    setCancelVisible(false);
     setGenerateStatus(`Progress check failed: ${String(err)}`, true);
   }
 }
 
 function startPolling(jobId) {
-  clearPolling();
+  clearJobTracking();
   state.activeJobId = jobId;
-  setProgress(0, "queued");
+  state.currentStatus = "running";
+  state.currentStage = "queued";
+  state.jobStartedAtMs = Date.now();
+  state.stageStartedAtMs = Date.now();
+  state.actualProgress = 0;
+  state.displayProgress = 0;
+  state.latestDetail = "Job queued. Preparing model...";
+
+  updateProgressVisuals(0, "queued");
+  startProgressAnimator();
   state.pollTimer = setInterval(pollJob, 2000);
-  pollJob();
+  void pollJob();
 }
 
 async function handleGenerate() {
@@ -499,8 +652,9 @@ async function handleGenerate() {
     }
 
     setGenerateEnabled(false);
-    setGenerateStatus("Uploading files and creating job...");
-    resetRunUi();
+    setCancelVisible(false);
+    setGenerateStatus("Uploading files and starting generation...");
+    resetProgressUi();
 
     const referenceAudioB64 = await fileToBase64(state.selectedAudioFile);
     const payload = {
@@ -509,7 +663,8 @@ async function handleGenerate() {
       reference_audio_b64: referenceAudioB64,
       reference_audio_filename: state.selectedAudioFile.name,
       quality: qualityNode?.value || "normal",
-      add_fillers: Boolean(fillersToggleNode?.checked),
+      add_ums: Boolean(umsToggleNode?.checked),
+      add_ahs: Boolean(ahsToggleNode?.checked),
       average_gap_seconds: Number(gapSliderNode?.value || 0.8),
       output_format: outputFormatNode?.value || "mp3",
       voice_clone_authorized: true,
@@ -517,11 +672,31 @@ async function handleGenerate() {
     };
 
     const data = await requestJSON("/synthesize/simple", "POST", payload);
-    setGenerateStatus("Generation job started.");
+    setGenerateStatus("Generation started.");
+    setCancelVisible(true);
+    setCancelEnabled(true);
     startPolling(data.job_id);
   } catch (err) {
     setGenerateEnabled(true);
+    setCancelVisible(false);
     setGenerateStatus(String(err), true);
+  }
+}
+
+async function handleCancel() {
+  if (!state.activeJobId || !state.activeProjectId) return;
+
+  try {
+    setCancelEnabled(false);
+    setGenerateStatus("Cancelling generation...");
+    state.latestDetail = "Cancellation requested. Waiting for current stage to stop...";
+    await requestJSON(
+      `/jobs/${encodeURIComponent(state.activeJobId)}/cancel?project_id=${encodeURIComponent(state.activeProjectId)}`,
+      "POST"
+    );
+  } catch (err) {
+    setCancelEnabled(true);
+    setGenerateStatus(`Cancel failed: ${String(err)}`, true);
   }
 }
 
@@ -582,12 +757,14 @@ function bindProjectGateway() {
   if (switchProjectBtn) {
     switchProjectBtn.addEventListener("click", async () => {
       stopRecordingIfActive();
-      clearPolling();
+      clearJobTracking();
       state.activeProjectId = null;
       if (activeProjectLabelNode) activeProjectLabelNode.textContent = "";
       setWorkspaceVisible(false);
+      setGenerateEnabled(true);
+      setCancelVisible(false);
       setGenerateStatus("");
-      resetRunUi();
+      resetProgressUi();
       await loadProjects();
     });
   }
@@ -708,7 +885,7 @@ function bindRecording() {
 
       mediaRecorder.start();
       updateRecordButtonState(true);
-      setRecordStatus("Recording... click Stop Recording when finished.");
+      setRecordStatus("Recording... click Stop recording when finished.");
     } catch (err) {
       stopRecordingStreamTracks();
       updateRecordButtonState(false);
@@ -755,12 +932,14 @@ function bindGapSlider() {
 }
 
 function bindGenerate() {
-  if (!generateBtn) return;
-  generateBtn.addEventListener("click", handleGenerate);
+  if (generateBtn) generateBtn.addEventListener("click", handleGenerate);
+  if (cancelBtn) cancelBtn.addEventListener("click", handleCancel);
 }
 
 function bindFolderCopy() {
-  const delegate = (event) => {
+  if (!outputListNode) return;
+
+  outputListNode.addEventListener("click", (event) => {
     const target = event.target;
     if (!(target instanceof HTMLElement)) return;
     if (!target.classList.contains("copy-folder-btn")) return;
@@ -776,10 +955,7 @@ function bindFolderCopy() {
       .catch(() => {
         setGenerateStatus("Could not copy folder path.", true);
       });
-  };
-
-  if (outputListNode) outputListNode.addEventListener("click", delegate);
-  if (latestOutputLinksNode) latestOutputLinksNode.addEventListener("click", delegate);
+  });
 }
 
 bindProjectGateway();
@@ -790,4 +966,6 @@ bindGapSlider();
 bindGenerate();
 bindFolderCopy();
 setSelectedAudioFile(null);
-setRecordStatus("Use Record Audio to capture a sample from your microphone.");
+setRecordStatus("Use Record audio to capture a sample from your microphone.");
+setCancelVisible(false);
+resetProgressUi();

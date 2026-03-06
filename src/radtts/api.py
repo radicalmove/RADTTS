@@ -168,16 +168,23 @@ def _build_output_name(text: str, output_name: str | None) -> str:
     return cleaned or f"generated-audio-{uuid.uuid4().hex[:8]}"
 
 
-def _inject_fillers(text: str) -> str:
+def _inject_fillers(text: str, *, add_ums: bool, add_ahs: bool) -> str:
+    filler_pool: list[str] = []
+    if add_ums:
+        filler_pool.append("Um,")
+    if add_ahs:
+        filler_pool.append("Ah,")
+    if not filler_pool:
+        return text
+
     parts = [part.strip() for part in re.split(r"(?<=[.!?])\s+", text.strip()) if part.strip()]
     if len(parts) <= 1:
         return text
     rng = random.Random(hashlib.sha256(text.encode("utf-8")).hexdigest())
-    fillers = ["Um,", "Ah,"]
     patched: list[str] = []
     for idx, sentence in enumerate(parts):
         if idx > 0 and len(sentence) > 20 and rng.random() < 0.22:
-            filler = fillers[0] if rng.random() < 0.5 else fillers[1]
+            filler = filler_pool[rng.randrange(len(filler_pool))]
             patched.append(f"{filler} {sentence}")
         else:
             patched.append(sentence)
@@ -330,7 +337,9 @@ def synthesize_simple(request: Request, req: SimpleSynthesisRequest):
     reference_path.write_bytes(reference_audio)
 
     model_id = MODEL_MODE_ALIASES["quality"] if req.quality == "high" else MODEL_MODE_ALIASES["fast"]
-    scripted_text = _inject_fillers(req.text) if req.add_fillers else req.text
+    add_ums = req.add_ums or req.add_fillers
+    add_ahs = req.add_ahs or req.add_fillers
+    scripted_text = _inject_fillers(req.text, add_ums=add_ums, add_ahs=add_ahs)
     min_gap = round(max(0.15, req.average_gap_seconds * 0.7), 3)
     max_gap = round(min(2.5, req.average_gap_seconds * 1.3), 3)
 
@@ -350,6 +359,7 @@ def synthesize_simple(request: Request, req: SimpleSynthesisRequest):
         ),
         output_format=req.output_format,
         output_name=output_name,
+        generate_transcript=req.generate_transcript,
         voice_clone_authorized=req.voice_clone_authorized,
     )
 
