@@ -321,6 +321,10 @@ body.modal-open {
   background: rgba(0, 0, 0, 0.52);
 }
 
+.modal-overlay[hidden] {
+  display: none !important;
+}
+
 .modal-card {
   width: min(920px, 100%);
   max-height: calc(100vh - 40px);
