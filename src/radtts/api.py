@@ -1691,18 +1691,18 @@ def worker_invite(request: Request, req: WorkerInviteRequest):
     install_command_windows = (
         "py -m pip install --upgrade pip; "
         "py -m pip install --index-url https://download.pytorch.org/whl/cpu "
-        '--extra-index-url https://pypi.org/simple "git+https://github.com/radicalmove/RADTTS.git#egg=radtts[asr,tts]"; '
+        '--extra-index-url https://pypi.org/simple "radtts[asr,tts] @ git+https://github.com/radicalmove/RADTTS.git"; '
         f"py -m radtts.worker_setup --server-url {base_url} --invite-token {token} --platform windows"
     )
     install_command_macos = (
         "python3 -m pip install --upgrade pip && "
-        'python3 -m pip install "git+https://github.com/radicalmove/RADTTS.git#egg=radtts[asr,tts]" && '
+        'python3 -m pip install "radtts[asr,tts] @ git+https://github.com/radicalmove/RADTTS.git" && '
         f"python3 -m radtts.worker_setup --server-url {base_url} --invite-token {token} --platform macos"
     )
     install_command_linux = (
         "python3 -m pip install --upgrade pip && "
         "python3 -m pip install --index-url https://download.pytorch.org/whl/cpu "
-        '--extra-index-url https://pypi.org/simple "git+https://github.com/radicalmove/RADTTS.git#egg=radtts[asr,tts]" && '
+        '--extra-index-url https://pypi.org/simple "radtts[asr,tts] @ git+https://github.com/radicalmove/RADTTS.git" && '
         f"python3 -m radtts.worker_setup --server-url {base_url} --invite-token {token} --platform linux"
     )
     windows_installer_url = f"{base_url}/workers/bootstrap/windows.cmd?invite_token={quote(token)}"
@@ -1755,7 +1755,7 @@ def worker_bootstrap_windows_cmd(
         "echo Installing RADTTS worker on this Windows device...\r\n"
         "py -m pip install --upgrade pip\r\n"
         "if errorlevel 1 goto :fail\r\n"
-        'py -m pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple "git+https://github.com/radicalmove/RADTTS.git#egg=radtts[asr,tts]"\r\n'
+        'py -m pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple "radtts[asr,tts] @ git+https://github.com/radicalmove/RADTTS.git"\r\n'
         "if errorlevel 1 goto :fail\r\n"
         f"py -m radtts.worker_setup --server-url {base_url} --invite-token {safe_token} --platform windows\r\n"
         "if errorlevel 1 goto :fail\r\n"
@@ -1788,7 +1788,7 @@ def worker_bootstrap_macos_command(
         "set -euo pipefail\n"
         "echo \"Installing RADTTS worker on this Mac...\"\n"
         "python3 -m pip install --upgrade pip\n"
-        "python3 -m pip install \"git+https://github.com/radicalmove/RADTTS.git#egg=radtts[asr,tts]\"\n"
+        "python3 -m pip install \"radtts[asr,tts] @ git+https://github.com/radicalmove/RADTTS.git\"\n"
         f"python3 -m radtts.worker_setup --server-url {base_url} --invite-token {safe_token} --platform macos\n"
         "echo \"\"\n"
         "echo \"Worker is installed and will start automatically in the background at login.\"\n"
