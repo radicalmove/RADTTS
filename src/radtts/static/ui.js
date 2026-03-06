@@ -295,11 +295,15 @@ function estimateEtaSeconds(progressPercent, stage) {
 
   if (progressBased === null) return stageBased;
   if (stageBased === null) return progressBased;
-  // Prefer the more conservative estimate to avoid overly optimistic ETAs.
-  return Math.max(progressBased, stageBased * 0.75);
+
+  // Keep queue/fallback stages conservative, but avoid large ETA jumps once actively processing.
+  if (["queued", "queued_remote", "fallback_local"].includes(stage)) {
+    return Math.max(progressBased, stageBased * 0.8);
+  }
+  return (progressBased * 0.82) + (stageBased * 0.18);
 }
 
-function smoothEtaDisplay(etaSeconds) {
+function smoothEtaDisplay(etaSeconds, stage) {
   if (!Number.isFinite(etaSeconds) || etaSeconds <= 0) {
     state.etaSeconds = null;
     state.etaUpdatedAtMs = null;
@@ -316,12 +320,23 @@ function smoothEtaDisplay(etaSeconds) {
   const elapsedSec = Math.max(0, (nowMs - state.etaUpdatedAtMs) / 1000);
   const decayed = Math.max(0, state.etaSeconds - elapsedSec);
   const diff = Math.abs(etaSeconds - decayed);
+  const isWaitingStage = stage === "queued_remote" || state.computeMode === "waiting_worker";
 
+  let nextEta;
   if (diff <= 4) {
-    state.etaSeconds = decayed;
+    nextEta = decayed;
   } else {
-    state.etaSeconds = (decayed * 0.65) + (etaSeconds * 0.35);
+    nextEta = (decayed * 0.7) + (etaSeconds * 0.3);
   }
+
+  // Prevent visible spikes near stage boundaries (for example around ~79%).
+  // Waiting-for-worker can still rise a bit as queue conditions change.
+  const maxStepUp = isWaitingStage ? 12 : 2;
+  if (nextEta > decayed + maxStepUp) {
+    nextEta = decayed + maxStepUp;
+  }
+
+  state.etaSeconds = Math.max(0, nextEta);
   state.etaUpdatedAtMs = nowMs;
   return state.etaSeconds;
 }
@@ -1125,7 +1140,7 @@ function updateProgressVisuals(progressPercent, stage) {
 
   if (progressEtaNode) {
     if (state.currentStatus === "running") {
-      const eta = smoothEtaDisplay(estimateEtaSeconds(clamped, stage));
+      const eta = smoothEtaDisplay(estimateEtaSeconds(clamped, stage), stage);
       progressEtaNode.textContent = `Time left to process: ${formatEta(eta)}`;
     } else {
       state.etaSeconds = null;
