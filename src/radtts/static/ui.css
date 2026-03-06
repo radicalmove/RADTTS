@@ -242,6 +242,75 @@ body {
   color: #444;
 }
 
+.worker-status-row {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.worker-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid var(--uc-grey-300);
+  padding: 4px 10px;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.worker-pill-unknown {
+  background: #f0f0f0;
+  color: #444;
+}
+
+.worker-pill-online {
+  background: #e8f8ed;
+  color: #156b2f;
+  border-color: #78c792;
+}
+
+.worker-pill-offline {
+  background: #fff3f2;
+  color: #9a2f22;
+  border-color: #e3a49d;
+}
+
+.worker-status-detail {
+  color: #555;
+  font-size: 0.86rem;
+}
+
+.worker-mini-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--uc-grey-300);
+  border-radius: var(--uc-radius-sm);
+  background: var(--uc-white);
+  color: var(--uc-black);
+  text-decoration: none;
+  padding: 5px 9px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.worker-mini-btn:hover {
+  background: var(--uc-grey-600);
+  color: var(--uc-white);
+  border-color: var(--uc-grey-600);
+}
+
+.worker-setup-links {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .stack {
   display: flex;
   flex-direction: column;
@@ -488,6 +557,15 @@ button:hover {
   background: var(--uc-grey-600);
   color: var(--uc-white);
   border-color: var(--uc-grey-600);
+}
+
+button.worker-mini-btn {
+  border-width: 1px;
+  border-radius: var(--uc-radius-sm);
+  padding: 5px 9px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1.1;
 }
 
 .checkline {

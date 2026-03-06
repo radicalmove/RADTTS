@@ -53,6 +53,70 @@ def test_project_outputs_endpoint_returns_empty_list_for_new_project():
             shutil.rmtree(project_root)
 
 
+def test_worker_invite_includes_cross_platform_setup_commands():
+    client = TestClient(app)
+    response = client.post("/workers/invite", json={"capabilities": ["synthesize"]})
+    assert response.status_code == 200
+    payload = response.json()
+    token = payload["invite_token"]
+
+    assert "install_command" in payload
+    assert "radtts-worker-install" in payload["install_command"]
+    assert token in payload["install_command"]
+
+    assert "install_command_windows" in payload
+    assert "py -m radtts.worker_setup" in payload["install_command_windows"]
+    assert token in payload["install_command_windows"]
+
+    assert "install_command_macos" in payload
+    assert "python3 -m radtts.worker_setup" in payload["install_command_macos"]
+    assert token in payload["install_command_macos"]
+
+    assert "install_command_linux" in payload
+    assert "python3 -m radtts.worker_setup" in payload["install_command_linux"]
+    assert token in payload["install_command_linux"]
+    assert payload["windows_installer_url"].startswith("http://testserver/workers/bootstrap/windows.cmd?")
+    assert payload["macos_installer_url"].startswith("http://testserver/workers/bootstrap/macos.command?")
+
+
+def test_workers_status_endpoint_returns_counts():
+    client = TestClient(app)
+    response = client.get("/workers/status")
+    assert response.status_code == 200
+    payload = response.json()
+    assert "worker_total_count" in payload
+    assert "worker_online_count" in payload
+    assert "worker_online_window_seconds" in payload
+
+
+def test_windows_worker_bootstrap_cmd_download():
+    client = TestClient(app)
+    invite = client.post("/workers/invite", json={"capabilities": ["synthesize"]})
+    assert invite.status_code == 200
+    token = invite.json()["invite_token"]
+
+    download = client.get(f"/workers/bootstrap/windows.cmd?invite_token={token}")
+    assert download.status_code == 200
+    assert "radtts.worker_setup" in download.text
+    assert token in download.text
+    disposition = download.headers.get("content-disposition", "")
+    assert "radtts-worker-setup.cmd" in disposition
+
+
+def test_macos_worker_bootstrap_command_download():
+    client = TestClient(app)
+    invite = client.post("/workers/invite", json={"capabilities": ["synthesize"]})
+    assert invite.status_code == 200
+    token = invite.json()["invite_token"]
+
+    download = client.get(f"/workers/bootstrap/macos.command?invite_token={token}")
+    assert download.status_code == 200
+    assert "radtts.worker_setup" in download.text
+    assert token in download.text
+    disposition = download.headers.get("content-disposition", "")
+    assert "radtts-worker-setup.command" in disposition
+
+
 def test_simple_synthesize_requires_voice_clone_authorization():
     client = TestClient(app)
     project_id = f"ui-{uuid.uuid4().hex[:8]}"

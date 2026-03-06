@@ -67,6 +67,7 @@ all = [
 radtts = "radtts.cli:main"
 radtts-api = "radtts.api:main"
 radtts-worker = "radtts.worker_client:main"
+radtts-worker-install = "radtts.worker_setup:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

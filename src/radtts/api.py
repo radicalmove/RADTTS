@@ -43,8 +43,8 @@ from radtts.worker_manager import WorkerManager
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 try:
-    from fastapi import FastAPI, HTTPException, Request
-    from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+    from fastapi import FastAPI, HTTPException, Query, Request
+    from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
     from starlette.middleware.sessions import SessionMiddleware
     from fastapi.staticfiles import StaticFiles
     from fastapi.templating import Jinja2Templates
@@ -1676,19 +1676,46 @@ def list_workers(request: Request):
     return {"workers": [worker.model_dump(mode="json") for worker in workers]}
 
 
+@app.get("/workers/status")
+def workers_status(request: Request):
+    _require_auth(request)
+    return _worker_availability_snapshot()
+
+
 @app.post("/workers/invite", response_model=WorkerInviteResponse)
 def worker_invite(request: Request, req: WorkerInviteRequest):
     _require_auth(request)
     token = worker_manager.issue_invite_token(req.capabilities)
-    install_command = (
-        "radtts-worker "
-        f"--server-url {str(request.base_url).rstrip('/')} "
-        f"--invite-token {token}"
+    base_url = str(request.base_url).rstrip("/")
+    install_command = f"radtts-worker-install --server-url {base_url} --invite-token {token}"
+    install_command_windows = (
+        "py -m pip install --upgrade pip; "
+        "py -m pip install --index-url https://download.pytorch.org/whl/cpu "
+        '--extra-index-url https://pypi.org/simple "git+https://github.com/radicalmove/RADTTS.git#egg=radtts[asr,tts]"; '
+        f"py -m radtts.worker_setup --server-url {base_url} --invite-token {token} --platform windows"
     )
+    install_command_macos = (
+        "python3 -m pip install --upgrade pip && "
+        'python3 -m pip install "git+https://github.com/radicalmove/RADTTS.git#egg=radtts[asr,tts]" && '
+        f"python3 -m radtts.worker_setup --server-url {base_url} --invite-token {token} --platform macos"
+    )
+    install_command_linux = (
+        "python3 -m pip install --upgrade pip && "
+        "python3 -m pip install --index-url https://download.pytorch.org/whl/cpu "
+        '--extra-index-url https://pypi.org/simple "git+https://github.com/radicalmove/RADTTS.git#egg=radtts[asr,tts]" && '
+        f"python3 -m radtts.worker_setup --server-url {base_url} --invite-token {token} --platform linux"
+    )
+    windows_installer_url = f"{base_url}/workers/bootstrap/windows.cmd?invite_token={quote(token)}"
+    macos_installer_url = f"{base_url}/workers/bootstrap/macos.command?invite_token={quote(token)}"
     return WorkerInviteResponse(
         invite_token=token,
         expires_in_seconds=WORKER_INVITE_MAX_AGE_SECONDS,
         install_command=install_command,
+        install_command_windows=install_command_windows,
+        install_command_macos=install_command_macos,
+        install_command_linux=install_command_linux,
+        windows_installer_url=windows_installer_url,
+        macos_installer_url=macos_installer_url,
     )
 
 
@@ -1713,6 +1740,64 @@ def worker_complete(job_id: str, req: WorkerJobCompleteRequest):
 def worker_fail(job_id: str, req: WorkerJobFailRequest):
     worker_manager.fail_job(job_id, req)
     return {"job_id": job_id, "status": "failed"}
+
+
+@app.get("/workers/bootstrap/windows.cmd")
+def worker_bootstrap_windows_cmd(
+    request: Request,
+    invite_token: str = Query(min_length=10),
+):
+    base_url = str(request.base_url).rstrip("/")
+    safe_token = invite_token.replace('"', "")
+    script = (
+        "@echo off\r\n"
+        "setlocal\r\n"
+        "echo Installing RADTTS worker on this Windows device...\r\n"
+        "py -m pip install --upgrade pip\r\n"
+        "if errorlevel 1 goto :fail\r\n"
+        'py -m pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple "git+https://github.com/radicalmove/RADTTS.git#egg=radtts[asr,tts]"\r\n'
+        "if errorlevel 1 goto :fail\r\n"
+        f"py -m radtts.worker_setup --server-url {base_url} --invite-token {safe_token} --platform windows\r\n"
+        "if errorlevel 1 goto :fail\r\n"
+        "echo.\r\n"
+        "echo Worker is installed and will start automatically in the background at login.\r\n"
+        "echo You can close this window.\r\n"
+        "pause\r\n"
+        "exit /b 0\r\n"
+        "\r\n"
+        ":fail\r\n"
+        "echo.\r\n"
+        "echo Setup failed. Please send this screenshot to support.\r\n"
+        "pause\r\n"
+        "exit /b 1\r\n"
+    )
+    response = PlainTextResponse(script, media_type="text/plain")
+    response.headers["Content-Disposition"] = 'attachment; filename="radtts-worker-setup.cmd"'
+    return response
+
+
+@app.get("/workers/bootstrap/macos.command")
+def worker_bootstrap_macos_command(
+    request: Request,
+    invite_token: str = Query(min_length=10),
+):
+    base_url = str(request.base_url).rstrip("/")
+    safe_token = invite_token.replace('"', "")
+    script = (
+        "#!/bin/bash\n"
+        "set -euo pipefail\n"
+        "echo \"Installing RADTTS worker on this Mac...\"\n"
+        "python3 -m pip install --upgrade pip\n"
+        "python3 -m pip install \"git+https://github.com/radicalmove/RADTTS.git#egg=radtts[asr,tts]\"\n"
+        f"python3 -m radtts.worker_setup --server-url {base_url} --invite-token {safe_token} --platform macos\n"
+        "echo \"\"\n"
+        "echo \"Worker is installed and will start automatically in the background at login.\"\n"
+        "echo \"You can close this window.\"\n"
+        "read -p \"Press Enter to close...\" _\n"
+    )
+    response = PlainTextResponse(script, media_type="text/plain")
+    response.headers["Content-Disposition"] = 'attachment; filename="radtts-worker-setup.command"'
+    return response
 
 
 def main() -> None:

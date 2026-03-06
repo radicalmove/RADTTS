@@ -280,6 +280,11 @@ class WorkerInviteResponse(BaseModel):
     invite_token: str
     expires_in_seconds: int
     install_command: str
+    install_command_windows: str | None = None
+    install_command_macos: str | None = None
+    install_command_linux: str | None = None
+    windows_installer_url: str | None = None
+    macos_installer_url: str | None = None
 
 
 class WorkerInviteRequest(BaseModel):

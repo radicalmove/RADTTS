@@ -103,11 +103,36 @@ Use the server as control plane and run heavy synthesis on stronger worker machi
 
 Worker flow:
 1. In web UI, generate worker invite (`Workers` panel).
-2. On worker machine, install deps and run:
+2. On worker machine, install deps and run one-time setup:
    ```bash
-   radtts-worker --server-url http://<server-host>:8080 --invite-token <token>
+   radtts-worker-install --server-url http://<server-host>:8080 --invite-token <token>
    ```
+   This registers the worker and installs background auto-start for your OS:
+   - Linux: `systemd --user` service
+   - macOS: `LaunchAgent`
+   - Windows: Scheduled Task (runs at user logon)
 3. Submit synthesis jobs in `Worker execution` mode from the UI.
+
+Windows colleague quick setup (single command, mostly automated):
+```powershell
+py -m pip install --upgrade pip; py -m pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple "git+https://github.com/radicalmove/RADTTS.git#egg=radtts[asr,tts]"; py -m radtts.worker_setup --server-url https://<server-host> --invite-token <token> --platform windows
+```
+
+No-terminal installer downloads (run once, then background autostart):
+- Windows: `GET /workers/bootstrap/windows.cmd?invite_token=...` (download + run)
+- macOS: `GET /workers/bootstrap/macos.command?invite_token=...` (download + run)
+
+The invite API now returns OS-specific setup links and commands:
+- `install_command_windows`
+- `install_command_macos`
+- `install_command_linux`
+- `windows_installer_url`
+- `macos_installer_url`
+
+Manual worker start (if needed):
+```bash
+radtts-worker --server-url http://<server-host>:8080
+```
 
 Key worker endpoints:
 - `POST /workers/invite`

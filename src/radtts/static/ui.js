@@ -4,6 +4,14 @@ const switchProjectBtn = document.getElementById("switch-project-btn");
 const shareProjectBtn = document.getElementById("share-project-btn");
 const activeProjectChip = document.getElementById("active-project-chip");
 const activeProjectLabelNode = document.getElementById("active-project-label");
+const workerStatusPillNode = document.getElementById("worker-status-pill");
+const workerStatusDetailNode = document.getElementById("worker-status-detail");
+const workerRefreshBtn = document.getElementById("worker-refresh-btn");
+const workerSetupBtn = document.getElementById("worker-setup-btn");
+const workerSetupLinksNode = document.getElementById("worker-setup-links");
+const workerSetupWindowsLinkNode = document.getElementById("worker-setup-windows-link");
+const workerSetupMacosLinkNode = document.getElementById("worker-setup-macos-link");
+const workerCopyLinuxBtn = document.getElementById("worker-copy-linux-btn");
 
 const existingProjectSelectNode = document.getElementById("existing-project-select");
 const refreshProjectsBtn = document.getElementById("refresh-projects-btn");
@@ -139,6 +147,10 @@ const state = {
   scriptSaveInFlight: false,
   pendingScriptSaveSource: null,
   suppressScriptAutosave: false,
+  workerStatusPollTimer: null,
+  workerSetupLinuxCommand: "",
+  workerSetupWindowsUrl: "",
+  workerSetupMacosUrl: "",
 };
 
 function cleanOptional(value) {
@@ -174,6 +186,62 @@ function setScriptSaveStatus(message, isError = false) {
   if (!scriptSaveStatusNode) return;
   scriptSaveStatusNode.textContent = message || "";
   scriptSaveStatusNode.style.color = isError ? "#a73527" : "#555";
+}
+
+function setWorkerStatusUi(mode, detailText) {
+  if (workerStatusPillNode) {
+    workerStatusPillNode.classList.remove("worker-pill-online", "worker-pill-offline", "worker-pill-unknown");
+    if (mode === "online") {
+      workerStatusPillNode.classList.add("worker-pill-online");
+      workerStatusPillNode.textContent = "Worker status: connected";
+    } else if (mode === "offline") {
+      workerStatusPillNode.classList.add("worker-pill-offline");
+      workerStatusPillNode.textContent = "Worker status: not connected";
+    } else {
+      workerStatusPillNode.classList.add("worker-pill-unknown");
+      workerStatusPillNode.textContent = "Worker status: checking";
+    }
+  }
+  if (workerStatusDetailNode) {
+    workerStatusDetailNode.textContent = detailText || "";
+  }
+}
+
+function hideWorkerSetupLinks() {
+  if (workerSetupLinksNode) {
+    workerSetupLinksNode.hidden = true;
+  }
+}
+
+function clearWorkerSetupLinks() {
+  state.workerSetupLinuxCommand = "";
+  state.workerSetupWindowsUrl = "";
+  state.workerSetupMacosUrl = "";
+  if (workerSetupWindowsLinkNode) workerSetupWindowsLinkNode.href = "#";
+  if (workerSetupMacosLinkNode) workerSetupMacosLinkNode.href = "#";
+  hideWorkerSetupLinks();
+}
+
+function resetWorkerStatusUi() {
+  setWorkerStatusUi("unknown", "Select a project to check worker availability.");
+  if (workerSetupBtn) workerSetupBtn.hidden = true;
+  clearWorkerSetupLinks();
+}
+
+function stopWorkerStatusPolling() {
+  if (state.workerStatusPollTimer) {
+    clearInterval(state.workerStatusPollTimer);
+    state.workerStatusPollTimer = null;
+  }
+}
+
+function startWorkerStatusPolling() {
+  stopWorkerStatusPolling();
+  void refreshWorkerStatus({ announceErrors: false });
+  state.workerStatusPollTimer = setInterval(() => {
+    if (!state.activeProjectRef) return;
+    void refreshWorkerStatus({ announceErrors: false });
+  }, 25000);
 }
 
 function setWorkspaceVisible(visible) {
@@ -811,6 +879,80 @@ async function requestJSON(url, method, payload) {
   return data;
 }
 
+function describeWorkerAvailability(online, total) {
+  if (online > 0) {
+    if (total > 0) {
+      return `${online}/${total} worker device${total === 1 ? "" : "s"} online.`;
+    }
+    return `${online} worker device${online === 1 ? "" : "s"} online.`;
+  }
+  if (total > 0) {
+    return `0/${total} workers online. Jobs will use server fallback when needed.`;
+  }
+  return "No worker app connected yet. Jobs will use server fallback when needed.";
+}
+
+async function refreshWorkerStatus({ announceErrors = false } = {}) {
+  if (!state.activeProjectRef) {
+    resetWorkerStatusUi();
+    return;
+  }
+  if (workerRefreshBtn) workerRefreshBtn.disabled = true;
+  try {
+    const data = await requestJSON("/workers/status", "GET");
+    const online = Math.max(0, Number(data.worker_online_count || 0));
+    const total = Math.max(0, Number(data.worker_total_count || 0));
+    state.workerOnlineCount = online;
+    state.workerTotalCount = total;
+    state.workerOnlineWindowSeconds = Math.max(0, Number(data.worker_online_window_seconds || 0));
+
+    const detail = describeWorkerAvailability(online, total);
+    if (online > 0) {
+      setWorkerStatusUi("online", detail);
+      if (workerSetupBtn) workerSetupBtn.hidden = true;
+      hideWorkerSetupLinks();
+    } else {
+      setWorkerStatusUi("offline", detail);
+      if (workerSetupBtn) workerSetupBtn.hidden = false;
+    }
+  } catch (err) {
+    setWorkerStatusUi("unknown", "Could not check worker status.");
+    if (workerSetupBtn) workerSetupBtn.hidden = false;
+    if (announceErrors) {
+      setGenerateStatus(`Could not check worker status: ${String(err)}`, true);
+    }
+  } finally {
+    if (workerRefreshBtn) workerRefreshBtn.disabled = false;
+  }
+}
+
+async function ensureWorkerSetupLinks() {
+  if (state.workerSetupWindowsUrl && state.workerSetupMacosUrl && state.workerSetupLinuxCommand) {
+    if (workerSetupLinksNode) workerSetupLinksNode.hidden = false;
+    return;
+  }
+  if (workerSetupBtn) workerSetupBtn.disabled = true;
+  try {
+    const data = await requestJSON("/workers/invite", "POST", { capabilities: ["synthesize"] });
+    state.workerSetupWindowsUrl = String(data.windows_installer_url || "").trim();
+    state.workerSetupMacosUrl = String(data.macos_installer_url || "").trim();
+    state.workerSetupLinuxCommand = String(data.install_command_linux || data.install_command || "").trim();
+
+    if (workerSetupWindowsLinkNode && state.workerSetupWindowsUrl) {
+      workerSetupWindowsLinkNode.href = state.workerSetupWindowsUrl;
+    }
+    if (workerSetupMacosLinkNode && state.workerSetupMacosUrl) {
+      workerSetupMacosLinkNode.href = state.workerSetupMacosUrl;
+    }
+    if (workerSetupLinksNode) workerSetupLinksNode.hidden = false;
+    setGenerateStatus("Worker setup links are ready. Run the installer once on each colleague device.");
+  } catch (err) {
+    setGenerateStatus(`Could not generate worker setup links: ${String(err)}`, true);
+  } finally {
+    if (workerSetupBtn) workerSetupBtn.disabled = false;
+  }
+}
+
 async function fileToBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -881,10 +1023,12 @@ function applyActiveProject(projectRef, projectLabel = projectRef) {
   resetScriptEditorState();
   setGenerateEnabled(true);
   setCancelVisible(false);
+  clearWorkerSetupLinks();
   void loadOutputs();
   void loadReferenceSamples();
   void loadProjectScript();
   void refreshProjectAccessInfo();
+  startWorkerStatusPolling();
 }
 
 function requireActiveProject() {
@@ -1523,6 +1667,7 @@ function bindProjectGateway() {
   if (switchProjectBtn) {
     switchProjectBtn.addEventListener("click", async () => {
       stopRecordingIfActive();
+      stopWorkerStatusPolling();
       clearJobTracking();
       state.activeProjectRef = null;
       state.activeProjectLabel = null;
@@ -1538,6 +1683,7 @@ function bindProjectGateway() {
       resetProgressUi();
       setSelectedAudioFile(null);
       clearRecordingPreview();
+      resetWorkerStatusUi();
       resetScriptEditorState();
       if (savedSampleSelectNode) {
         savedSampleSelectNode.innerHTML = '<option value="">No project selected</option>';
@@ -1579,6 +1725,38 @@ function bindProjectSharing() {
       setGenerateStatus(`Share failed: ${String(err)}`, true);
     }
   });
+}
+
+function bindWorkerStatus() {
+  if (workerRefreshBtn) {
+    workerRefreshBtn.addEventListener("click", () => {
+      void refreshWorkerStatus({ announceErrors: true });
+    });
+  }
+
+  if (workerSetupBtn) {
+    workerSetupBtn.addEventListener("click", () => {
+      void ensureWorkerSetupLinks();
+    });
+  }
+
+  if (workerCopyLinuxBtn) {
+    workerCopyLinuxBtn.addEventListener("click", () => {
+      const command = state.workerSetupLinuxCommand;
+      if (!command) {
+        setGenerateStatus("No Linux setup command available yet.", true);
+        return;
+      }
+      navigator.clipboard
+        .writeText(command)
+        .then(() => {
+          setGenerateStatus("Linux worker setup command copied.");
+        })
+        .catch(() => {
+          setGenerateStatus("Could not copy Linux setup command.", true);
+        });
+    });
+  }
 }
 
 function bindAudioSelection() {
@@ -1877,6 +2055,7 @@ function bindOutputActions() {
 
 bindProjectGateway();
 bindProjectSharing();
+bindWorkerStatus();
 bindAudioSelection();
 bindRecording();
 bindScriptFileLoader();
@@ -1886,6 +2065,7 @@ bindGenerate();
 bindOutputActions();
 setSelectedAudioFile(null);
 resetScriptEditorState();
+resetWorkerStatusUi();
 setSavedSampleStatus("Saved samples are scoped to this project.");
 setRecordStatus("Use Record audio to capture a sample from your microphone.");
 setCancelVisible(false);
