@@ -15,6 +15,19 @@ class ASRService:
         self.model_size = model_size
         self.device = device
         self.compute_type = compute_type
+        self._model = None
+
+    def _load_model(self):
+        if self._model is not None:
+            return self._model
+        try:
+            from faster_whisper import WhisperModel
+        except ImportError as exc:
+            raise DependencyMissingError(
+                "faster-whisper is required for transcription. Install with 'pip install -e .[asr]'."
+            ) from exc
+        self._model = WhisperModel(self.model_size, device=self.device, compute_type=self.compute_type)
+        return self._model
 
     def transcribe(
         self,
@@ -25,15 +38,8 @@ class ASRService:
         language: str | None = None,
         beam_size: int = 5,
     ) -> tuple[TranscriptArtifacts, list[TranscriptSegment]]:
-        try:
-            from faster_whisper import WhisperModel
-        except ImportError as exc:
-            raise DependencyMissingError(
-                "faster-whisper is required for transcription. Install with 'pip install -e .[asr]'."
-            ) from exc
-
         output_dir.mkdir(parents=True, exist_ok=True)
-        model = WhisperModel(self.model_size, device=self.device, compute_type=self.compute_type)
+        model = self._load_model()
         seg_iter, _ = model.transcribe(
             str(audio_path),
             language=language,

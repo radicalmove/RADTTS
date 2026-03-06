@@ -82,7 +82,7 @@ WORKER_INVITE_MAX_AGE_SECONDS = int(os.environ.get("RADTTS_WORKER_INVITE_MAX_AGE
 SCOPE_PROJECTS_BY_USER = _env_bool("RADTTS_SCOPE_PROJECTS_BY_USER", True)
 SIMPLE_SYNTH_DEFAULT_TO_WORKER = _env_bool("RADTTS_SIMPLE_SYNTH_DEFAULT_TO_WORKER", True)
 WORKER_FALLBACK_TO_LOCAL = _env_bool("RADTTS_WORKER_FALLBACK_TO_LOCAL", True)
-WORKER_FALLBACK_TIMEOUT_SECONDS = max(5, _env_int("RADTTS_WORKER_FALLBACK_TIMEOUT_SECONDS", 90))
+WORKER_FALLBACK_TIMEOUT_SECONDS = max(5, _env_int("RADTTS_WORKER_FALLBACK_TIMEOUT_SECONDS", 20))
 WORKER_ONLINE_WINDOW_SECONDS = max(10, _env_int("RADTTS_WORKER_ONLINE_WINDOW_SECONDS", 30))
 SCRIPT_VERSION_HISTORY_LIMIT = max(10, _env_int("RADTTS_SCRIPT_VERSION_HISTORY_LIMIT", 60))
 SCOPED_PROJECT_RE = re.compile(r"^u[0-9a-f]{12}__.+$")
@@ -818,7 +818,7 @@ def _run_local_synthesis_from_worker_payload(
         pause_config=worker_payload.pause_config,
         output_format=worker_payload.output_format,
         output_name=worker_payload.output_name,
-        generate_transcript=True,
+        generate_transcript=worker_payload.generate_transcript,
         voice_clone_authorized=True,
     )
 
@@ -1488,6 +1488,7 @@ def synthesize_simple(request: Request, req: SimpleSynthesisRequest):
             pause_config=pause_config,
             output_format=req.output_format,
             output_name=output_name,
+            generate_transcript=req.generate_transcript,
             voice_clone_authorized=True,
         )
         job_id = worker_manager.enqueue_synthesis_job(worker_req)

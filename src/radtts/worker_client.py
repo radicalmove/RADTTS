@@ -161,18 +161,19 @@ class WorkerClient:
             captions_txt = None
             captions_srt = None
             captions_vtt = None
-            try:
-                caption_artifacts = self.caption_service.generate(
-                    audio_path=output_path,
-                    output_dir=tmp_path,
-                    name=f"{req.output_name}_worker",
-                    language=None,
-                )
-                captions_txt = caption_artifacts.txt_path.read_text(encoding="utf-8")
-                captions_srt = caption_artifacts.srt_path.read_text(encoding="utf-8")
-                captions_vtt = caption_artifacts.vtt_path.read_text(encoding="utf-8")
-            except Exception:  # noqa: BLE001
-                pass
+            if req.generate_transcript:
+                try:
+                    caption_artifacts = self.caption_service.generate(
+                        audio_path=output_path,
+                        output_dir=tmp_path,
+                        name=f"{req.output_name}_worker",
+                        language=None,
+                    )
+                    captions_txt = caption_artifacts.txt_path.read_text(encoding="utf-8")
+                    captions_srt = caption_artifacts.srt_path.read_text(encoding="utf-8")
+                    captions_vtt = caption_artifacts.vtt_path.read_text(encoding="utf-8")
+                except Exception:  # noqa: BLE001
+                    pass
 
             quality = self.quality_service.evaluate(
                 text=req.text,

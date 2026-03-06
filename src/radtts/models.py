@@ -123,6 +123,7 @@ class WorkerSynthesisEnqueueRequest(BaseModel):
     pause_config: PauseConfig = Field(default_factory=PauseConfig)
     output_format: OutputFormat = OutputFormat.MP3
     output_name: str = "synthesized_output"
+    generate_transcript: bool = True
     voice_clone_authorized: bool = False
 
     @model_validator(mode="after")
@@ -148,7 +149,7 @@ class SimpleSynthesisRequest(BaseModel):
     add_ahs: bool = False
     add_fillers: bool = False
     average_gap_seconds: float = Field(default=0.8, ge=0.15, le=2.5)
-    generate_transcript: bool = True
+    generate_transcript: bool = False
     output_format: OutputFormat = OutputFormat.MP3
     voice_clone_authorized: bool = False
 
