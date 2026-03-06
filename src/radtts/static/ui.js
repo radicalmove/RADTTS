@@ -1,4 +1,15 @@
 const responseNode = document.getElementById("response");
+const projectGatewayNode = document.getElementById("project-gateway");
+const workspaceNode = document.getElementById("workspace");
+const switchProjectBtn = document.getElementById("switch-project-btn");
+const activeProjectChip = document.getElementById("active-project-chip");
+const activeProjectLabelNode = document.getElementById("active-project-label");
+const existingProjectSelectNode = document.getElementById("existing-project-select");
+const openProjectFormNode = document.getElementById("open-project-form");
+const refreshProjectsBtn = document.getElementById("refresh-projects-btn");
+const projectGatewayStatusNode = document.getElementById("project-gateway-status");
+
+let activeProjectId = null;
 
 function cleanOptional(value) {
   const trimmed = (value ?? "").trim();
@@ -13,7 +24,38 @@ function cleanNumber(value) {
 }
 
 function showResponse(title, payload) {
+  if (!responseNode) return;
   responseNode.textContent = JSON.stringify({ title, payload }, null, 2);
+}
+
+function setGatewayStatus(message, isError = false) {
+  if (!projectGatewayStatusNode) return;
+  projectGatewayStatusNode.textContent = message || "";
+  projectGatewayStatusNode.style.color = isError ? "#a73527" : "#555";
+}
+
+function setWorkspaceVisible(visible) {
+  if (projectGatewayNode) projectGatewayNode.hidden = visible;
+  if (workspaceNode) workspaceNode.classList.toggle("workspace-hidden", !visible);
+  if (switchProjectBtn) switchProjectBtn.hidden = !visible;
+  if (activeProjectChip) activeProjectChip.hidden = !visible;
+}
+
+function applyActiveProject(projectId) {
+  activeProjectId = projectId;
+  if (activeProjectLabelNode) activeProjectLabelNode.textContent = projectId;
+  document
+    .querySelectorAll('form[data-project-bound="true"] input[name="project_id"]')
+    .forEach((input) => {
+      input.value = projectId;
+    });
+}
+
+function requireActiveProject() {
+  if (!activeProjectId) {
+    throw new Error("Select or create a project first.");
+  }
+  return activeProjectId;
 }
 
 function fileToBase64(file) {
@@ -53,35 +95,136 @@ async function requestJSON(url, method, payload) {
   return data;
 }
 
-function bindCreateProject() {
-  const form = document.getElementById("create-form");
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const fd = new FormData(form);
-    const payload = {
-      project_id: fd.get("project_id").trim(),
-      course: cleanOptional(fd.get("course")),
-      module: cleanOptional(fd.get("module")),
-      lesson: cleanOptional(fd.get("lesson")),
-    };
+function updateOpenButtonState() {
+  const hasSelection = Boolean(existingProjectSelectNode && existingProjectSelectNode.value);
+  const openBtn = document.getElementById("open-project-btn");
+  if (openBtn) openBtn.disabled = !hasSelection;
+}
 
-    try {
-      const data = await requestJSON("/projects", "POST", payload);
-      showResponse("project created", data);
-    } catch (err) {
-      showResponse("project create failed", { error: String(err) });
+async function loadProjects(preselectProjectId = null) {
+  if (!existingProjectSelectNode) return;
+  existingProjectSelectNode.innerHTML = '<option value="">Loading projects...</option>';
+  updateOpenButtonState();
+
+  try {
+    const data = await requestJSON("/projects", "GET");
+    const projects = Array.isArray(data.projects) ? data.projects : [];
+    existingProjectSelectNode.innerHTML = "";
+
+    if (!projects.length) {
+      existingProjectSelectNode.innerHTML = '<option value="">No projects yet</option>';
+      setGatewayStatus("No existing projects yet. Create one to continue.");
+      updateOpenButtonState();
+      return;
     }
-  });
+
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select a project";
+    existingProjectSelectNode.appendChild(placeholder);
+
+    for (const project of projects) {
+      const option = document.createElement("option");
+      option.value = project.project_id;
+      option.textContent = project.project_id;
+      existingProjectSelectNode.appendChild(option);
+    }
+
+    if (preselectProjectId) {
+      existingProjectSelectNode.value = preselectProjectId;
+    }
+    setGatewayStatus("");
+    updateOpenButtonState();
+  } catch (err) {
+    existingProjectSelectNode.innerHTML = '<option value="">Unable to load projects</option>';
+    setGatewayStatus(`Could not load projects: ${String(err)}`, true);
+    updateOpenButtonState();
+  }
+}
+
+function bindProjectGateway() {
+  const createForm = document.getElementById("create-form");
+  if (createForm) {
+    createForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const fd = new FormData(createForm);
+      const projectId = (fd.get("project_id") || "").trim();
+
+      if (!projectId) {
+        setGatewayStatus("Project ID is required.", true);
+        return;
+      }
+
+      const payload = {
+        project_id: projectId,
+        course: cleanOptional(fd.get("course")),
+        module: cleanOptional(fd.get("module")),
+        lesson: cleanOptional(fd.get("lesson")),
+      };
+
+      try {
+        const data = await requestJSON("/projects", "POST", payload);
+        applyActiveProject(projectId);
+        setWorkspaceVisible(true);
+        setGatewayStatus("");
+        showResponse("project created", data);
+        await loadProjects(projectId);
+      } catch (err) {
+        setGatewayStatus(`Project create failed: ${String(err)}`, true);
+        showResponse("project create failed", { error: String(err) });
+      }
+    });
+  }
+
+  if (existingProjectSelectNode) {
+    existingProjectSelectNode.addEventListener("change", updateOpenButtonState);
+  }
+
+  if (openProjectFormNode) {
+    openProjectFormNode.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const projectId = existingProjectSelectNode ? existingProjectSelectNode.value.trim() : "";
+      if (!projectId) {
+        setGatewayStatus("Select a project first.", true);
+        return;
+      }
+      applyActiveProject(projectId);
+      setWorkspaceVisible(true);
+      setGatewayStatus("");
+      showResponse("project selected", { project_id: projectId });
+    });
+  }
+
+  if (refreshProjectsBtn) {
+    refreshProjectsBtn.addEventListener("click", async () => {
+      await loadProjects(existingProjectSelectNode ? existingProjectSelectNode.value : null);
+    });
+  }
+
+  if (switchProjectBtn) {
+    switchProjectBtn.addEventListener("click", async () => {
+      activeProjectId = null;
+      if (activeProjectLabelNode) activeProjectLabelNode.textContent = "";
+      setWorkspaceVisible(false);
+      setGatewayStatus("");
+      await loadProjects();
+    });
+  }
+
+  setWorkspaceVisible(false);
+  loadProjects();
 }
 
 function bindTranscribe() {
   const form = document.getElementById("transcribe-form");
+  if (!form) return;
+
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const fd = new FormData(form);
     const payload = {
-      project_id: fd.get("project_id").trim(),
-      audio_path: fd.get("audio_path").trim(),
+      project_id: requireActiveProject(),
+      audio_path: (fd.get("audio_path") || "").trim(),
       name: cleanOptional(fd.get("name")),
       model: cleanOptional(fd.get("model")) || "small",
       language: cleanOptional(fd.get("language")),
@@ -99,14 +242,16 @@ function bindTranscribe() {
 
 function bindClip() {
   const form = document.getElementById("clip-form");
+  if (!form) return;
+
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const fd = new FormData(form);
     const payload = {
-      project_id: fd.get("project_id").trim(),
-      audio_path: fd.get("audio_path").trim(),
-      segments_json_path: fd.get("segments_json_path").trim(),
-      output_name: fd.get("output_name").trim(),
+      project_id: requireActiveProject(),
+      audio_path: (fd.get("audio_path") || "").trim(),
+      segments_json_path: (fd.get("segments_json_path") || "").trim(),
+      output_name: (fd.get("output_name") || "").trim(),
       start_time: cleanNumber(fd.get("start_time")),
       end_time: cleanNumber(fd.get("end_time")),
       start_phrase: cleanOptional(fd.get("start_phrase")),
@@ -126,6 +271,8 @@ function bindClip() {
 
 function bindSynthesize() {
   const form = document.getElementById("synth-form");
+  if (!form) return;
+
   const modeSelect = document.getElementById("mode-select");
   const modelSelect = document.getElementById("model-id");
   const presetSelect = document.getElementById("preset-select");
@@ -178,8 +325,8 @@ function bindSynthesize() {
     const fd = new FormData(form);
 
     const payload = {
-      project_id: fd.get("project_id").trim(),
-      text: fd.get("text").trim(),
+      project_id: requireActiveProject(),
+      text: (fd.get("text") || "").trim(),
       reference_text: cleanOptional(fd.get("reference_text")),
       model_id: fd.get("model_id"),
       max_new_tokens: cleanNumber(fd.get("max_new_tokens")) || 1200,
@@ -191,7 +338,7 @@ function bindSynthesize() {
         seed: cleanNumber(fd.get("pause_seed")),
       },
       output_format: fd.get("output_format"),
-      output_name: fd.get("output_name").trim(),
+      output_name: (fd.get("output_name") || "").trim(),
       voice_clone_authorized: fd.get("ack_voice_clone") === "on",
     };
 
@@ -210,7 +357,7 @@ function bindSynthesize() {
         const data = await requestJSON("/synthesize/worker", "POST", workerPayload);
         showResponse("worker synthesis job queued", data);
       } else {
-        payload.reference_audio_path = fd.get("reference_audio_path").trim();
+        payload.reference_audio_path = (fd.get("reference_audio_path") || "").trim();
         const data = await requestJSON("/synthesize", "POST", payload);
         showResponse("synthesis job started", data);
       }
@@ -222,13 +369,15 @@ function bindSynthesize() {
 
 function bindCaptions() {
   const form = document.getElementById("captions-form");
+  if (!form) return;
+
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const fd = new FormData(form);
 
     const payload = {
-      project_id: fd.get("project_id").trim(),
-      audio_path: fd.get("audio_path").trim(),
+      project_id: requireActiveProject(),
+      audio_path: (fd.get("audio_path") || "").trim(),
       name: cleanOptional(fd.get("name")),
       model: cleanOptional(fd.get("model")) || "small",
       language: cleanOptional(fd.get("language")),
@@ -246,12 +395,13 @@ function bindCaptions() {
 function bindJobLookup() {
   const form = document.getElementById("job-form");
   const cancelBtn = document.getElementById("job-cancel");
+  if (!form || !cancelBtn) return;
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const fd = new FormData(form);
-    const projectId = fd.get("project_id").trim();
-    const jobId = fd.get("job_id").trim();
+    const projectId = requireActiveProject();
+    const jobId = (fd.get("job_id") || "").trim();
 
     try {
       const data = await requestJSON(`/jobs/${encodeURIComponent(jobId)}?project_id=${encodeURIComponent(projectId)}`, "GET");
@@ -263,8 +413,8 @@ function bindJobLookup() {
 
   cancelBtn.addEventListener("click", async () => {
     const fd = new FormData(form);
-    const projectId = fd.get("project_id").trim();
-    const jobId = fd.get("job_id").trim();
+    const projectId = requireActiveProject();
+    const jobId = (fd.get("job_id") || "").trim();
 
     try {
       const data = await requestJSON(`/jobs/${encodeURIComponent(jobId)}/cancel?project_id=${encodeURIComponent(projectId)}`, "POST");
@@ -279,6 +429,7 @@ function bindWorkers() {
   const inviteBtn = document.getElementById("worker-invite-btn");
   const refreshBtn = document.getElementById("worker-refresh-btn");
   const commandArea = document.getElementById("worker-install-command");
+  if (!inviteBtn || !refreshBtn || !commandArea) return;
 
   inviteBtn.addEventListener("click", async () => {
     try {
@@ -300,7 +451,7 @@ function bindWorkers() {
   });
 }
 
-bindCreateProject();
+bindProjectGateway();
 bindTranscribe();
 bindClip();
 bindSynthesize();

@@ -191,6 +191,25 @@ def create_project(request: Request, req: ProjectCreateRequest):
     return payload
 
 
+@app.get("/projects")
+def list_projects(request: Request):
+    _require_auth(request)
+    scoped_prefix = _scope_prefix(request)
+    scoped_marker = f"{scoped_prefix}__" if scoped_prefix else None
+
+    projects: list[dict[str, str]] = []
+    for project_id in pipeline.list_projects():
+        if scoped_marker:
+            if not project_id.startswith(scoped_marker):
+                continue
+            visible_project_id = project_id[len(scoped_marker) :]
+        else:
+            visible_project_id = project_id
+        projects.append({"project_id": visible_project_id})
+
+    return {"projects": projects}
+
+
 @app.post("/transcribe")
 def transcribe(request: Request, req: TranscribeRequest):
     _require_auth(request)

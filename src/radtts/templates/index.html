@@ -23,6 +23,10 @@
         </div>
       </div>
       <div class="topbar-actions">
+        <button id="switch-project-btn" class="topbar-btn" type="button" hidden>Projects</button>
+        <div id="active-project-chip" class="chip chip-project" hidden>
+          Project: <span id="active-project-label"></span>
+        </div>
         {% if current_user %}
         {% if current_user.is_admin and psychek_admin_url %}
         <a class="topbar-btn" href="{{ psychek_admin_url }}">Admin</a>
@@ -34,22 +38,44 @@
       </div>
     </header>
 
-    <main class="layout">
-      <section class="panel">
-        <h2>Create Project</h2>
-        <form id="create-form" class="stack">
-          <input name="project_id" placeholder="project id (e.g., crju150-m9)" required />
-          <input name="course" placeholder="course (optional)" />
-          <input name="module" placeholder="module (optional)" />
-          <input name="lesson" placeholder="lesson (optional)" />
-          <button type="submit">Create Project</button>
-        </form>
+    <section id="project-gateway" class="gateway-wrap">
+      <section class="gateway-card">
+        <h2>Choose Project</h2>
+        <p class="gateway-copy">Start by creating a new project or opening one you already have.</p>
+        <div class="gateway-grid">
+          <form id="create-form" class="stack">
+            <h3>Create New</h3>
+            <input name="project_id" placeholder="project id (e.g., crju150-m9)" required />
+            <input name="course" placeholder="course (optional)" />
+            <input name="module" placeholder="module (optional)" />
+            <input name="lesson" placeholder="lesson (optional)" />
+            <button type="submit">Create Project</button>
+          </form>
+          <form id="open-project-form" class="stack">
+            <h3>Open Existing</h3>
+            <select id="existing-project-select" required>
+              <option value="">Loading projects...</option>
+            </select>
+            <div class="row row-2">
+              <button id="refresh-projects-btn" type="button">Refresh</button>
+              <button id="open-project-btn" type="submit">Open Project</button>
+            </div>
+            <p id="project-gateway-status" class="gateway-status"></p>
+          </form>
+        </div>
+      </section>
+    </section>
+
+    <main id="workspace" class="layout workspace-hidden">
+      <section class="panel workspace-intro">
+        <h2>Workspace</h2>
+        <p>Run transcription, clip extraction, synthesis, captions, worker actions, and job checks for the active project.</p>
       </section>
 
       <section class="panel">
         <h2>Synthesize Voice Clone</h2>
-        <form id="synth-form" class="stack">
-          <input name="project_id" placeholder="project id" required />
+        <form id="synth-form" class="stack" data-project-bound="true">
+          <input type="hidden" name="project_id" />
           <input name="output_name" placeholder="output name" required />
           <textarea name="text" placeholder="script text" required></textarea>
           <div class="row">
@@ -129,8 +155,8 @@
 
       <section class="panel">
         <h2>Transcribe</h2>
-        <form id="transcribe-form" class="stack">
-          <input name="project_id" placeholder="project id" required />
+        <form id="transcribe-form" class="stack" data-project-bound="true">
+          <input type="hidden" name="project_id" />
           <input name="audio_path" placeholder="absolute audio path" required />
           <input name="name" placeholder="artifact name" />
           <div class="row">
@@ -144,8 +170,8 @@
 
       <section class="panel">
         <h2>Clip Builder</h2>
-        <form id="clip-form" class="stack">
-          <input name="project_id" placeholder="project id" required />
+        <form id="clip-form" class="stack" data-project-bound="true">
+          <input type="hidden" name="project_id" />
           <input name="audio_path" placeholder="absolute source audio path" required />
           <input name="segments_json_path" placeholder="segments json path" required />
           <input name="output_name" placeholder="output name" required />
@@ -173,8 +199,8 @@
 
       <section class="panel">
         <h2>Captions</h2>
-        <form id="captions-form" class="stack">
-          <input name="project_id" placeholder="project id" required />
+        <form id="captions-form" class="stack" data-project-bound="true">
+          <input type="hidden" name="project_id" />
           <input name="audio_path" placeholder="absolute audio path" required />
           <input name="name" placeholder="caption artifact name" />
           <div class="row">
@@ -187,8 +213,8 @@
 
       <section class="panel">
         <h2>Job Status</h2>
-        <form id="job-form" class="stack">
-          <input name="project_id" placeholder="project id" required />
+        <form id="job-form" class="stack" data-project-bound="true">
+          <input type="hidden" name="project_id" />
           <input name="job_id" placeholder="job id" required />
           <div class="row">
             <button type="submit">Get Job</button>

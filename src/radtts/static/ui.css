@@ -145,6 +145,72 @@ body {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.workspace-hidden {
+  display: none;
+}
+
+.gateway-wrap {
+  position: relative;
+  z-index: 1;
+  max-width: 980px;
+  margin: 20px auto 0;
+  padding: 0 16px;
+}
+
+.gateway-card {
+  background: var(--uc-white);
+  border: 1px solid var(--uc-grey-300);
+  border-radius: var(--uc-radius-lg);
+  box-shadow: var(--uc-shadow-sm);
+  padding: 16px;
+}
+
+.gateway-card h2 {
+  margin: 0 0 8px;
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.gateway-copy {
+  margin: 0 0 14px;
+  color: #3b3b3b;
+  font-size: 0.94rem;
+}
+
+.gateway-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.gateway-grid h3 {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 700;
+}
+
+.gateway-status {
+  margin: 0;
+  min-height: 18px;
+  font-size: 0.82rem;
+  color: #555;
+}
+
+.row.row-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.workspace-intro p {
+  margin: 0;
+  color: #3b3b3b;
+  font-size: 0.93rem;
+}
+
+.chip.chip-project {
+  background: #111;
+  color: var(--uc-white);
+}
+
 .panel {
   background: var(--uc-white);
   border: 1px solid var(--uc-grey-300);
@@ -259,6 +325,10 @@ pre {
 
   .output-panel {
     grid-column: span 1;
+  }
+
+  .gateway-grid {
+    grid-template-columns: 1fr;
   }
 }
 

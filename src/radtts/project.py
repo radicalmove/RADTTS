@@ -25,6 +25,19 @@ class ProjectManager:
     def __init__(self, projects_root: Path | str = Path("projects")):
         self.projects_root = Path(projects_root)
 
+    def list_projects(self) -> list[str]:
+        if not self.projects_root.exists():
+            return []
+
+        project_ids: list[str] = []
+        for entry in self.projects_root.iterdir():
+            if not entry.is_dir():
+                continue
+            if entry.name.startswith(".") or entry.name.startswith("_"):
+                continue
+            project_ids.append(entry.name)
+        return sorted(project_ids)
+
     def project_root(self, project_id: str) -> Path:
         return self.projects_root / project_id
 

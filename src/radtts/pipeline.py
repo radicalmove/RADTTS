@@ -37,6 +37,9 @@ class RADTTSPipeline:
         )
         return {"project_root": str(paths.root)}
 
+    def list_projects(self) -> list[str]:
+        return self.project_manager.list_projects()
+
     def transcribe(self, req: TranscribeRequest) -> dict[str, str]:
         paths = self.project_manager.ensure_project(req.project_id)
         name = req.name or req.audio_path.stem
