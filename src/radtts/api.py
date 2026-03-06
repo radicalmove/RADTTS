@@ -804,6 +804,62 @@ def _run_local_synthesis_from_worker_payload(
     )
 
 
+def _claim_and_launch_local_fallback(
+    *,
+    job_id: str,
+    reason: str,
+    owner_key: str = "",
+    owner_label: str = "",
+) -> bool:
+    worker_payload = worker_manager.claim_job_for_local_fallback(job_id, reason=reason)
+    if worker_payload is None:
+        return False
+
+    thread = threading.Thread(
+        target=lambda: _run_local_synthesis_from_worker_payload(
+            worker_payload=worker_payload,
+            job_id=job_id,
+            owner_key=owner_key,
+            owner_label=owner_label,
+        ),
+        name=f"radtts-fallback-{job_id}",
+        daemon=True,
+    )
+    thread.start()
+    return True
+
+
+def _schedule_worker_fallback_watch(
+    *,
+    job_id: str,
+    owner_key: str = "",
+    owner_label: str = "",
+) -> None:
+    if not WORKER_FALLBACK_TO_LOCAL:
+        return
+
+    reason = (
+        f"No worker accepted this job after {WORKER_FALLBACK_TIMEOUT_SECONDS}s. "
+        "Switching to local server fallback."
+    )
+
+    def _watcher() -> None:
+        time.sleep(WORKER_FALLBACK_TIMEOUT_SECONDS)
+        _claim_and_launch_local_fallback(
+            job_id=job_id,
+            reason=reason,
+            owner_key=owner_key,
+            owner_label=owner_label,
+        )
+
+    watcher = threading.Thread(
+        target=_watcher,
+        name=f"radtts-fallback-watch-{job_id}",
+        daemon=True,
+    )
+    watcher.start()
+
+
 def _maybe_trigger_worker_fallback(
     request: Request,
     *,
@@ -832,23 +888,13 @@ def _maybe_trigger_worker_fallback(
         f"No worker accepted this job after {WORKER_FALLBACK_TIMEOUT_SECONDS}s. "
         "Switching to local server fallback."
     )
-    worker_payload = worker_manager.claim_job_for_local_fallback(job_id, reason=reason)
-    if worker_payload is None:
-        return False
-
     owner_key, owner_label = _current_user_key_and_label(request)
-    thread = threading.Thread(
-        target=lambda: _run_local_synthesis_from_worker_payload(
-            worker_payload=worker_payload,
-            job_id=job_id,
-            owner_key=owner_key or "",
-            owner_label=owner_label or "",
-        ),
-        name=f"radtts-fallback-{job_id}",
-        daemon=True,
+    return _claim_and_launch_local_fallback(
+        job_id=job_id,
+        reason=reason,
+        owner_key=owner_key or "",
+        owner_label=owner_label or "",
     )
-    thread.start()
-    return True
 
 
 @app.get("/auth/bridge")
@@ -1409,6 +1455,12 @@ def synthesize_simple(request: Request, req: SimpleSynthesisRequest):
             voice_clone_authorized=True,
         )
         job_id = worker_manager.enqueue_synthesis_job(worker_req)
+        if WORKER_FALLBACK_TO_LOCAL:
+            _schedule_worker_fallback_watch(
+                job_id=job_id,
+                owner_key=owner_key or "",
+                owner_label=owner_label or "",
+            )
         return {
             "job_id": job_id,
             "status": "queued",
@@ -1443,6 +1495,13 @@ def synthesize_worker(request: Request, req: WorkerSynthesisEnqueueRequest):
     _require_auth(request)
     scoped_req = req.model_copy(update={"project_id": _resolve_project_id_for_request(request, req.project_id)})
     job_id = worker_manager.enqueue_synthesis_job(scoped_req)
+    owner_key, owner_label = _current_user_key_and_label(request)
+    if WORKER_FALLBACK_TO_LOCAL:
+        _schedule_worker_fallback_watch(
+            job_id=job_id,
+            owner_key=owner_key or "",
+            owner_label=owner_label or "",
+        )
     return {
         "job_id": job_id,
         "status": "queued",
