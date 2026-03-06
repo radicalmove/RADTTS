@@ -83,6 +83,7 @@ SCOPE_PROJECTS_BY_USER = _env_bool("RADTTS_SCOPE_PROJECTS_BY_USER", True)
 SIMPLE_SYNTH_DEFAULT_TO_WORKER = _env_bool("RADTTS_SIMPLE_SYNTH_DEFAULT_TO_WORKER", True)
 WORKER_FALLBACK_TO_LOCAL = _env_bool("RADTTS_WORKER_FALLBACK_TO_LOCAL", True)
 WORKER_FALLBACK_TIMEOUT_SECONDS = max(5, _env_int("RADTTS_WORKER_FALLBACK_TIMEOUT_SECONDS", 90))
+WORKER_ONLINE_WINDOW_SECONDS = max(10, _env_int("RADTTS_WORKER_ONLINE_WINDOW_SECONDS", 30))
 SCRIPT_VERSION_HISTORY_LIMIT = max(10, _env_int("RADTTS_SCRIPT_VERSION_HISTORY_LIMIT", 60))
 SCOPED_PROJECT_RE = re.compile(r"^u[0-9a-f]{12}__.+$")
 
@@ -202,6 +203,32 @@ def _display_project_id(project_id: str) -> str:
     if _looks_scoped_project_id(value) and "__" in value:
         return value.split("__", 1)[1]
     return value
+
+
+def _worker_availability_snapshot() -> dict[str, int]:
+    now = datetime.now(timezone.utc)
+    workers = worker_manager.list_workers()
+    online = 0
+
+    for worker in workers:
+        raw_seen = worker.last_seen_at
+        if not raw_seen:
+            continue
+        try:
+            last_seen = datetime.fromisoformat(raw_seen)
+        except ValueError:
+            continue
+        if last_seen.tzinfo is None:
+            last_seen = last_seen.replace(tzinfo=timezone.utc)
+        age_seconds = (now - last_seen).total_seconds()
+        if age_seconds <= WORKER_ONLINE_WINDOW_SECONDS:
+            online += 1
+
+    return {
+        "worker_total_count": len(workers),
+        "worker_online_count": online,
+        "worker_online_window_seconds": WORKER_ONLINE_WINDOW_SECONDS,
+    }
 
 
 def _inferred_owner_key_from_project_id(scoped_project_id: str) -> str:
@@ -1464,6 +1491,7 @@ def synthesize_simple(request: Request, req: SimpleSynthesisRequest):
             voice_clone_authorized=True,
         )
         job_id = worker_manager.enqueue_synthesis_job(worker_req)
+        worker_snapshot = _worker_availability_snapshot()
         if WORKER_FALLBACK_TO_LOCAL:
             _schedule_worker_fallback_watch(
                 job_id=job_id,
@@ -1480,6 +1508,7 @@ def synthesize_simple(request: Request, req: SimpleSynthesisRequest):
             "worker_mode": True,
             "fallback_enabled": WORKER_FALLBACK_TO_LOCAL,
             "fallback_timeout_seconds": WORKER_FALLBACK_TIMEOUT_SECONDS,
+            **worker_snapshot,
         }
 
     job_id = f"job_{uuid.uuid4().hex[:12]}"
@@ -1504,6 +1533,7 @@ def synthesize_worker(request: Request, req: WorkerSynthesisEnqueueRequest):
     _require_auth(request)
     scoped_req = req.model_copy(update={"project_id": _resolve_project_id_for_request(request, req.project_id)})
     job_id = worker_manager.enqueue_synthesis_job(scoped_req)
+    worker_snapshot = _worker_availability_snapshot()
     owner_key, owner_label = _current_user_key_and_label(request)
     if WORKER_FALLBACK_TO_LOCAL:
         _schedule_worker_fallback_watch(
@@ -1516,6 +1546,7 @@ def synthesize_worker(request: Request, req: WorkerSynthesisEnqueueRequest):
         "status": "queued",
         "stage": "queued_remote",
         "worker_mode": True,
+        **worker_snapshot,
     }
 
 

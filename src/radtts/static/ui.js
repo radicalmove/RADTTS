@@ -50,9 +50,9 @@ const outputListNode = document.getElementById("output-list");
 
 const stageLabels = {
   queued: "Queued",
-  queued_remote: "Waiting for worker device",
-  worker_running: "Processing on worker device",
-  fallback_local: "Worker unavailable, running on server",
+  queued_remote: "Queued for worker",
+  worker_running: "Worker processing",
+  fallback_local: "Switching to server",
   model_load: "Loading voice model",
   generation: "Generating speech",
   stitching: "Finalizing audio",
@@ -130,6 +130,9 @@ const state = {
   workerFallbackTimeoutSeconds: 0,
   queuedRemoteSinceMs: null,
   lastRunningStatusKey: null,
+  workerOnlineCount: null,
+  workerTotalCount: null,
+  workerOnlineWindowSeconds: null,
   scriptVersions: [],
   currentScriptVersionId: "",
   scriptSaveTimer: null,
@@ -236,6 +239,9 @@ function resetProgressUi() {
   state.workerFallbackTimeoutSeconds = 0;
   state.queuedRemoteSinceMs = null;
   state.lastRunningStatusKey = null;
+  state.workerOnlineCount = null;
+  state.workerTotalCount = null;
+  state.workerOnlineWindowSeconds = null;
 
   if (progressWrapNode) progressWrapNode.hidden = true;
   if (progressFillNode) progressFillNode.style.width = "0%";
@@ -388,9 +394,21 @@ function computeModeProgressLabel() {
     return "Processing on: RADTTS server (Mac mini)";
   }
   if (state.computeMode === "waiting_worker") {
-    return "Processing on: waiting for worker device";
+    return "Processing on: pending worker assignment";
   }
   return "Processing on: --";
+}
+
+function workerAvailabilitySummary() {
+  if (!Number.isFinite(state.workerOnlineCount)) {
+    return "";
+  }
+  const online = Math.max(0, Number(state.workerOnlineCount));
+  const total = Number.isFinite(state.workerTotalCount) ? Math.max(online, Number(state.workerTotalCount)) : null;
+  if (total !== null) {
+    return `${online}/${total} worker devices online`;
+  }
+  return `${online} worker device${online === 1 ? "" : "s"} online`;
 }
 
 function fallbackWaitRemainingSeconds() {
@@ -419,7 +437,14 @@ function updateRunningStatusMessage() {
   if (state.computeMode === "server") {
     if (state.lastRunningStatusKey !== "server") {
       if (state.expectedRemoteWorker) {
-        setGenerateStatus("No worker accepted this job. Processing on the RADTTS server (Mac mini).");
+        const availability = workerAvailabilitySummary();
+        if (Number(state.workerOnlineCount || 0) <= 0) {
+          setGenerateStatus("No active worker was connected, so this job is running on the RADTTS server (Mac mini).");
+        } else if (availability) {
+          setGenerateStatus(`No worker accepted this job (${availability}). Running on the RADTTS server (Mac mini).`);
+        } else {
+          setGenerateStatus("No worker accepted this job. Processing on the RADTTS server (Mac mini).");
+        }
       } else {
         setGenerateStatus("Processing on the RADTTS server (Mac mini).");
       }
@@ -430,9 +455,17 @@ function updateRunningStatusMessage() {
 
   if (state.computeMode === "waiting_worker") {
     const remaining = fallbackWaitRemainingSeconds();
+    const availability = workerAvailabilitySummary();
+    const noWorkersKnown = Number(state.workerOnlineCount || 0) <= 0;
     if (remaining === null) {
       if (state.lastRunningStatusKey !== "waiting_worker") {
-        setGenerateStatus("Waiting for a worker device.");
+        if (noWorkersKnown) {
+          setGenerateStatus("No active worker is connected yet. Waiting for a worker device.");
+        } else if (availability) {
+          setGenerateStatus(`Waiting for a worker device (${availability}).`);
+        } else {
+          setGenerateStatus("Waiting for a worker device.");
+        }
         state.lastRunningStatusKey = "waiting_worker";
       }
       return;
@@ -442,7 +475,13 @@ function updateRunningStatusMessage() {
     const waitingKey = `waiting_${Math.ceil(remaining)}`;
     if (state.lastRunningStatusKey !== waitingKey) {
       if (remaining > 0) {
-        setGenerateStatus(`Waiting for a worker device. Server fallback in ${remainingLabel}.`);
+        if (noWorkersKnown) {
+          setGenerateStatus(`No active worker is connected. Waiting up to ${remainingLabel} before server fallback.`);
+        } else if (availability) {
+          setGenerateStatus(`Waiting for a worker device (${availability}). Server fallback in ${remainingLabel}.`);
+        } else {
+          setGenerateStatus(`Waiting for a worker device. Server fallback in ${remainingLabel}.`);
+        }
       } else {
         setGenerateStatus("No worker connected yet. Switching to server fallback...");
       }
@@ -693,9 +732,9 @@ function stripLogTimestamp(line) {
 function friendlyStageDetail(stage) {
   const key = String(stage || "").trim().toLowerCase();
   if (key === "queued") return "Preparing your job";
-  if (key === "queued_remote") return "Waiting for a worker device";
+  if (key === "queued_remote") return "Checking for an available worker";
   if (key === "worker_running") return "Processing on a worker device";
-  if (key === "fallback_local") return "Switching to server fallback";
+  if (key === "fallback_local") return "Switching to the RADTTS server";
   if (key === "model_load") return "Loading voice model";
   if (key === "generation") return "Generating speech";
   if (key === "stitching") return "Finalizing audio";
@@ -718,15 +757,15 @@ function detailFromLogLine(line, currentStage) {
   }
 
   if (lower.includes("queued for worker execution")) {
-    return "Queued and waiting for a worker device.";
+    return "Looking for an available worker device...";
   }
 
   if (lower.includes("started processing") && lower.includes("worker")) {
-    return "Worker device has started processing.";
+    return "Worker accepted the job.";
   }
 
   if (lower.includes("switching to local server fallback")) {
-    return "No worker responded, starting on server fallback.";
+    return "No worker accepted in time. Starting on RADTTS server.";
   }
 
   const stageMatch = lower.match(/stage=([a-z_]+)/);
@@ -1164,7 +1203,11 @@ function updateProgressVisuals(progressPercent, stage) {
   }
 
   if (progressDetailNode) {
-    progressDetailNode.textContent = state.latestDetail || "Processing...";
+    let detail = state.latestDetail || "Processing...";
+    if (state.computeMode === "waiting_worker" && state.currentStage === "queued_remote") {
+      detail = "Looking for a connected worker app. Server fallback is automatic if none responds.";
+    }
+    progressDetailNode.textContent = detail;
   }
 }
 
@@ -1368,9 +1411,26 @@ async function handleGenerate() {
     const workerMode = Boolean(data.worker_mode);
     const fallbackEnabled = Boolean(data.fallback_enabled);
     const fallbackTimeout = Number(data.fallback_timeout_seconds || 0);
+    const workerOnlineCount = Number.isFinite(Number(data.worker_online_count))
+      ? Number(data.worker_online_count)
+      : null;
+    const workerTotalCount = Number.isFinite(Number(data.worker_total_count))
+      ? Number(data.worker_total_count)
+      : null;
+    const workerOnlineWindowSeconds = Number.isFinite(Number(data.worker_online_window_seconds))
+      ? Number(data.worker_online_window_seconds)
+      : null;
+
+    state.workerOnlineCount = workerOnlineCount;
+    state.workerTotalCount = workerTotalCount;
+    state.workerOnlineWindowSeconds = workerOnlineWindowSeconds;
 
     if (workerMode) {
-      setGenerateStatus("Job queued. Waiting for a worker device...");
+      if (workerOnlineCount !== null && workerOnlineCount <= 0) {
+        setGenerateStatus("No active worker is connected right now. Waiting for worker assignment...");
+      } else {
+        setGenerateStatus("Job queued for worker assignment...");
+      }
     } else {
       setGenerateStatus("Generation started on this server.");
     }
@@ -1379,7 +1439,7 @@ async function handleGenerate() {
     startPolling(data.job_id, {
       initialStage: String(data.stage || (workerMode ? "queued_remote" : "queued")),
       initialDetail: workerMode
-        ? "Job queued for worker processing."
+        ? "Checking for an available worker device..."
         : "Job queued. Preparing model...",
       expectedRemoteWorker: workerMode,
       fallbackTimeoutSeconds: workerMode && fallbackEnabled ? fallbackTimeout : 0,
