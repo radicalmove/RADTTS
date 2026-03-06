@@ -109,6 +109,16 @@
               <input id="script-file" type="file" accept=".txt,.md,.rtf,.doc,.docx" />
             </label>
             <p id="script-file-status" class="field-note">No text file loaded.</p>
+            <div class="script-version-block">
+              <label class="saved-sample-label" for="script-version-select">Script versions</label>
+              <div class="script-version-row">
+                <select id="script-version-select">
+                  <option value="">No saved script versions yet</option>
+                </select>
+                <button id="restore-script-version-btn" type="button" disabled>Restore selected version</button>
+              </div>
+              <p id="script-save-status" class="field-note">Script saves automatically in this project.</p>
+            </div>
           </section>
         </div>
       </section>

@@ -170,6 +170,15 @@ class ProjectReferenceAudioUploadRequest(BaseModel):
     audio_b64: str = Field(min_length=32)
 
 
+class ProjectScriptSaveRequest(BaseModel):
+    text: str = ""
+    source: str = Field(default="autosave", min_length=2, max_length=32)
+
+
+class ProjectScriptRestoreRequest(BaseModel):
+    version_id: str = Field(min_length=4, max_length=64)
+
+
 class ProjectAccessGrantRequest(BaseModel):
     email: str = Field(min_length=3)
 

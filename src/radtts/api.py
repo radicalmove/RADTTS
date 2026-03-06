@@ -23,6 +23,8 @@ from radtts.models import (
     ProjectAccessRevokeRequest,
     ProjectReferenceAudioUploadRequest,
     ProjectCreateRequest,
+    ProjectScriptRestoreRequest,
+    ProjectScriptSaveRequest,
     SimpleSynthesisRequest,
     SynthesisRequest,
     TranscribeRequest,
@@ -81,6 +83,7 @@ SCOPE_PROJECTS_BY_USER = _env_bool("RADTTS_SCOPE_PROJECTS_BY_USER", True)
 SIMPLE_SYNTH_DEFAULT_TO_WORKER = _env_bool("RADTTS_SIMPLE_SYNTH_DEFAULT_TO_WORKER", True)
 WORKER_FALLBACK_TO_LOCAL = _env_bool("RADTTS_WORKER_FALLBACK_TO_LOCAL", True)
 WORKER_FALLBACK_TIMEOUT_SECONDS = max(5, _env_int("RADTTS_WORKER_FALLBACK_TIMEOUT_SECONDS", 90))
+SCRIPT_VERSION_HISTORY_LIMIT = max(10, _env_int("RADTTS_SCRIPT_VERSION_HISTORY_LIMIT", 60))
 SCOPED_PROJECT_RE = re.compile(r"^u[0-9a-f]{12}__.+$")
 
 
@@ -440,6 +443,141 @@ def _load_reference_cache(project_manifests_dir: Path) -> dict[str, dict[str, st
 def _write_reference_cache(project_manifests_dir: Path, cache: dict[str, dict[str, str]]) -> None:
     cache_path = _reference_cache_file(project_manifests_dir)
     cache_path.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+
+
+def _script_versions_file(project_manifests_dir: Path) -> Path:
+    return project_manifests_dir / "script_versions.json"
+
+
+def _script_preview(text: str, *, max_chars: int = 120) -> str:
+    compact = re.sub(r"\s+", " ", text).strip()
+    if len(compact) <= max_chars:
+        return compact
+    return f"{compact[: max_chars - 1].rstrip()}…"
+
+
+def _normalize_script_entry(raw: dict[str, object]) -> dict[str, object] | None:
+    version_id = str(raw.get("version_id") or "").strip()
+    if not version_id:
+        return None
+
+    text = str(raw.get("text") or "")
+    source = str(raw.get("source") or "autosave").strip() or "autosave"
+    saved_at = str(raw.get("saved_at") or "")
+    try:
+        word_count = int(raw.get("word_count") or len(re.findall(r"\S+", text)))
+    except (TypeError, ValueError):
+        word_count = len(re.findall(r"\S+", text))
+
+    try:
+        char_count = int(raw.get("char_count") or len(text))
+    except (TypeError, ValueError):
+        char_count = len(text)
+    preview = str(raw.get("preview") or _script_preview(text))
+
+    return {
+        "version_id": version_id,
+        "saved_at": saved_at,
+        "source": source,
+        "text": text,
+        "word_count": word_count,
+        "char_count": char_count,
+        "preview": preview,
+    }
+
+
+def _load_script_versions(project_manifests_dir: Path) -> dict[str, object]:
+    versions_path = _script_versions_file(project_manifests_dir)
+    try:
+        payload = json.loads(versions_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        payload = {}
+    except json.JSONDecodeError:
+        payload = {}
+
+    if not isinstance(payload, dict):
+        payload = {}
+
+    raw_versions = payload.get("versions")
+    versions: list[dict[str, object]] = []
+    if isinstance(raw_versions, list):
+        for raw in raw_versions:
+            if not isinstance(raw, dict):
+                continue
+            normalized = _normalize_script_entry(raw)
+            if normalized is not None:
+                versions.append(normalized)
+
+    if len(versions) > SCRIPT_VERSION_HISTORY_LIMIT:
+        versions = versions[-SCRIPT_VERSION_HISTORY_LIMIT:]
+
+    version_ids = {str(row["version_id"]) for row in versions}
+    current_version_id = str(payload.get("current_version_id") or "").strip()
+    if current_version_id not in version_ids:
+        current_version_id = str(versions[-1]["version_id"]) if versions else ""
+
+    return {
+        "current_version_id": current_version_id,
+        "versions": versions,
+    }
+
+
+def _write_script_versions(project_manifests_dir: Path, payload: dict[str, object]) -> None:
+    versions_path = _script_versions_file(project_manifests_dir)
+    versions_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _script_version_metadata(version: dict[str, object]) -> dict[str, object]:
+    try:
+        word_count = int(version.get("word_count") or 0)
+    except (TypeError, ValueError):
+        word_count = 0
+
+    try:
+        char_count = int(version.get("char_count") or 0)
+    except (TypeError, ValueError):
+        char_count = 0
+
+    return {
+        "version_id": str(version.get("version_id") or ""),
+        "saved_at": str(version.get("saved_at") or ""),
+        "source": str(version.get("source") or ""),
+        "word_count": word_count,
+        "char_count": char_count,
+        "preview": str(version.get("preview") or ""),
+    }
+
+
+def _find_script_entry(rows: list[dict[str, object]], version_id: str) -> dict[str, object] | None:
+    for row in rows:
+        if str(row.get("version_id") or "") == version_id:
+            return row
+    return None
+
+
+def _script_payload_for_response(script_versions: dict[str, object]) -> dict[str, object]:
+    versions = script_versions.get("versions")
+    rows = versions if isinstance(versions, list) else []
+    current_version_id = str(script_versions.get("current_version_id") or "")
+
+    current_entry = _find_script_entry(rows, current_version_id)
+
+    if current_entry is None and rows:
+        tail = rows[-1]
+        if isinstance(tail, dict):
+            current_entry = tail
+            current_version_id = str(tail.get("version_id") or "")
+
+    metadata: list[dict[str, object]] = []
+    for row in reversed(rows):
+        if isinstance(row, dict):
+            metadata.append(_script_version_metadata(row))
+
+    return {
+        "current_version_id": current_version_id,
+        "text": str((current_entry or {}).get("text") or ""),
+        "versions": metadata,
+    }
 
 
 def _resolve_reference_audio_path(project_root: Path, raw_path: str | None) -> Path | None:
@@ -881,6 +1019,93 @@ def list_reference_audio(request: Request, project_id: str):
 
     items.sort(key=lambda row: str(row.get("updated_at") or ""), reverse=True)
     return {"project_id": _display_project_id(scoped_project_id), "samples": items}
+
+
+@app.get("/projects/{project_id}/script")
+def get_project_script(request: Request, project_id: str):
+    _require_auth(request)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
+    paths = pipeline.project_manager.ensure_project(scoped_project_id)
+
+    payload = _script_payload_for_response(_load_script_versions(paths.manifests))
+    return {
+        "project_id": _display_project_id(scoped_project_id),
+        **payload,
+    }
+
+
+@app.post("/projects/{project_id}/script")
+def save_project_script(request: Request, project_id: str, req: ProjectScriptSaveRequest):
+    _require_auth(request)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
+    paths = pipeline.project_manager.ensure_project(scoped_project_id)
+
+    text = str(req.text or "")
+    source = str(req.source or "autosave").strip()[:32] or "autosave"
+    script_versions = _load_script_versions(paths.manifests)
+    rows = script_versions.get("versions") if isinstance(script_versions.get("versions"), list) else []
+    current_version_id = str(script_versions.get("current_version_id") or "")
+    current_entry = _find_script_entry(rows, current_version_id)
+
+    if current_entry is not None and str(current_entry.get("text") or "") == text:
+        payload = _script_payload_for_response(script_versions)
+        return {
+            "project_id": _display_project_id(scoped_project_id),
+            "saved": False,
+            **payload,
+        }
+
+    version = {
+        "version_id": f"script_{uuid.uuid4().hex[:12]}",
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+        "source": source,
+        "text": text,
+        "word_count": len(re.findall(r"\S+", text)),
+        "char_count": len(text),
+        "preview": _script_preview(text),
+    }
+    rows.append(version)
+    if len(rows) > SCRIPT_VERSION_HISTORY_LIMIT:
+        rows = rows[-SCRIPT_VERSION_HISTORY_LIMIT:]
+    script_versions = {
+        "current_version_id": str(version["version_id"]),
+        "versions": rows,
+    }
+    _write_script_versions(paths.manifests, script_versions)
+
+    payload = _script_payload_for_response(script_versions)
+    return {
+        "project_id": _display_project_id(scoped_project_id),
+        "saved": True,
+        **payload,
+    }
+
+
+@app.post("/projects/{project_id}/script/restore")
+def restore_project_script(request: Request, project_id: str, req: ProjectScriptRestoreRequest):
+    _require_auth(request)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
+    paths = pipeline.project_manager.ensure_project(scoped_project_id)
+
+    script_versions = _load_script_versions(paths.manifests)
+    rows = script_versions.get("versions") if isinstance(script_versions.get("versions"), list) else []
+    version_id = req.version_id.strip()
+    target_entry = _find_script_entry(rows, version_id)
+    if target_entry is None:
+        raise HTTPException(status_code=404, detail="script version not found")
+
+    script_versions = {
+        "current_version_id": version_id,
+        "versions": rows,
+    }
+    _write_script_versions(paths.manifests, script_versions)
+
+    payload = _script_payload_for_response(script_versions)
+    return {
+        "project_id": _display_project_id(scoped_project_id),
+        "restored": True,
+        **payload,
+    }
 
 
 @app.get("/projects/{project_id}/access")

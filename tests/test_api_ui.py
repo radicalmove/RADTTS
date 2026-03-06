@@ -325,3 +325,96 @@ def test_simple_synthesize_with_unknown_reference_audio_hash_returns_404():
     finally:
         if project_root.exists():
             shutil.rmtree(project_root)
+
+
+def test_project_script_save_and_load_roundtrip():
+    client = TestClient(app)
+    project_id = f"ui-{uuid.uuid4().hex[:8]}"
+    project_root = Path("projects") / project_id
+
+    try:
+        created = client.post("/projects", json={"project_id": project_id})
+        assert created.status_code == 200
+
+        saved = client.post(
+            f"/projects/{project_id}/script",
+            json={"text": "First draft script text.", "source": "manual"},
+        )
+        assert saved.status_code == 200
+        saved_payload = saved.json()
+        assert saved_payload["saved"] is True
+        assert saved_payload["project_id"] == project_id
+        assert saved_payload["text"] == "First draft script text."
+        assert len(saved_payload["versions"]) == 1
+        assert saved_payload["current_version_id"]
+
+        loaded = client.get(f"/projects/{project_id}/script")
+        assert loaded.status_code == 200
+        loaded_payload = loaded.json()
+        assert loaded_payload["project_id"] == project_id
+        assert loaded_payload["text"] == "First draft script text."
+        assert loaded_payload["current_version_id"] == saved_payload["current_version_id"]
+        assert len(loaded_payload["versions"]) == 1
+    finally:
+        if project_root.exists():
+            shutil.rmtree(project_root)
+
+
+def test_project_script_restore_and_deduplicates_identical_save():
+    client = TestClient(app)
+    project_id = f"ui-{uuid.uuid4().hex[:8]}"
+    project_root = Path("projects") / project_id
+
+    try:
+        created = client.post("/projects", json={"project_id": project_id})
+        assert created.status_code == 200
+
+        first = client.post(
+            f"/projects/{project_id}/script",
+            json={"text": "Version one text.", "source": "manual"},
+        )
+        assert first.status_code == 200
+        first_payload = first.json()
+        first_version_id = first_payload["current_version_id"]
+
+        duplicate = client.post(
+            f"/projects/{project_id}/script",
+            json={"text": "Version one text.", "source": "autosave"},
+        )
+        assert duplicate.status_code == 200
+        duplicate_payload = duplicate.json()
+        assert duplicate_payload["saved"] is False
+        assert len(duplicate_payload["versions"]) == 1
+
+        second = client.post(
+            f"/projects/{project_id}/script",
+            json={"text": "Version two text.", "source": "manual"},
+        )
+        assert second.status_code == 200
+        second_payload = second.json()
+        second_version_id = second_payload["current_version_id"]
+        assert second_payload["saved"] is True
+        assert second_version_id != first_version_id
+        assert len(second_payload["versions"]) == 2
+
+        restored = client.post(
+            f"/projects/{project_id}/script/restore",
+            json={"version_id": first_version_id},
+        )
+        assert restored.status_code == 200
+        restored_payload = restored.json()
+        assert restored_payload["restored"] is True
+        assert restored_payload["current_version_id"] == first_version_id
+        assert restored_payload["text"] == "Version one text."
+
+        loaded = client.get(f"/projects/{project_id}/script")
+        assert loaded.status_code == 200
+        loaded_payload = loaded.json()
+        assert loaded_payload["current_version_id"] == first_version_id
+        assert loaded_payload["text"] == "Version one text."
+        version_ids = {row["version_id"] for row in loaded_payload["versions"]}
+        assert first_version_id in version_ids
+        assert second_version_id in version_ids
+    finally:
+        if project_root.exists():
+            shutil.rmtree(project_root)

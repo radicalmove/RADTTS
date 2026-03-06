@@ -23,6 +23,9 @@ const recordPreviewNode = document.getElementById("record-preview");
 const scriptTextNode = document.getElementById("script-text");
 const scriptFileInputNode = document.getElementById("script-file");
 const scriptFileStatusNode = document.getElementById("script-file-status");
+const scriptVersionSelectNode = document.getElementById("script-version-select");
+const restoreScriptVersionBtn = document.getElementById("restore-script-version-btn");
+const scriptSaveStatusNode = document.getElementById("script-save-status");
 
 const qualityNode = document.getElementById("quality-level");
 const outputFormatNode = document.getElementById("output-format");
@@ -123,6 +126,12 @@ const state = {
   lastAnnouncedComputeMode: "idle",
   etaSeconds: null,
   etaUpdatedAtMs: null,
+  scriptVersions: [],
+  currentScriptVersionId: "",
+  scriptSaveTimer: null,
+  scriptSaveInFlight: false,
+  pendingScriptSaveSource: null,
+  suppressScriptAutosave: false,
 };
 
 function cleanOptional(value) {
@@ -152,6 +161,12 @@ function setSavedSampleStatus(message, isError = false) {
   if (!savedSampleStatusNode) return;
   savedSampleStatusNode.textContent = message || "";
   savedSampleStatusNode.style.color = isError ? "#a73527" : "#555";
+}
+
+function setScriptSaveStatus(message, isError = false) {
+  if (!scriptSaveStatusNode) return;
+  scriptSaveStatusNode.textContent = message || "";
+  scriptSaveStatusNode.style.color = isError ? "#a73527" : "#555";
 }
 
 function setWorkspaceVisible(visible) {
@@ -362,6 +377,225 @@ function formatIso(isoValue) {
   return date.toLocaleString();
 }
 
+function clearScriptSaveTimer() {
+  if (state.scriptSaveTimer) {
+    clearTimeout(state.scriptSaveTimer);
+    state.scriptSaveTimer = null;
+  }
+}
+
+function formatScriptVersionLabel(version) {
+  const savedAt = formatIso(version.saved_at) || "Saved";
+  const source = String(version.source || "");
+  const sourceLabel = source && source !== "autosave" ? ` (${source.replaceAll("_", " ")})` : "";
+  const preview = String(version.preview || "").trim();
+  if (preview) {
+    return `${savedAt}${sourceLabel} - ${preview}`;
+  }
+  const words = Number(version.word_count || 0);
+  return `${savedAt}${sourceLabel} - ${words} word${words === 1 ? "" : "s"}`;
+}
+
+function currentScriptVersionMeta() {
+  const currentId = state.currentScriptVersionId;
+  if (!currentId) return null;
+  for (const version of state.scriptVersions) {
+    if (String(version.version_id || "") === currentId) {
+      return version;
+    }
+  }
+  return null;
+}
+
+function updateRestoreScriptButtonState() {
+  if (!restoreScriptVersionBtn || !scriptVersionSelectNode) return;
+  const selectedVersion = String(scriptVersionSelectNode.value || "");
+  const hasSelection = Boolean(selectedVersion);
+  const selectedIsCurrent = selectedVersion === state.currentScriptVersionId;
+  restoreScriptVersionBtn.disabled = !hasSelection || selectedIsCurrent;
+}
+
+function refreshScriptVersionSelect() {
+  if (!scriptVersionSelectNode) return;
+
+  const previousSelection = String(scriptVersionSelectNode.value || "");
+  scriptVersionSelectNode.innerHTML = "";
+  scriptVersionSelectNode.disabled = state.scriptVersions.length === 0;
+
+  if (!state.scriptVersions.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "No saved script versions yet";
+    scriptVersionSelectNode.appendChild(option);
+    scriptVersionSelectNode.value = "";
+    updateRestoreScriptButtonState();
+    return;
+  }
+
+  for (const version of state.scriptVersions) {
+    const option = document.createElement("option");
+    option.value = String(version.version_id || "");
+    option.textContent = formatScriptVersionLabel(version);
+    scriptVersionSelectNode.appendChild(option);
+  }
+
+  const fallbackSelection = state.currentScriptVersionId || String(state.scriptVersions[0].version_id || "");
+  scriptVersionSelectNode.value = previousSelection || fallbackSelection;
+  if (!scriptVersionSelectNode.value) {
+    scriptVersionSelectNode.value = fallbackSelection;
+  }
+  updateRestoreScriptButtonState();
+}
+
+function applyScriptPayload(payload, { replaceText = true } = {}) {
+  const versions = Array.isArray(payload?.versions) ? payload.versions : [];
+  state.scriptVersions = versions.map((version) => ({
+    version_id: String(version.version_id || ""),
+    saved_at: String(version.saved_at || ""),
+    source: String(version.source || ""),
+    word_count: Number(version.word_count || 0),
+    char_count: Number(version.char_count || 0),
+    preview: String(version.preview || ""),
+  }));
+  state.currentScriptVersionId = String(payload?.current_version_id || "");
+
+  if (replaceText && scriptTextNode) {
+    state.suppressScriptAutosave = true;
+    scriptTextNode.value = String(payload?.text || "");
+    state.suppressScriptAutosave = false;
+  }
+
+  refreshScriptVersionSelect();
+}
+
+function resetScriptEditorState() {
+  clearScriptSaveTimer();
+  state.scriptVersions = [];
+  state.currentScriptVersionId = "";
+  state.scriptSaveInFlight = false;
+  state.pendingScriptSaveSource = null;
+  state.suppressScriptAutosave = false;
+
+  if (scriptTextNode) {
+    scriptTextNode.value = "";
+  }
+  if (scriptFileInputNode) {
+    scriptFileInputNode.value = "";
+  }
+  if (scriptFileStatusNode) {
+    scriptFileStatusNode.textContent = "No text file loaded.";
+  }
+  refreshScriptVersionSelect();
+  setScriptSaveStatus("Script saves automatically in this project.");
+}
+
+async function loadProjectScript() {
+  if (!state.activeProjectRef) return;
+  setScriptSaveStatus("Loading saved script...");
+
+  try {
+    const data = await requestJSON(
+      `/projects/${encodeURIComponent(state.activeProjectRef)}/script`,
+      "GET"
+    );
+    applyScriptPayload(data, { replaceText: true });
+    if (state.scriptVersions.length) {
+      setScriptSaveStatus("Loaded saved script for this project.");
+    } else {
+      setScriptSaveStatus("No saved script yet. Start typing to save automatically.");
+    }
+  } catch (err) {
+    setScriptSaveStatus(`Could not load saved script: ${String(err)}`, true);
+  }
+}
+
+function queueScriptSave(source = "autosave", delayMs = 1200) {
+  if (!state.activeProjectRef || !scriptTextNode || state.suppressScriptAutosave) {
+    return;
+  }
+  clearScriptSaveTimer();
+  state.pendingScriptSaveSource = source;
+  state.scriptSaveTimer = setTimeout(() => {
+    void flushScriptSave();
+  }, delayMs);
+}
+
+async function flushScriptSave(sourceOverride = null) {
+  if (!state.activeProjectRef || !scriptTextNode || state.suppressScriptAutosave) {
+    return false;
+  }
+
+  clearScriptSaveTimer();
+  const source = sourceOverride || state.pendingScriptSaveSource || "autosave";
+  state.pendingScriptSaveSource = null;
+
+  if (state.scriptSaveInFlight) {
+    state.pendingScriptSaveSource = source;
+    return false;
+  }
+
+  state.scriptSaveInFlight = true;
+  setScriptSaveStatus("Saving script...");
+
+  try {
+    const data = await requestJSON(
+      `/projects/${encodeURIComponent(state.activeProjectRef)}/script`,
+      "POST",
+      {
+        text: scriptTextNode.value || "",
+        source,
+      }
+    );
+    applyScriptPayload(data, { replaceText: false });
+    const currentVersion = currentScriptVersionMeta();
+    if (data.saved) {
+      const when = currentVersion?.saved_at ? formatIso(currentVersion.saved_at) : "";
+      setScriptSaveStatus(when ? `Script saved at ${when}.` : "Script saved.");
+    } else {
+      setScriptSaveStatus("All changes saved.");
+    }
+    return true;
+  } catch (err) {
+    setScriptSaveStatus(`Could not save script: ${String(err)}`, true);
+    return false;
+  } finally {
+    state.scriptSaveInFlight = false;
+    if (state.pendingScriptSaveSource) {
+      const queuedSource = state.pendingScriptSaveSource;
+      state.pendingScriptSaveSource = null;
+      void flushScriptSave(queuedSource);
+    }
+  }
+}
+
+async function handleRestoreScriptVersion() {
+  if (!state.activeProjectRef || !scriptVersionSelectNode) return;
+
+  const versionId = String(scriptVersionSelectNode.value || "");
+  if (!versionId) return;
+
+  clearScriptSaveTimer();
+  state.pendingScriptSaveSource = null;
+  setScriptSaveStatus("Restoring selected version...");
+  if (restoreScriptVersionBtn) restoreScriptVersionBtn.disabled = true;
+
+  try {
+    const data = await requestJSON(
+      `/projects/${encodeURIComponent(state.activeProjectRef)}/script/restore`,
+      "POST",
+      { version_id: versionId }
+    );
+    applyScriptPayload(data, { replaceText: true });
+    const currentVersion = currentScriptVersionMeta();
+    const when = currentVersion?.saved_at ? formatIso(currentVersion.saved_at) : "";
+    setScriptSaveStatus(when ? `Restored script from ${when}.` : "Restored selected script version.");
+  } catch (err) {
+    setScriptSaveStatus(`Could not restore script version: ${String(err)}`, true);
+  } finally {
+    updateRestoreScriptButtonState();
+  }
+}
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -524,10 +758,12 @@ function applyActiveProject(projectRef, projectLabel = projectRef) {
   setGenerateStatus("");
   resetProgressUi();
   clearJobTracking();
+  resetScriptEditorState();
   setGenerateEnabled(true);
   setCancelVisible(false);
   void loadOutputs();
   void loadReferenceSamples();
+  void loadProjectScript();
   void refreshProjectAccessInfo();
 }
 
@@ -1014,6 +1250,8 @@ async function handleGenerate() {
       throw new Error("Please provide script text.");
     }
 
+    await flushScriptSave("manual");
+
     setGenerateEnabled(false);
     setCancelVisible(false);
     setGenerateStatus("Uploading files and starting generation...");
@@ -1157,6 +1395,7 @@ function bindProjectGateway() {
       resetProgressUi();
       setSelectedAudioFile(null);
       clearRecordingPreview();
+      resetScriptEditorState();
       if (savedSampleSelectNode) {
         savedSampleSelectNode.innerHTML = '<option value="">No project selected</option>';
       }
@@ -1356,17 +1595,48 @@ function bindScriptFileLoader() {
     try {
       const text = await readScriptFile(file);
       if (scriptTextNode) {
+        state.suppressScriptAutosave = true;
         scriptTextNode.value = text.trim();
+        state.suppressScriptAutosave = false;
       }
       if (scriptFileStatusNode) {
         scriptFileStatusNode.textContent = `Loaded ${file.name}`;
       }
+      await flushScriptSave("file_upload");
     } catch (err) {
+      state.suppressScriptAutosave = false;
       if (scriptFileStatusNode) {
         scriptFileStatusNode.textContent = `Failed to load ${file.name}: ${String(err)}`;
       }
     }
   });
+}
+
+function bindScriptPersistence() {
+  if (scriptTextNode) {
+    scriptTextNode.addEventListener("input", () => {
+      if (state.suppressScriptAutosave) return;
+      queueScriptSave("autosave");
+    });
+
+    scriptTextNode.addEventListener("blur", () => {
+      if (state.suppressScriptAutosave) return;
+      if (!state.pendingScriptSaveSource) return;
+      void flushScriptSave("autosave");
+    });
+  }
+
+  if (scriptVersionSelectNode) {
+    scriptVersionSelectNode.addEventListener("change", () => {
+      updateRestoreScriptButtonState();
+    });
+  }
+
+  if (restoreScriptVersionBtn) {
+    restoreScriptVersionBtn.addEventListener("click", () => {
+      void handleRestoreScriptVersion();
+    });
+  }
 }
 
 function bindGapSlider() {
@@ -1412,10 +1682,12 @@ bindProjectSharing();
 bindAudioSelection();
 bindRecording();
 bindScriptFileLoader();
+bindScriptPersistence();
 bindGapSlider();
 bindGenerate();
 bindFolderCopy();
 setSelectedAudioFile(null);
+resetScriptEditorState();
 setSavedSampleStatus("Saved samples are scoped to this project.");
 setRecordStatus("Use Record audio to capture a sample from your microphone.");
 setCancelVisible(false);

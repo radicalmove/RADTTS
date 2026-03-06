@@ -308,6 +308,10 @@ body {
   margin-top: 10px;
 }
 
+.script-version-block {
+  margin-top: 10px;
+}
+
 .saved-sample-label {
   display: block;
   margin-bottom: 6px;
@@ -321,12 +325,26 @@ body {
   gap: 8px;
 }
 
+.script-version-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
 .saved-sample-row select {
+  margin: 0;
+}
+
+.script-version-row select {
   margin: 0;
 }
 
 #refresh-samples-btn {
   min-width: 92px;
+}
+
+#restore-script-version-btn {
+  min-width: 180px;
 }
 
 .record-controls {
@@ -666,6 +684,15 @@ button:hover {
 
   .action-buttons {
     grid-template-columns: 1fr;
+  }
+
+  .saved-sample-row,
+  .script-version-row {
+    grid-template-columns: 1fr;
+  }
+
+  #restore-script-version-btn {
+    min-width: 0;
   }
 
   textarea {
