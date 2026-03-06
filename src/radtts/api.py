@@ -64,6 +64,7 @@ BRIDGE_SECRET = os.environ.get("RADTTS_BRIDGE_SECRET", SESSION_SECRET)
 BRIDGE_MAX_AGE_SECONDS = int(os.environ.get("RADTTS_BRIDGE_MAX_AGE_SECONDS", "120"))
 WORKER_SECRET = os.environ.get("RADTTS_WORKER_SECRET", SESSION_SECRET)
 WORKER_INVITE_MAX_AGE_SECONDS = int(os.environ.get("RADTTS_WORKER_INVITE_MAX_AGE_SECONDS", "86400"))
+SCOPE_PROJECTS_BY_USER = _env_bool("RADTTS_SCOPE_PROJECTS_BY_USER", True)
 
 
 def _infer_psychek_admin_url(login_url: str) -> str:
@@ -141,6 +142,8 @@ def _current_user_key_and_label(request: Request) -> tuple[str | None, str | Non
 
 
 def _scope_project_id(request: Request, project_id: str) -> str:
+    if not SCOPE_PROJECTS_BY_USER:
+        return project_id
     prefix = _scope_prefix(request)
     if not prefix:
         return project_id
@@ -151,6 +154,8 @@ def _scope_project_id(request: Request, project_id: str) -> str:
 
 
 def _descope_project_id(request: Request, project_id: str) -> str:
+    if not SCOPE_PROJECTS_BY_USER:
+        return project_id
     prefix = _scope_prefix(request)
     if not prefix:
         return project_id
@@ -394,7 +399,7 @@ def create_project(request: Request, req: ProjectCreateRequest):
 @app.get("/projects")
 def list_projects(request: Request):
     _require_auth(request)
-    scoped_prefix = _scope_prefix(request)
+    scoped_prefix = _scope_prefix(request) if SCOPE_PROJECTS_BY_USER else None
     scoped_marker = f"{scoped_prefix}__" if scoped_prefix else None
 
     projects: list[dict[str, str]] = []
