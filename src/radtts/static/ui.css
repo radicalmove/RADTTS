@@ -77,10 +77,6 @@ body {
   align-items: center;
 }
 
-.topbar-user {
-  white-space: nowrap;
-}
-
 /* CDC-POC utility button style for top-right account actions */
 .topbar-btn {
   display: inline-flex;

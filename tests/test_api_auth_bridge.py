@@ -30,7 +30,8 @@ def test_auth_bridge_sets_session_and_redirects_home():
 
     home = client.get("/")
     assert home.status_code == 200
-    assert "Bridge User" in home.text
+    assert ">Admin<" in home.text
+    assert ">Log out<" in home.text
 
 
 def test_authenticated_user_project_namespace_is_scoped():
