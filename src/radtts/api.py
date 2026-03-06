@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import os
 import random
 import re
@@ -152,6 +153,13 @@ def _safe_filename(filename: str) -> str:
     return cleaned or "reference_audio.wav"
 
 
+def _safe_audio_extension(filename: str) -> str:
+    suffix = Path(_safe_filename(filename)).suffix.lower()
+    if suffix in {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".webm"}:
+        return suffix
+    return ".wav"
+
+
 def _slug_text(value: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9]+", "-", value.strip().lower())
     return slug.strip("-")
@@ -189,6 +197,34 @@ def _inject_fillers(text: str, *, add_ums: bool, add_ahs: bool) -> str:
         else:
             patched.append(sentence)
     return " ".join(patched)
+
+
+def _reference_cache_file(project_manifests_dir: Path) -> Path:
+    return project_manifests_dir / "reference_audio_cache.json"
+
+
+def _load_reference_cache(project_manifests_dir: Path) -> dict[str, dict[str, str]]:
+    cache_path = _reference_cache_file(project_manifests_dir)
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except json.JSONDecodeError:
+        return {}
+
+    if not isinstance(payload, dict):
+        return {}
+
+    normalized: dict[str, dict[str, str]] = {}
+    for key, value in payload.items():
+        if isinstance(key, str) and isinstance(value, dict):
+            normalized[key] = {str(k): str(v) for k, v in value.items() if isinstance(k, str)}
+    return normalized
+
+
+def _write_reference_cache(project_manifests_dir: Path, cache: dict[str, dict[str, str]]) -> None:
+    cache_path = _reference_cache_file(project_manifests_dir)
+    cache_path.write_text(json.dumps(cache, indent=2), encoding="utf-8")
 
 
 @app.get("/auth/bridge")
@@ -279,15 +315,30 @@ def upload_reference_audio(request: Request, project_id: str, req: ProjectRefere
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=422, detail="invalid audio_b64 payload") from exc
 
-    safe_name = _safe_filename(req.filename)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    output_path = paths.assets_reference_audio / f"reference-{stamp}-{safe_name}"
+    audio_hash = hashlib.sha256(audio_bytes).hexdigest()
+    ext = _safe_audio_extension(req.filename)
+    output_path = paths.assets_reference_audio / f"reference-{audio_hash[:16]}{ext}"
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_bytes(audio_bytes)
+    if not output_path.exists():
+        output_path.write_bytes(audio_bytes)
+
+    cache = _load_reference_cache(paths.manifests)
+    entry = cache.get(audio_hash, {})
+    entry.update(
+        {
+            "audio_hash": audio_hash,
+            "audio_path": str(output_path),
+            "source_filename": _safe_filename(req.filename),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    cache[audio_hash] = entry
+    _write_reference_cache(paths.manifests, cache)
 
     artifact_url = f"/projects/{project_id}/artifact?path={quote(str(output_path), safe='')}"
     return {
         "project_id": project_id,
+        "audio_hash": audio_hash,
         "filename": output_path.name,
         "saved_path": str(output_path),
         "artifact_url": artifact_url,
@@ -330,11 +381,40 @@ def synthesize_simple(request: Request, req: SimpleSynthesisRequest):
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=422, detail="invalid reference_audio_b64 payload") from exc
 
+    reference_hash = hashlib.sha256(reference_audio).hexdigest()
+    reference_cache = _load_reference_cache(paths.manifests)
+    cached_entry = reference_cache.get(reference_hash, {})
+
+    cached_reference_path = cached_entry.get("audio_path")
+    reference_path = Path(cached_reference_path).resolve() if cached_reference_path else None
+    project_root = paths.root.resolve()
+    if reference_path is not None:
+        try:
+            reference_path.relative_to(project_root)
+        except ValueError:
+            reference_path = None
+    if reference_path is None or not reference_path.exists():
+        reference_ext = _safe_audio_extension(req.reference_audio_filename)
+        reference_path = (paths.assets_reference_audio / f"reference-{reference_hash[:16]}{reference_ext}").resolve()
+        reference_path.parent.mkdir(parents=True, exist_ok=True)
+        if not reference_path.exists():
+            reference_path.write_bytes(reference_audio)
+
+        refreshed_entry = {
+            **cached_entry,
+            "audio_hash": reference_hash,
+            "audio_path": str(reference_path),
+            "source_filename": _safe_filename(req.reference_audio_filename),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        reference_cache[reference_hash] = refreshed_entry
+        _write_reference_cache(paths.manifests, reference_cache)
+        cached_entry = refreshed_entry
+
+    cached_reference_text = cached_entry.get("reference_text")
+    reference_text = cached_reference_text if isinstance(cached_reference_text, str) and cached_reference_text.strip() else None
+
     output_name = _build_output_name(req.text, req.output_name)
-    reference_filename = _safe_filename(req.reference_audio_filename)
-    reference_path = paths.assets_reference_audio / f"{output_name}_{reference_filename}"
-    reference_path.parent.mkdir(parents=True, exist_ok=True)
-    reference_path.write_bytes(reference_audio)
 
     model_id = MODEL_MODE_ALIASES["quality"] if req.quality == "high" else MODEL_MODE_ALIASES["fast"]
     add_ums = req.add_ums or req.add_fillers
@@ -347,7 +427,7 @@ def synthesize_simple(request: Request, req: SimpleSynthesisRequest):
         project_id=scoped_project_id,
         text=scripted_text,
         reference_audio_path=reference_path,
-        reference_text=None,
+        reference_text=reference_text,
         model_id=model_id,
         max_new_tokens=1400 if req.quality == "high" else 1000,
         chunk_mode="sentence",
@@ -367,7 +447,33 @@ def synthesize_simple(request: Request, req: SimpleSynthesisRequest):
 
     def run_local_job() -> None:
         try:
-            pipeline.orchestrator.run_synthesis_job(synth_req, job_id=job_id)
+            job = pipeline.orchestrator.run_synthesis_job(synth_req, job_id=job_id)
+            metadata_path_raw = job.outputs.get("metadata_path") if isinstance(job.outputs, dict) else None
+            if not isinstance(metadata_path_raw, str):
+                return
+
+            metadata_path = Path(metadata_path_raw)
+            if not metadata_path.exists():
+                return
+
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            reference_text_value = metadata.get("reference_text")
+            if not isinstance(reference_text_value, str) or not reference_text_value.strip():
+                return
+
+            latest_cache = _load_reference_cache(paths.manifests)
+            latest_entry = latest_cache.get(reference_hash, {})
+            latest_entry.update(
+                {
+                    "audio_hash": reference_hash,
+                    "audio_path": str(reference_path),
+                    "source_filename": _safe_filename(req.reference_audio_filename),
+                    "reference_text": reference_text_value.strip(),
+                    "reference_text_updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+            latest_cache[reference_hash] = latest_entry
+            _write_reference_cache(paths.manifests, latest_cache)
         except Exception:
             # Job failure details are persisted in manifest by orchestrator.
             return

@@ -85,9 +85,40 @@ def test_project_reference_audio_upload_persists_file():
         assert response.status_code == 200
         payload = response.json()
         assert payload["project_id"] == project_id
+        assert len(payload["audio_hash"]) == 64
         assert payload["filename"].startswith("reference-")
         assert payload["saved_path"].endswith(".wav")
         assert Path(payload["saved_path"]).exists()
+    finally:
+        if project_root.exists():
+            shutil.rmtree(project_root)
+
+
+def test_project_reference_audio_upload_reuses_same_file_for_same_audio():
+    client = TestClient(app)
+    project_id = f"ui-{uuid.uuid4().hex[:8]}"
+    project_root = Path("projects") / project_id
+    sample_b64 = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw"
+
+    try:
+        created = client.post("/projects", json={"project_id": project_id})
+        assert created.status_code == 200
+
+        first = client.post(
+            f"/projects/{project_id}/reference-audio",
+            json={"filename": "voice-a.wav", "audio_b64": sample_b64},
+        )
+        second = client.post(
+            f"/projects/{project_id}/reference-audio",
+            json={"filename": "voice-b.wav", "audio_b64": sample_b64},
+        )
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        first_payload = first.json()
+        second_payload = second.json()
+        assert first_payload["audio_hash"] == second_payload["audio_hash"]
+        assert first_payload["saved_path"] == second_payload["saved_path"]
     finally:
         if project_root.exists():
             shutil.rmtree(project_root)
