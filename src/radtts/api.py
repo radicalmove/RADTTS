@@ -127,6 +127,19 @@ def _scope_prefix(request: Request) -> str | None:
     return f"u{digest}"
 
 
+def _current_user_key_and_label(request: Request) -> tuple[str | None, str | None]:
+    user = _current_user(request)
+    if not user:
+        return None, None
+
+    user_key = _scope_prefix(request)
+    if not user_key:
+        return None, None
+
+    label = str(user.get("display_name") or user.get("email") or user.get("sub") or user_key).strip()
+    return user_key, label or user_key
+
+
 def _scope_project_id(request: Request, project_id: str) -> str:
     prefix = _scope_prefix(request)
     if not prefix:
@@ -243,6 +256,87 @@ def _resolve_reference_audio_path(project_root: Path, raw_path: str | None) -> P
     return candidate
 
 
+def _project_cache_entries(
+    request: Request,
+    *,
+    scoped_project_id: str,
+) -> list[dict[str, str | bool]]:
+    paths = pipeline.project_manager.get_paths(scoped_project_id)
+    project_root = paths.root.resolve()
+    if not project_root.exists():
+        return []
+
+    cache = _load_reference_cache(paths.manifests)
+    visible_project_id = _descope_project_id(request, scoped_project_id)
+    items: list[dict[str, str | bool]] = []
+
+    for audio_hash, entry in cache.items():
+        if not isinstance(audio_hash, str) or not isinstance(entry, dict):
+            continue
+
+        reference_path = _resolve_reference_audio_path(project_root, entry.get("audio_path"))
+        if reference_path is None:
+            continue
+
+        source_filename = str(entry.get("source_filename") or reference_path.name)
+        updated_at = str(entry.get("updated_at") or entry.get("reference_text_updated_at") or "")
+        owner_key = str(entry.get("owner_key") or "")
+        owner_label = str(entry.get("owner_label") or "")
+        saved_path = str(entry.get("audio_path") or reference_path)
+        artifact_url = f"/projects/{visible_project_id}/artifact?path={quote(str(reference_path), safe='')}"
+        items.append(
+            {
+                "audio_hash": audio_hash,
+                "source_filename": source_filename,
+                "saved_path": saved_path,
+                "updated_at": updated_at,
+                "has_reference_text": bool(str(entry.get("reference_text") or "").strip()),
+                "artifact_url": artifact_url,
+                "project_id": visible_project_id,
+                "owner_key": owner_key,
+                "owner_label": owner_label,
+            }
+        )
+    return items
+
+
+def _find_reference_audio_for_hash(
+    request: Request,
+    *,
+    scoped_project_id: str,
+    audio_hash: str,
+) -> tuple[dict[str, str], Path, str] | None:
+    # 1) Prefer current project cache so team samples in project remain usable.
+    current_paths = pipeline.project_manager.get_paths(scoped_project_id)
+    current_entry = _load_reference_cache(current_paths.manifests).get(audio_hash)
+    if isinstance(current_entry, dict):
+        current_path = _resolve_reference_audio_path(current_paths.root.resolve(), current_entry.get("audio_path"))
+        if current_path is not None:
+            return ({str(k): str(v) for k, v in current_entry.items()}, current_path, scoped_project_id)
+
+    # 2) Fallback: same user can reuse samples from their other projects.
+    user_key, _ = _current_user_key_and_label(request)
+    if not user_key:
+        return None
+
+    for candidate_project_id in pipeline.list_projects():
+        if candidate_project_id == scoped_project_id:
+            continue
+        candidate_paths = pipeline.project_manager.get_paths(candidate_project_id)
+        candidate_entry = _load_reference_cache(candidate_paths.manifests).get(audio_hash)
+        if not isinstance(candidate_entry, dict):
+            continue
+        candidate_owner_key = str(candidate_entry.get("owner_key") or "")
+        legacy_owner_match = not candidate_owner_key and candidate_project_id.startswith(f"{user_key}__")
+        if candidate_owner_key != user_key and not legacy_owner_match:
+            continue
+        candidate_path = _resolve_reference_audio_path(candidate_paths.root.resolve(), candidate_entry.get("audio_path"))
+        if candidate_path is None:
+            continue
+        return ({str(k): str(v) for k, v in candidate_entry.items()}, candidate_path, candidate_project_id)
+    return None
+
+
 @app.get("/auth/bridge")
 def auth_bridge(request: Request, token: str):
     try:
@@ -332,6 +426,7 @@ def upload_reference_audio(request: Request, project_id: str, req: ProjectRefere
         raise HTTPException(status_code=422, detail="invalid audio_b64 payload") from exc
 
     audio_hash = hashlib.sha256(audio_bytes).hexdigest()
+    owner_key, owner_label = _current_user_key_and_label(request)
     ext = _safe_audio_extension(req.filename)
     output_path = paths.assets_reference_audio / f"reference-{audio_hash[:16]}{ext}"
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -346,6 +441,9 @@ def upload_reference_audio(request: Request, project_id: str, req: ProjectRefere
             "audio_path": str(output_path),
             "source_filename": _safe_filename(req.filename),
             "updated_at": datetime.now(timezone.utc).isoformat(),
+            "owner_key": owner_key or "",
+            "owner_label": owner_label or "",
+            "project_id": project_id,
         }
     )
     cache[audio_hash] = entry
@@ -367,36 +465,38 @@ def list_reference_audio(request: Request, project_id: str):
     scoped_project_id = _scope_project_id(request, project_id)
 
     try:
-        paths = pipeline.project_manager.ensure_project(scoped_project_id)
+        pipeline.project_manager.ensure_project(scoped_project_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="project not found") from exc
 
-    project_root = paths.root.resolve()
-    cache = _load_reference_cache(paths.manifests)
+    user_key, _ = _current_user_key_and_label(request)
     items: list[dict[str, str | bool]] = []
+    seen_hashes: set[str] = set()
 
-    for audio_hash, entry in cache.items():
-        if not isinstance(audio_hash, str) or not isinstance(entry, dict):
-            continue
+    # Include all samples currently attached to this project (supports multi-user projects).
+    for sample in _project_cache_entries(request, scoped_project_id=scoped_project_id):
+        row = {**sample, "scope": "project"}
+        items.append(row)
+        sample_hash = str(sample.get("audio_hash") or "")
+        if sample_hash:
+            seen_hashes.add(sample_hash)
 
-        reference_path = _resolve_reference_audio_path(project_root, entry.get("audio_path"))
-        if reference_path is None:
-            continue
-
-        source_filename = str(entry.get("source_filename") or reference_path.name)
-        updated_at = str(entry.get("updated_at") or entry.get("reference_text_updated_at") or "")
-        saved_path = str(entry.get("audio_path") or reference_path)
-        artifact_url = f"/projects/{project_id}/artifact?path={quote(str(reference_path), safe='')}"
-        items.append(
-            {
-                "audio_hash": audio_hash,
-                "source_filename": source_filename,
-                "saved_path": saved_path,
-                "updated_at": updated_at,
-                "has_reference_text": bool(str(entry.get("reference_text") or "").strip()),
-                "artifact_url": artifact_url,
-            }
-        )
+    # Include this user's own samples from other projects as reusable library entries.
+    if user_key:
+        for candidate_project_id in pipeline.list_projects():
+            if candidate_project_id == scoped_project_id:
+                continue
+            for sample in _project_cache_entries(request, scoped_project_id=candidate_project_id):
+                sample_hash = str(sample.get("audio_hash") or "")
+                if not sample_hash or sample_hash in seen_hashes:
+                    continue
+                sample_owner_key = str(sample.get("owner_key") or "")
+                legacy_owner_match = not sample_owner_key and candidate_project_id.startswith(f"{user_key}__")
+                if sample_owner_key != user_key and not legacy_owner_match:
+                    continue
+                row = {**sample, "scope": "library"}
+                items.append(row)
+                seen_hashes.add(sample_hash)
 
     items.sort(key=lambda row: str(row.get("updated_at") or ""), reverse=True)
     return {"project_id": project_id, "samples": items}
@@ -437,17 +537,39 @@ def synthesize_simple(request: Request, req: SimpleSynthesisRequest):
     project_root = paths.root.resolve()
     reference_hash = ""
     source_filename = ""
+    owner_key, owner_label = _current_user_key_and_label(request)
 
     if req.reference_audio_hash:
         reference_hash = req.reference_audio_hash.strip().lower()
-        cached_entry = reference_cache.get(reference_hash)
-        if not cached_entry:
+        found = _find_reference_audio_for_hash(
+            request,
+            scoped_project_id=scoped_project_id,
+            audio_hash=reference_hash,
+        )
+        if not found:
             raise HTTPException(status_code=404, detail="saved reference audio not found")
 
-        reference_path = _resolve_reference_audio_path(project_root, cached_entry.get("audio_path"))
-        if reference_path is None:
-            raise HTTPException(status_code=404, detail="saved reference audio file is missing")
-        source_filename = str(cached_entry.get("source_filename") or reference_path.name)
+        found_entry, found_reference_path, source_project_id = found
+        source_filename = str(found_entry.get("source_filename") or found_reference_path.name)
+        source_ext = _safe_audio_extension(source_filename)
+        reference_path = (paths.assets_reference_audio / f"reference-{reference_hash[:16]}{source_ext}").resolve()
+        reference_path.parent.mkdir(parents=True, exist_ok=True)
+        if not reference_path.exists():
+            reference_path.write_bytes(found_reference_path.read_bytes())
+
+        cached_entry = {
+            **found_entry,
+            "audio_hash": reference_hash,
+            "audio_path": str(reference_path),
+            "source_filename": source_filename,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "owner_key": str(found_entry.get("owner_key") or owner_key or ""),
+            "owner_label": str(found_entry.get("owner_label") or owner_label or ""),
+            "project_id": project_id,
+            "origin_project_id": _descope_project_id(request, source_project_id),
+        }
+        reference_cache[reference_hash] = cached_entry
+        _write_reference_cache(paths.manifests, reference_cache)
     else:
         cached_entry = {}
         if not req.reference_audio_b64 or not req.reference_audio_filename:
@@ -479,6 +601,9 @@ def synthesize_simple(request: Request, req: SimpleSynthesisRequest):
             "audio_path": str(reference_path),
             "source_filename": source_filename,
             "updated_at": datetime.now(timezone.utc).isoformat(),
+            "owner_key": owner_key or "",
+            "owner_label": owner_label or "",
+            "project_id": project_id,
         }
         reference_cache[reference_hash] = refreshed_entry
         _write_reference_cache(paths.manifests, reference_cache)
@@ -543,6 +668,8 @@ def synthesize_simple(request: Request, req: SimpleSynthesisRequest):
                     "source_filename": source_filename,
                     "reference_text": reference_text_value.strip(),
                     "reference_text_updated_at": datetime.now(timezone.utc).isoformat(),
+                    "owner_key": str(latest_entry.get("owner_key") or owner_key or ""),
+                    "owner_label": str(latest_entry.get("owner_label") or owner_label or ""),
                 }
             )
             latest_cache[reference_hash] = latest_entry

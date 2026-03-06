@@ -367,9 +367,13 @@ function applySavedSampleSelection(audioHash) {
   }
   if (audioFileNameNode) {
     const stamped = sample.updated_at ? `Saved ${formatIso(sample.updated_at)}` : "Saved in project";
-    audioFileNameNode.textContent = `${sample.source_filename || "saved-sample"} (${stamped})`;
+    const projectHint = sample.project_id ? `, project ${sample.project_id}` : "";
+    audioFileNameNode.textContent = `${sample.source_filename || "saved-sample"} (${stamped}${projectHint})`;
   }
-  setSavedSampleStatus(`Using saved sample: ${sample.source_filename || sample.audio_hash.slice(0, 8)}.`);
+  const ownerHint = sample.owner_label ? ` by ${sample.owner_label}` : "";
+  setSavedSampleStatus(
+    `Using saved sample: ${sample.source_filename || sample.audio_hash.slice(0, 8)}${ownerHint}.`
+  );
 }
 
 async function loadReferenceSamples(preferredHash = null) {
@@ -402,7 +406,8 @@ async function loadReferenceSamples(preferredHash = null) {
       const option = document.createElement("option");
       option.value = sample.audio_hash;
       const updated = sample.updated_at ? formatIso(sample.updated_at) : "Saved";
-      option.textContent = `${sample.source_filename || "sample"} - ${updated}`;
+      const sourceTag = sample.scope === "library" ? `My library (${sample.project_id || "other project"})` : "Project";
+      option.textContent = `${sample.source_filename || "sample"} - ${sourceTag} - ${updated}`;
       savedSampleSelectNode.appendChild(option);
     }
 
