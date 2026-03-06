@@ -304,17 +304,14 @@ function smoothEtaDisplay(etaSeconds) {
 }
 
 function detectComputeMode(job) {
-  if (state.computeMode === "worker" || state.computeMode === "server") {
-    return state.computeMode;
-  }
-
   const stage = String(job.stage || state.currentStage || "");
   const logs = Array.isArray(job.logs) ? job.logs : [];
   const joinedLogs = logs.join("\n").toLowerCase();
 
   if (
     stage === "worker_running" ||
-    joinedLogs.includes("worker ") && joinedLogs.includes("started processing")
+    (joinedLogs.includes("worker ") && joinedLogs.includes("started processing")) ||
+    (joinedLogs.includes("worker ") && joinedLogs.includes("completed job"))
   ) {
     return "worker";
   }
@@ -326,8 +323,21 @@ function detectComputeMode(job) {
     return "server";
   }
 
+  if (["model_load", "generation", "stitching", "captioning"].includes(stage)) {
+    // These stages are emitted by local server processing.
+    return "server";
+  }
+
+  if (stage === "queued_remote") {
+    return "waiting_worker";
+  }
+
   if (!state.expectedRemoteWorker) {
     return "server";
+  }
+
+  if (state.computeMode === "worker" || state.computeMode === "server") {
+    return state.computeMode;
   }
   return "waiting_worker";
 }
