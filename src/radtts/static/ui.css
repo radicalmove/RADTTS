@@ -303,6 +303,26 @@ body {
   box-shadow: none;
 }
 
+.upload-line input[type="file"]::file-selector-button,
+.upload-line input[type="file"]::-webkit-file-upload-button {
+  border: 2px solid var(--uc-grey-300);
+  border-radius: var(--uc-radius-sm);
+  padding: 6px 10px;
+  margin-right: 8px;
+  background: var(--uc-white);
+  color: var(--uc-black);
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.upload-line input[type="file"]::file-selector-button:hover,
+.upload-line input[type="file"]::-webkit-file-upload-button:hover {
+  background: var(--uc-grey-600);
+  color: var(--uc-white);
+  border-color: var(--uc-grey-600);
+}
+
 .options-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
