@@ -970,6 +970,33 @@ async function ensureWorkerSetupLinks() {
   }
 }
 
+async function copyTextToClipboard(text) {
+  const value = String(text || "");
+  if (!value) {
+    throw new Error("Nothing to copy");
+  }
+
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+
+  const area = document.createElement("textarea");
+  area.value = value;
+  area.setAttribute("readonly", "");
+  area.style.position = "fixed";
+  area.style.top = "-1000px";
+  area.style.left = "-1000px";
+  document.body.appendChild(area);
+  area.focus();
+  area.select();
+  const copied = document.execCommand("copy");
+  document.body.removeChild(area);
+  if (!copied) {
+    throw new Error("Clipboard unavailable");
+  }
+}
+
 async function fileToBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -1757,39 +1784,83 @@ function bindWorkerStatus() {
     });
   }
 
+  if (workerSetupWindowsLinkNode) {
+    workerSetupWindowsLinkNode.addEventListener("click", (event) => {
+      const href = String(workerSetupWindowsLinkNode.getAttribute("href") || "").trim();
+      if (href && href !== "#") return;
+      event.preventDefault();
+      void (async () => {
+        await ensureWorkerSetupLinks();
+        const refreshed = String(workerSetupWindowsLinkNode.getAttribute("href") || "").trim();
+        if (refreshed && refreshed !== "#") {
+          window.open(refreshed, "_blank", "noopener");
+        } else {
+          setGenerateStatus("Windows installer link is not available yet.", true);
+        }
+      })();
+    });
+  }
+
+  if (workerSetupMacosLinkNode) {
+    workerSetupMacosLinkNode.addEventListener("click", (event) => {
+      const href = String(workerSetupMacosLinkNode.getAttribute("href") || "").trim();
+      if (href && href !== "#") return;
+      event.preventDefault();
+      void (async () => {
+        await ensureWorkerSetupLinks();
+        const refreshed = String(workerSetupMacosLinkNode.getAttribute("href") || "").trim();
+        if (refreshed && refreshed !== "#") {
+          window.open(refreshed, "_blank", "noopener");
+        } else {
+          setGenerateStatus("Mac installer link is not available yet.", true);
+        }
+      })();
+    });
+  }
+
   if (workerCopyLinuxBtn) {
     workerCopyLinuxBtn.addEventListener("click", () => {
-      const command = state.workerSetupLinuxCommand;
-      if (!command) {
-        setGenerateStatus("No Linux setup command available yet.", true);
-        return;
-      }
-      navigator.clipboard
-        .writeText(command)
-        .then(() => {
+      void (async () => {
+        let command = state.workerSetupLinuxCommand;
+        if (!command) {
+          await ensureWorkerSetupLinks();
+          command = state.workerSetupLinuxCommand;
+        }
+        if (!command) {
+          setGenerateStatus("No Linux setup command available yet.", true);
+          return;
+        }
+        try {
+          await copyTextToClipboard(command);
           setGenerateStatus("Linux helper setup command copied.");
-        })
-        .catch(() => {
-          setGenerateStatus("Could not copy Linux setup command.", true);
-        });
+        } catch {
+          window.prompt("Copy this Linux setup command:", command);
+          setGenerateStatus("Could not auto-copy. A manual copy prompt is shown.", true);
+        }
+      })();
     });
   }
 
   if (workerCopyMacosBtn) {
     workerCopyMacosBtn.addEventListener("click", () => {
-      const command = state.workerSetupMacosCommand;
-      if (!command) {
-        setGenerateStatus("No Mac setup command available yet.", true);
-        return;
-      }
-      navigator.clipboard
-        .writeText(command)
-        .then(() => {
+      void (async () => {
+        let command = state.workerSetupMacosCommand;
+        if (!command) {
+          await ensureWorkerSetupLinks();
+          command = state.workerSetupMacosCommand;
+        }
+        if (!command) {
+          setGenerateStatus("No Mac setup command available yet.", true);
+          return;
+        }
+        try {
+          await copyTextToClipboard(command);
           setGenerateStatus("Mac helper setup command copied.");
-        })
-        .catch(() => {
-          setGenerateStatus("Could not copy Mac setup command.", true);
-        });
+        } catch {
+          window.prompt("Copy this Mac setup command:", command);
+          setGenerateStatus("Could not auto-copy. A manual copy prompt is shown.", true);
+        }
+      })();
     });
   }
 }
