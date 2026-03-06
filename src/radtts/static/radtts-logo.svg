@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="64" height="64" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">RADTTS logo</title>
+  <desc id="desc">Stylized red voice waveform bars with a speech accent</desc>
+
+  <!-- Waveform bars -->
+  <rect x="10" y="18" width="8" height="28" rx="4" fill="none" stroke="#CE3E2E" stroke-width="4"/>
+  <rect x="24" y="10" width="8" height="44" rx="4" fill="none" stroke="#CE3E2E" stroke-width="4"/>
+  <rect x="38" y="22" width="8" height="20" rx="4" fill="none" stroke="#CE3E2E" stroke-width="4"/>
+
+  <!-- Speech accent -->
+  <g transform="translate(49,47)">
+    <circle cx="0" cy="0" r="9" fill="#CE3E2E"/>
+    <path d="M-4 0C-2 -3 1 -3 3 0C2 2 0 3 -3 3" fill="none" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

@@ -54,6 +54,24 @@ body {
   font-weight: 700;
 }
 
+.topbar-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.topbar-logo-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.topbar-logo {
+  display: block;
+  width: 32px;
+  height: 32px;
+}
+
 .eyebrow {
   margin: 0;
   text-transform: uppercase;
@@ -251,6 +269,11 @@ pre {
 
   .topbar h1 {
     font-size: 1.05rem;
+  }
+
+  .topbar-logo {
+    width: 28px;
+    height: 28px;
   }
 
   .chip {
