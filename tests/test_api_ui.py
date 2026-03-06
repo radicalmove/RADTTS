@@ -122,3 +122,63 @@ def test_project_reference_audio_upload_reuses_same_file_for_same_audio():
     finally:
         if project_root.exists():
             shutil.rmtree(project_root)
+
+
+def test_project_reference_audio_list_returns_saved_samples():
+    client = TestClient(app)
+    project_id = f"ui-{uuid.uuid4().hex[:8]}"
+    project_root = Path("projects") / project_id
+    sample_b64 = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw"
+
+    try:
+        created = client.post("/projects", json={"project_id": project_id})
+        assert created.status_code == 200
+
+        uploaded = client.post(
+            f"/projects/{project_id}/reference-audio",
+            json={"filename": "voice-a.wav", "audio_b64": sample_b64},
+        )
+        assert uploaded.status_code == 200
+        uploaded_payload = uploaded.json()
+
+        listed = client.get(f"/projects/{project_id}/reference-audio")
+        assert listed.status_code == 200
+        payload = listed.json()
+        assert payload["project_id"] == project_id
+        assert len(payload["samples"]) == 1
+        sample = payload["samples"][0]
+        assert sample["audio_hash"] == uploaded_payload["audio_hash"]
+        assert sample["source_filename"] == "voice-a.wav"
+        assert sample["saved_path"] == uploaded_payload["saved_path"]
+        assert sample["artifact_url"].startswith(f"/projects/{project_id}/artifact?path=")
+    finally:
+        if project_root.exists():
+            shutil.rmtree(project_root)
+
+
+def test_simple_synthesize_with_unknown_reference_audio_hash_returns_404():
+    client = TestClient(app)
+    project_id = f"ui-{uuid.uuid4().hex[:8]}"
+    project_root = Path("projects") / project_id
+
+    try:
+        created = client.post("/projects", json={"project_id": project_id})
+        assert created.status_code == 200
+
+        response = client.post(
+            "/synthesize/simple",
+            json={
+                "project_id": project_id,
+                "text": "Hello world.",
+                "reference_audio_hash": "a" * 64,
+                "quality": "normal",
+                "average_gap_seconds": 0.8,
+                "output_format": "mp3",
+                "voice_clone_authorized": True,
+            },
+        )
+        assert response.status_code == 404
+        assert "saved reference audio" in response.json()["detail"]
+    finally:
+        if project_root.exists():
+            shutil.rmtree(project_root)

@@ -13,6 +13,9 @@ const audioDropzoneNode = document.getElementById("audio-dropzone");
 const audioFileInputNode = document.getElementById("reference-audio-file");
 const audioDropzoneTitleNode = document.getElementById("audio-dropzone-title");
 const audioFileNameNode = document.getElementById("audio-file-name");
+const savedSampleSelectNode = document.getElementById("saved-sample-select");
+const refreshSamplesBtn = document.getElementById("refresh-samples-btn");
+const savedSampleStatusNode = document.getElementById("saved-sample-status");
 const recordAudioBtn = document.getElementById("record-audio-btn");
 const recordStatusNode = document.getElementById("record-status");
 const recordPreviewNode = document.getElementById("record-preview");
@@ -85,6 +88,7 @@ const stageExpectedSeconds = {
 const state = {
   activeProjectId: null,
   selectedAudioFile: null,
+  selectedAudioHash: null,
   activeJobId: null,
   pollTimer: null,
   progressAnimator: null,
@@ -99,6 +103,7 @@ const state = {
   recordingStream: null,
   recordingChunks: [],
   recordingPreviewUrl: null,
+  referenceSamples: [],
 };
 
 function cleanOptional(value) {
@@ -122,6 +127,12 @@ function setRecordStatus(message, isError = false) {
   if (!recordStatusNode) return;
   recordStatusNode.textContent = message || "";
   recordStatusNode.style.color = isError ? "#a73527" : "#555";
+}
+
+function setSavedSampleStatus(message, isError = false) {
+  if (!savedSampleStatusNode) return;
+  savedSampleStatusNode.textContent = message || "";
+  savedSampleStatusNode.style.color = isError ? "#a73527" : "#555";
 }
 
 function setWorkspaceVisible(visible) {
@@ -285,6 +296,12 @@ async function readScriptFile(file) {
 
 function applyActiveProject(projectId) {
   state.activeProjectId = projectId;
+  state.selectedAudioHash = null;
+  state.referenceSamples = [];
+  clearRecordingPreview();
+  setSelectedAudioFile(null);
+  if (savedSampleSelectNode) savedSampleSelectNode.innerHTML = '<option value="">Loading saved samples...</option>';
+  setSavedSampleStatus("Loading saved samples...");
   if (activeProjectLabelNode) activeProjectLabelNode.textContent = projectId;
   setWorkspaceVisible(true);
   setGenerateStatus("");
@@ -292,7 +309,8 @@ function applyActiveProject(projectId) {
   clearJobTracking();
   setGenerateEnabled(true);
   setCancelVisible(false);
-  loadOutputs();
+  void loadOutputs();
+  void loadReferenceSamples();
 }
 
 function requireActiveProject() {
@@ -304,6 +322,10 @@ function requireActiveProject() {
 
 function setSelectedAudioFile(file) {
   state.selectedAudioFile = file || null;
+  state.selectedAudioHash = null;
+  if (savedSampleSelectNode) {
+    savedSampleSelectNode.value = "";
+  }
   if (!audioFileNameNode || !audioDropzoneTitleNode) return;
 
   if (!state.selectedAudioFile) {
@@ -317,6 +339,91 @@ function setSelectedAudioFile(file) {
   audioFileNameNode.textContent = `${state.selectedAudioFile.name} (${mb} MB)`;
 }
 
+function findReferenceSampleByHash(audioHash) {
+  if (!audioHash) return null;
+  for (const sample of state.referenceSamples) {
+    if (sample && sample.audio_hash === audioHash) {
+      return sample;
+    }
+  }
+  return null;
+}
+
+function applySavedSampleSelection(audioHash) {
+  const sample = findReferenceSampleByHash(audioHash);
+  if (!sample) {
+    setSavedSampleStatus("Saved sample not found. Refresh and try again.", true);
+    return;
+  }
+
+  state.selectedAudioFile = null;
+  state.selectedAudioHash = sample.audio_hash;
+  if (audioFileInputNode) {
+    audioFileInputNode.value = "";
+  }
+
+  if (audioDropzoneTitleNode) {
+    audioDropzoneTitleNode.textContent = "Saved sample selected";
+  }
+  if (audioFileNameNode) {
+    const stamped = sample.updated_at ? `Saved ${formatIso(sample.updated_at)}` : "Saved in project";
+    audioFileNameNode.textContent = `${sample.source_filename || "saved-sample"} (${stamped})`;
+  }
+  setSavedSampleStatus(`Using saved sample: ${sample.source_filename || sample.audio_hash.slice(0, 8)}.`);
+}
+
+async function loadReferenceSamples(preferredHash = null) {
+  const projectId = state.activeProjectId;
+  if (!projectId || !savedSampleSelectNode) return;
+
+  savedSampleSelectNode.innerHTML = '<option value="">Loading saved samples...</option>';
+  savedSampleSelectNode.disabled = true;
+  if (refreshSamplesBtn) refreshSamplesBtn.disabled = true;
+
+  try {
+    const data = await requestJSON(`/projects/${encodeURIComponent(projectId)}/reference-audio`, "GET");
+    const samples = Array.isArray(data.samples) ? data.samples : [];
+    state.referenceSamples = samples;
+
+    savedSampleSelectNode.innerHTML = "";
+    if (!samples.length) {
+      savedSampleSelectNode.innerHTML = '<option value="">No saved samples yet</option>';
+      savedSampleSelectNode.value = "";
+      setSavedSampleStatus("No saved samples in this project yet.");
+      return;
+    }
+
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Choose saved sample";
+    savedSampleSelectNode.appendChild(placeholder);
+
+    for (const sample of samples) {
+      const option = document.createElement("option");
+      option.value = sample.audio_hash;
+      const updated = sample.updated_at ? formatIso(sample.updated_at) : "Saved";
+      option.textContent = `${sample.source_filename || "sample"} - ${updated}`;
+      savedSampleSelectNode.appendChild(option);
+    }
+
+    const fallbackHash = preferredHash || state.selectedAudioHash;
+    const selectedHash = findReferenceSampleByHash(fallbackHash)?.audio_hash || "";
+    savedSampleSelectNode.value = selectedHash;
+
+    if (selectedHash && !state.selectedAudioFile) {
+      applySavedSampleSelection(selectedHash);
+    } else {
+      setSavedSampleStatus(`Loaded ${samples.length} saved sample${samples.length === 1 ? "" : "s"}.`);
+    }
+  } catch (err) {
+    savedSampleSelectNode.innerHTML = '<option value="">Unable to load samples</option>';
+    setSavedSampleStatus(`Could not load saved samples: ${String(err)}`, true);
+  } finally {
+    savedSampleSelectNode.disabled = false;
+    if (refreshSamplesBtn) refreshSamplesBtn.disabled = false;
+  }
+}
+
 async function attachAudioFileToProject(file, originLabel = "Audio") {
   try {
     const projectId = requireActiveProject();
@@ -327,9 +434,13 @@ async function attachAudioFileToProject(file, originLabel = "Audio") {
       "POST",
       payload
     );
+    state.selectedAudioHash = data.audio_hash || null;
     setRecordStatus(`${originLabel} saved to project as ${data.filename}.`);
+    setSavedSampleStatus(`${originLabel} saved. You can reuse it later from the saved sample list.`);
+    await loadReferenceSamples(state.selectedAudioHash);
   } catch (err) {
     setRecordStatus(`${originLabel} selected, but could not be saved yet: ${String(err)}`, true);
+    setSavedSampleStatus(`Saved sample refresh failed: ${String(err)}`, true);
   }
 }
 
@@ -644,8 +755,8 @@ async function handleGenerate() {
     const projectId = requireActiveProject();
     const scriptText = cleanOptional(scriptTextNode?.value || "");
 
-    if (!state.selectedAudioFile) {
-      throw new Error("Please select an audio sample.");
+    if (!state.selectedAudioFile && !state.selectedAudioHash) {
+      throw new Error("Please select, record, or choose a saved audio sample.");
     }
     if (!scriptText) {
       throw new Error("Please provide script text.");
@@ -656,12 +767,9 @@ async function handleGenerate() {
     setGenerateStatus("Uploading files and starting generation...");
     resetProgressUi();
 
-    const referenceAudioB64 = await fileToBase64(state.selectedAudioFile);
     const payload = {
       project_id: projectId,
       text: scriptText,
-      reference_audio_b64: referenceAudioB64,
-      reference_audio_filename: state.selectedAudioFile.name,
       quality: qualityNode?.value || "normal",
       add_ums: Boolean(umsToggleNode?.checked),
       add_ahs: Boolean(ahsToggleNode?.checked),
@@ -670,6 +778,13 @@ async function handleGenerate() {
       voice_clone_authorized: true,
       generate_transcript: Boolean(transcriptToggleNode?.checked),
     };
+
+    if (state.selectedAudioHash) {
+      payload.reference_audio_hash = state.selectedAudioHash;
+    } else if (state.selectedAudioFile) {
+      payload.reference_audio_b64 = await fileToBase64(state.selectedAudioFile);
+      payload.reference_audio_filename = state.selectedAudioFile.name;
+    }
 
     const data = await requestJSON("/synthesize/simple", "POST", payload);
     setGenerateStatus("Generation started.");
@@ -759,12 +874,20 @@ function bindProjectGateway() {
       stopRecordingIfActive();
       clearJobTracking();
       state.activeProjectId = null;
+      state.selectedAudioHash = null;
+      state.referenceSamples = [];
       if (activeProjectLabelNode) activeProjectLabelNode.textContent = "";
       setWorkspaceVisible(false);
       setGenerateEnabled(true);
       setCancelVisible(false);
       setGenerateStatus("");
       resetProgressUi();
+      setSelectedAudioFile(null);
+      clearRecordingPreview();
+      if (savedSampleSelectNode) {
+        savedSampleSelectNode.innerHTML = '<option value="">No project selected</option>';
+      }
+      setSavedSampleStatus("Saved samples are scoped to this project.");
       await loadProjects();
     });
   }
@@ -774,6 +897,29 @@ function bindProjectGateway() {
 }
 
 function bindAudioSelection() {
+  if (savedSampleSelectNode) {
+    savedSampleSelectNode.addEventListener("change", () => {
+      const selectedHash = savedSampleSelectNode.value;
+      if (selectedHash) {
+        applySavedSampleSelection(selectedHash);
+      } else if (!state.selectedAudioFile) {
+        state.selectedAudioHash = null;
+        if (audioDropzoneTitleNode) {
+          audioDropzoneTitleNode.textContent = "Drop audio here or click to choose";
+        }
+        if (audioFileNameNode) {
+          audioFileNameNode.textContent = "No file selected.";
+        }
+      }
+    });
+  }
+
+  if (refreshSamplesBtn) {
+    refreshSamplesBtn.addEventListener("click", () => {
+      void loadReferenceSamples();
+    });
+  }
+
   if (audioFileInputNode) {
     audioFileInputNode.addEventListener("change", async () => {
       const file = audioFileInputNode.files && audioFileInputNode.files[0];
@@ -966,6 +1112,7 @@ bindGapSlider();
 bindGenerate();
 bindFolderCopy();
 setSelectedAudioFile(null);
+setSavedSampleStatus("Saved samples are scoped to this project.");
 setRecordStatus("Use Record audio to capture a sample from your microphone.");
 setCancelVisible(false);
 resetProgressUi();

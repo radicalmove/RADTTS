@@ -86,6 +86,16 @@
               <small>WAV, MP3, M4A, FLAC, OGG</small>
             </label>
             <p id="audio-file-name" class="field-note">No file selected.</p>
+            <div class="saved-sample-block">
+              <label class="saved-sample-label" for="saved-sample-select">Or choose a saved sample</label>
+              <div class="saved-sample-row">
+                <select id="saved-sample-select">
+                  <option value="">No saved samples yet</option>
+                </select>
+                <button id="refresh-samples-btn" type="button">Refresh</button>
+              </div>
+              <p id="saved-sample-status" class="field-note">Saved samples are scoped to this project.</p>
+            </div>
             <div class="record-controls">
               <button id="record-audio-btn" class="record-btn" type="button">Record audio</button>
               <audio id="record-preview" controls hidden></audio>

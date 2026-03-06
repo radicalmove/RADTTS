@@ -227,6 +227,22 @@ def _write_reference_cache(project_manifests_dir: Path, cache: dict[str, dict[st
     cache_path.write_text(json.dumps(cache, indent=2), encoding="utf-8")
 
 
+def _resolve_reference_audio_path(project_root: Path, raw_path: str | None) -> Path | None:
+    if not raw_path:
+        return None
+    try:
+        candidate = Path(raw_path).resolve()
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        candidate.relative_to(project_root)
+    except ValueError:
+        return None
+    if not candidate.exists():
+        return None
+    return candidate
+
+
 @app.get("/auth/bridge")
 def auth_bridge(request: Request, token: str):
     try:
@@ -345,6 +361,47 @@ def upload_reference_audio(request: Request, project_id: str, req: ProjectRefere
     }
 
 
+@app.get("/projects/{project_id}/reference-audio")
+def list_reference_audio(request: Request, project_id: str):
+    _require_auth(request)
+    scoped_project_id = _scope_project_id(request, project_id)
+
+    try:
+        paths = pipeline.project_manager.ensure_project(scoped_project_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+
+    project_root = paths.root.resolve()
+    cache = _load_reference_cache(paths.manifests)
+    items: list[dict[str, str | bool]] = []
+
+    for audio_hash, entry in cache.items():
+        if not isinstance(audio_hash, str) or not isinstance(entry, dict):
+            continue
+
+        reference_path = _resolve_reference_audio_path(project_root, entry.get("audio_path"))
+        if reference_path is None:
+            continue
+
+        source_filename = str(entry.get("source_filename") or reference_path.name)
+        updated_at = str(entry.get("updated_at") or entry.get("reference_text_updated_at") or "")
+        saved_path = str(entry.get("audio_path") or reference_path)
+        artifact_url = f"/projects/{project_id}/artifact?path={quote(str(reference_path), safe='')}"
+        items.append(
+            {
+                "audio_hash": audio_hash,
+                "source_filename": source_filename,
+                "saved_path": saved_path,
+                "updated_at": updated_at,
+                "has_reference_text": bool(str(entry.get("reference_text") or "").strip()),
+                "artifact_url": artifact_url,
+            }
+        )
+
+    items.sort(key=lambda row: str(row.get("updated_at") or ""), reverse=True)
+    return {"project_id": project_id, "samples": items}
+
+
 @app.post("/transcribe")
 def transcribe(request: Request, req: TranscribeRequest):
     _require_auth(request)
@@ -376,35 +433,51 @@ def synthesize_simple(request: Request, req: SimpleSynthesisRequest):
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="project not found") from exc
 
-    try:
-        reference_audio = base64.b64decode(req.reference_audio_b64.encode("utf-8"), validate=True)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=422, detail="invalid reference_audio_b64 payload") from exc
-
-    reference_hash = hashlib.sha256(reference_audio).hexdigest()
     reference_cache = _load_reference_cache(paths.manifests)
-    cached_entry = reference_cache.get(reference_hash, {})
-
-    cached_reference_path = cached_entry.get("audio_path")
-    reference_path = Path(cached_reference_path).resolve() if cached_reference_path else None
     project_root = paths.root.resolve()
-    if reference_path is not None:
+    reference_hash = ""
+    source_filename = ""
+
+    if req.reference_audio_hash:
+        reference_hash = req.reference_audio_hash.strip().lower()
+        cached_entry = reference_cache.get(reference_hash)
+        if not cached_entry:
+            raise HTTPException(status_code=404, detail="saved reference audio not found")
+
+        reference_path = _resolve_reference_audio_path(project_root, cached_entry.get("audio_path"))
+        if reference_path is None:
+            raise HTTPException(status_code=404, detail="saved reference audio file is missing")
+        source_filename = str(cached_entry.get("source_filename") or reference_path.name)
+    else:
+        cached_entry = {}
+        if not req.reference_audio_b64 or not req.reference_audio_filename:
+            raise HTTPException(
+                status_code=422,
+                detail="Provide either reference_audio_b64+reference_audio_filename or reference_audio_hash",
+            )
+
         try:
-            reference_path.relative_to(project_root)
-        except ValueError:
-            reference_path = None
-    if reference_path is None or not reference_path.exists():
-        reference_ext = _safe_audio_extension(req.reference_audio_filename)
-        reference_path = (paths.assets_reference_audio / f"reference-{reference_hash[:16]}{reference_ext}").resolve()
-        reference_path.parent.mkdir(parents=True, exist_ok=True)
-        if not reference_path.exists():
-            reference_path.write_bytes(reference_audio)
+            reference_audio = base64.b64decode(req.reference_audio_b64.encode("utf-8"), validate=True)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=422, detail="invalid reference_audio_b64 payload") from exc
+
+        reference_hash = hashlib.sha256(reference_audio).hexdigest()
+        source_filename = _safe_filename(req.reference_audio_filename)
+        cached_entry = reference_cache.get(reference_hash, {})
+
+        reference_path = _resolve_reference_audio_path(project_root, cached_entry.get("audio_path"))
+        if reference_path is None:
+            reference_ext = _safe_audio_extension(req.reference_audio_filename)
+            reference_path = (paths.assets_reference_audio / f"reference-{reference_hash[:16]}{reference_ext}").resolve()
+            reference_path.parent.mkdir(parents=True, exist_ok=True)
+            if not reference_path.exists():
+                reference_path.write_bytes(reference_audio)
 
         refreshed_entry = {
             **cached_entry,
             "audio_hash": reference_hash,
             "audio_path": str(reference_path),
-            "source_filename": _safe_filename(req.reference_audio_filename),
+            "source_filename": source_filename,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         reference_cache[reference_hash] = refreshed_entry
@@ -467,7 +540,7 @@ def synthesize_simple(request: Request, req: SimpleSynthesisRequest):
                 {
                     "audio_hash": reference_hash,
                     "audio_path": str(reference_path),
-                    "source_filename": _safe_filename(req.reference_audio_filename),
+                    "source_filename": source_filename,
                     "reference_text": reference_text_value.strip(),
                     "reference_text_updated_at": datetime.now(timezone.utc).isoformat(),
                 }

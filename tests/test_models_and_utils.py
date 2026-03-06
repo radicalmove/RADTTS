@@ -5,7 +5,15 @@ import pytest
 from pydantic import ValidationError
 
 from radtts.constants import SUPPORTED_BASE_MODELS
-from radtts.models import ChunkMode, OutputFormat, OutputMetadata, PauseConfig, QualityReport, SynthesisRequest
+from radtts.models import (
+    ChunkMode,
+    OutputFormat,
+    OutputMetadata,
+    PauseConfig,
+    QualityReport,
+    SimpleSynthesisRequest,
+    SynthesisRequest,
+)
 from radtts.services.tts import PausePlanner
 from radtts.utils.text import split_sentences
 
@@ -91,3 +99,22 @@ def test_metadata_completeness_fields_present():
         "job_id",
     }
     assert required_keys.issubset(payload.keys())
+
+
+def test_simple_synthesis_request_accepts_reference_audio_hash():
+    req = SimpleSynthesisRequest(
+        project_id="proj1",
+        text="hello",
+        reference_audio_hash="a" * 64,
+        voice_clone_authorized=True,
+    )
+    assert req.reference_audio_hash == "a" * 64
+
+
+def test_simple_synthesis_request_rejects_missing_reference_input():
+    with pytest.raises(ValidationError):
+        SimpleSynthesisRequest(
+            project_id="proj1",
+            text="hello",
+            voice_clone_authorized=True,
+        )

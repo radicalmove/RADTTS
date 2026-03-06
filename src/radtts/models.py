@@ -139,8 +139,9 @@ class WorkerSynthesisEnqueueRequest(BaseModel):
 class SimpleSynthesisRequest(BaseModel):
     project_id: str = Field(min_length=2)
     text: str = Field(min_length=1)
-    reference_audio_b64: str = Field(min_length=32)
-    reference_audio_filename: str = Field(min_length=1)
+    reference_audio_b64: str | None = Field(default=None, min_length=32)
+    reference_audio_filename: str | None = Field(default=None, min_length=1)
+    reference_audio_hash: str | None = Field(default=None, min_length=16)
     output_name: str | None = None
     quality: Literal["normal", "high"] = "normal"
     add_ums: bool = False
@@ -153,6 +154,12 @@ class SimpleSynthesisRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_authorization(self) -> "SimpleSynthesisRequest":
+        has_uploaded_reference = bool(self.reference_audio_b64 and self.reference_audio_filename)
+        has_library_reference = bool(self.reference_audio_hash)
+        if not has_uploaded_reference and not has_library_reference:
+            raise ValueError("Provide either reference_audio_b64+reference_audio_filename or reference_audio_hash")
+        if self.reference_audio_b64 and not self.reference_audio_filename:
+            raise ValueError("reference_audio_filename is required when reference_audio_b64 is provided")
         if not self.voice_clone_authorized:
             raise ValueError("voice_clone_authorized must be true before synthesis")
         return self

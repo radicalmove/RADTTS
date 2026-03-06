@@ -304,6 +304,31 @@ body {
   font-size: 0.86rem;
 }
 
+.saved-sample-block {
+  margin-top: 10px;
+}
+
+.saved-sample-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.saved-sample-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.saved-sample-row select {
+  margin: 0;
+}
+
+#refresh-samples-btn {
+  min-width: 92px;
+}
+
 .record-controls {
   margin-top: 10px;
   display: flex;
