@@ -594,7 +594,8 @@ button:hover {
   flex-wrap: wrap;
 }
 
-.output-actions a {
+.output-actions a,
+.output-actions button {
   display: inline-block;
   text-decoration: none;
   padding: 6px 9px;
@@ -603,6 +604,15 @@ button:hover {
   background: #fff;
   color: #222;
   font-size: 0.82rem;
+  font-family: inherit;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.output-actions a:hover,
+.output-actions button:hover {
+  border-color: var(--uc-grey-400);
+  background: #f4f4f4;
 }
 
 .output-list {
@@ -646,10 +656,29 @@ button:hover {
   word-break: break-all;
 }
 
+.output-audio-player {
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid var(--uc-grey-300);
+  border-radius: var(--uc-radius-sm);
+  background: #fff;
+}
+
+.output-audio-player audio {
+  width: 100%;
+  display: block;
+}
+
 .output-actions button.copy-folder-btn {
   border-width: 1px;
   padding: 6px 9px;
   font-size: 0.82rem;
+}
+
+.output-actions button.play-audio-btn[aria-expanded="true"] {
+  border-color: #ce3e2e;
+  background: #fdecea;
+  color: #8e2f24;
 }
 
 @media (max-width: 1120px) {

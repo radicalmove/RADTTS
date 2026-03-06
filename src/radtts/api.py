@@ -1542,12 +1542,16 @@ def list_project_outputs(request: Request, project_id: str):
         captions = {key: str(value) for key, value in (captions_raw or {}).items()}
         folder_path = str(Path(audio_path).parent) if audio_path else ""
 
+        audio_encoded_path = quote(audio_path, safe="") if audio_path else ""
         audio_download_url = (
-            f"/projects/{project_id}/artifact?path={quote(audio_path, safe='')}" if audio_path else None
+            f"/projects/{project_id}/artifact?path={audio_encoded_path}&download=true" if audio_path else None
+        )
+        audio_play_url = (
+            f"/projects/{project_id}/artifact?path={audio_encoded_path}&download=false" if audio_path else None
         )
         srt_path = captions.get("srt")
         srt_download_url = (
-            f"/projects/{project_id}/artifact?path={quote(srt_path, safe='')}" if srt_path else None
+            f"/projects/{project_id}/artifact?path={quote(srt_path, safe='')}&download=true" if srt_path else None
         )
 
         outputs.append(
@@ -1558,6 +1562,7 @@ def list_project_outputs(request: Request, project_id: str):
                 "audio_path": audio_path,
                 "folder_path": folder_path,
                 "audio_download_url": audio_download_url,
+                "audio_play_url": audio_play_url,
                 "captions": captions,
                 "srt_download_url": srt_download_url,
             }
@@ -1567,7 +1572,7 @@ def list_project_outputs(request: Request, project_id: str):
 
 
 @app.get("/projects/{project_id}/artifact")
-def get_project_artifact(request: Request, project_id: str, path: str):
+def get_project_artifact(request: Request, project_id: str, path: str, download: bool = True):
     _require_auth(request)
     scoped_project_id = _resolve_project_id_for_request(request, project_id)
     project_paths = pipeline.project_manager.ensure_project(scoped_project_id)
@@ -1585,7 +1590,7 @@ def get_project_artifact(request: Request, project_id: str, path: str):
     if not candidate.exists() or not candidate.is_file():
         raise HTTPException(status_code=404, detail="artifact not found")
 
-    return FileResponse(path=candidate, filename=candidate.name)
+    return FileResponse(path=candidate, filename=candidate.name if download else None)
 
 
 @app.get("/jobs/{job_id}")

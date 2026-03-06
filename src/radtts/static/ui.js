@@ -1089,10 +1089,17 @@ function renderOutputs(outputs) {
     return;
   }
 
-  const rows = outputs.map((item) => {
+  const rows = outputs.map((item, index) => {
     const actions = [];
+    const outputId = `output-${index}`;
+    const audioPlayUrl = String(item.audio_play_url || item.audio_download_url || "");
     if (item.audio_download_url) {
-      actions.push(`<a href="${escapeHtml(item.audio_download_url)}" target="_blank" rel="noopener">Open audio</a>`);
+      if (audioPlayUrl) {
+        actions.push(
+          `<button class="play-audio-btn" data-output-id="${escapeHtml(outputId)}" type="button" aria-expanded="false">Play audio</button>`
+        );
+      }
+      actions.push(`<a href="${escapeHtml(item.audio_download_url)}" download>Save audio as</a>`);
     }
     if (item.srt_download_url) {
       actions.push(`<a href="${escapeHtml(item.srt_download_url)}" target="_blank" rel="noopener">Open transcript (.srt)</a>`);
@@ -1108,6 +1115,13 @@ function renderOutputs(outputs) {
           <span class="output-date">${escapeHtml(formatIso(item.created_at))}</span>
         </div>
         <div class="output-actions">${actions.join(" ")}</div>
+        ${
+          audioPlayUrl
+            ? `<div class="output-audio-player" data-output-id="${escapeHtml(outputId)}" hidden>
+                 <audio controls preload="metadata" src="${escapeHtml(audioPlayUrl)}"></audio>
+               </div>`
+            : ""
+        }
         <div class="folder-line">${escapeHtml(item.folder_path || "")}</div>
       </li>
     `;
@@ -1724,15 +1738,70 @@ function bindGenerate() {
   if (cancelBtn) cancelBtn.addEventListener("click", handleCancel);
 }
 
-function bindFolderCopy() {
+function toggleOutputAudioPlayer(button) {
+  if (!outputListNode) return;
+  const outputId = button.dataset.outputId || "";
+  if (!outputId) return;
+
+  const playerWrap = Array.from(outputListNode.querySelectorAll(".output-audio-player")).find((node) => {
+    return node instanceof HTMLElement && node.dataset.outputId === outputId;
+  });
+  if (!(playerWrap instanceof HTMLElement)) return;
+  const audio = playerWrap.querySelector("audio");
+  if (!(audio instanceof HTMLAudioElement)) return;
+
+  const isOpen = !playerWrap.hidden;
+  if (isOpen) {
+    audio.pause();
+    playerWrap.hidden = true;
+    button.textContent = "Play audio";
+    button.setAttribute("aria-expanded", "false");
+    return;
+  }
+
+  for (const wrapNode of outputListNode.querySelectorAll(".output-audio-player")) {
+    if (!(wrapNode instanceof HTMLElement)) continue;
+    if (wrapNode.dataset.outputId === outputId) continue;
+    const otherAudio = wrapNode.querySelector("audio");
+    if (otherAudio instanceof HTMLAudioElement) {
+      otherAudio.pause();
+    }
+    wrapNode.hidden = true;
+  }
+
+  for (const otherBtn of outputListNode.querySelectorAll(".play-audio-btn")) {
+    if (!(otherBtn instanceof HTMLButtonElement)) continue;
+    if (otherBtn.dataset.outputId === outputId) continue;
+    otherBtn.textContent = "Play audio";
+    otherBtn.setAttribute("aria-expanded", "false");
+  }
+
+  playerWrap.hidden = false;
+  button.textContent = "Hide player";
+  button.setAttribute("aria-expanded", "true");
+  const playPromise = audio.play();
+  if (playPromise && typeof playPromise.catch === "function") {
+    playPromise.catch(() => {});
+  }
+}
+
+function bindOutputActions() {
   if (!outputListNode) return;
 
   outputListNode.addEventListener("click", (event) => {
     const target = event.target;
     if (!(target instanceof HTMLElement)) return;
-    if (!target.classList.contains("copy-folder-btn")) return;
 
-    const folderPath = target.dataset.folder || "";
+    const playButton = target.closest(".play-audio-btn");
+    if (playButton instanceof HTMLButtonElement) {
+      toggleOutputAudioPlayer(playButton);
+      return;
+    }
+
+    const copyButton = target.closest(".copy-folder-btn");
+    if (!(copyButton instanceof HTMLButtonElement)) return;
+
+    const folderPath = copyButton.dataset.folder || "";
     if (!folderPath) return;
 
     navigator.clipboard
@@ -1754,7 +1823,7 @@ bindScriptFileLoader();
 bindScriptPersistence();
 bindGapSlider();
 bindGenerate();
-bindFolderCopy();
+bindOutputActions();
 setSelectedAudioFile(null);
 resetScriptEditorState();
 setSavedSampleStatus("Saved samples are scoped to this project.");
