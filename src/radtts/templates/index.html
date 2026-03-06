@@ -73,19 +73,11 @@
 
     <main id="workspace" class="layout workspace-hidden simple-layout">
       <section class="panel workspace-intro">
-        <h2>Generate audio</h2>
-        <p>Upload a voice sample, add your script, choose simple settings, then generate audio and transcript files.</p>
         <div class="worker-status-row">
           <span id="worker-status-pill" class="worker-pill worker-pill-unknown">Helper status: checking</span>
           <span id="worker-status-detail" class="worker-status-detail"></span>
           <button id="worker-refresh-btn" type="button" class="worker-mini-btn">Refresh helper status</button>
-          <button id="worker-setup-btn" type="button" class="worker-mini-btn" hidden>Set up helper app</button>
-        </div>
-        <div id="worker-setup-links" class="worker-setup-links" hidden>
-          <a id="worker-setup-windows-link" class="worker-mini-btn" href="#" target="_blank" rel="noopener">Windows installer</a>
-          <a id="worker-setup-macos-link" class="worker-mini-btn" href="#" target="_blank" rel="noopener">Mac installer</a>
-          <button id="worker-copy-macos-btn" type="button" class="worker-mini-btn">Copy Mac setup command</button>
-          <button id="worker-copy-linux-btn" type="button" class="worker-mini-btn">Copy Linux setup command</button>
+          <button id="worker-setup-btn" type="button" class="worker-mini-btn">Set up helper app</button>
         </div>
       </section>
 
@@ -209,6 +201,46 @@
         <ul id="output-list" class="output-list"></ul>
       </section>
     </main>
+
+    <div id="worker-setup-modal" class="modal-overlay" hidden>
+      <section class="modal-card worker-setup-modal-card" role="dialog" aria-modal="true" aria-labelledby="worker-setup-modal-title">
+        <header class="modal-header">
+          <h2 id="worker-setup-modal-title">Set up helper app</h2>
+          <button id="worker-setup-close-btn" type="button" class="worker-mini-btn">Close</button>
+        </header>
+        <p class="modal-copy">
+          Run this once on each helper computer. After setup, audio jobs can process on that device automatically.
+        </p>
+        <p id="worker-setup-modal-status" class="modal-status">Preparing setup options...</p>
+        <div id="worker-setup-links" class="worker-setup-links worker-setup-links-modal" hidden>
+          <a id="worker-setup-windows-link" class="worker-mini-btn" href="#" target="_blank" rel="noopener">Windows installer</a>
+          <a id="worker-setup-macos-link" class="worker-mini-btn" href="#" target="_blank" rel="noopener">Mac installer</a>
+          <button id="worker-copy-macos-btn" type="button" class="worker-mini-btn">Copy Mac setup command</button>
+          <button id="worker-copy-linux-btn" type="button" class="worker-mini-btn">Copy Linux setup command</button>
+        </div>
+
+        <section class="worker-setup-guide">
+          <h3>Step-by-step setup</h3>
+          <ol>
+            <li>Open RADTTS in your browser and select your project.</li>
+            <li>Click <strong>Set up helper app</strong>.</li>
+            <li>Choose <strong>Windows installer</strong> or <strong>Mac installer</strong> and run it.</li>
+            <li>If your browser blocks downloads, use <strong>Copy Mac setup command</strong> or <strong>Copy Linux setup command</strong> and run it in Terminal.</li>
+            <li>Approve any security prompts once, then allow the helper app to run in the background.</li>
+            <li>Return to RADTTS and click <strong>Refresh helper status</strong> to confirm it is online.</li>
+          </ol>
+
+          <h3>Troubleshooting</h3>
+          <ul>
+            <li>If installer download does not start, copy and run the setup command manually.</li>
+            <li>If macOS blocks the app, go to <strong>System Settings > Privacy &amp; Security</strong> and allow it, then run again.</li>
+            <li>If status stays offline, close and reopen the browser tab, then refresh helper status.</li>
+            <li>If command install fails, check Python is installed (`python3 --version`) and try again.</li>
+            <li>If helper count still does not increase, ask an admin to regenerate setup links and retry.</li>
+          </ul>
+        </section>
+      </section>
+    </div>
 
     <script>
       window.RADTTS_UI = {

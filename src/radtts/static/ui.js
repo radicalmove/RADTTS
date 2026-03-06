@@ -13,6 +13,9 @@ const workerSetupWindowsLinkNode = document.getElementById("worker-setup-windows
 const workerSetupMacosLinkNode = document.getElementById("worker-setup-macos-link");
 const workerCopyMacosBtn = document.getElementById("worker-copy-macos-btn");
 const workerCopyLinuxBtn = document.getElementById("worker-copy-linux-btn");
+const workerSetupModalNode = document.getElementById("worker-setup-modal");
+const workerSetupCloseBtn = document.getElementById("worker-setup-close-btn");
+const workerSetupModalStatusNode = document.getElementById("worker-setup-modal-status");
 
 const existingProjectSelectNode = document.getElementById("existing-project-select");
 const refreshProjectsBtn = document.getElementById("refresh-projects-btn");
@@ -104,10 +107,10 @@ const stageExpectedSeconds = {
   queued_remote: 120,
   worker_running: 300,
   fallback_local: 40,
-  model_load: 60,
-  generation: 300,
+  model_load: 70,
+  generation: 360,
   stitching: 45,
-  captioning: 120,
+  captioning: 150,
 };
 
 const state = {
@@ -136,6 +139,7 @@ const state = {
   lastAnnouncedComputeMode: "idle",
   etaSeconds: null,
   etaUpdatedAtMs: null,
+  etaStage: null,
   workerFallbackTimeoutSeconds: 0,
   queuedRemoteSinceMs: null,
   lastRunningStatusKey: null,
@@ -209,10 +213,29 @@ function setWorkerStatusUi(mode, detailText) {
   }
 }
 
+function setWorkerSetupModalStatus(message, isError = false) {
+  if (!workerSetupModalStatusNode) return;
+  workerSetupModalStatusNode.textContent = message || "";
+  workerSetupModalStatusNode.style.color = isError ? "#a73527" : "#555";
+}
+
 function hideWorkerSetupLinks() {
   if (workerSetupLinksNode) {
     workerSetupLinksNode.hidden = true;
   }
+}
+
+function openWorkerSetupModal() {
+  if (!workerSetupModalNode) return;
+  workerSetupModalNode.hidden = false;
+  document.body.classList.add("modal-open");
+  setWorkerSetupModalStatus("Preparing setup options...");
+}
+
+function closeWorkerSetupModal() {
+  if (!workerSetupModalNode) return;
+  workerSetupModalNode.hidden = true;
+  document.body.classList.remove("modal-open");
 }
 
 function clearWorkerSetupLinks() {
@@ -222,12 +245,13 @@ function clearWorkerSetupLinks() {
   state.workerSetupMacosUrl = "";
   if (workerSetupWindowsLinkNode) workerSetupWindowsLinkNode.href = "#";
   if (workerSetupMacosLinkNode) workerSetupMacosLinkNode.href = "#";
+  setWorkerSetupModalStatus("Preparing setup options...");
   hideWorkerSetupLinks();
 }
 
 function resetWorkerStatusUi() {
   setWorkerStatusUi("unknown", "Select a project to check helper availability.");
-  if (workerSetupBtn) workerSetupBtn.hidden = true;
+  if (workerSetupBtn) workerSetupBtn.hidden = false;
   clearWorkerSetupLinks();
 }
 
@@ -252,6 +276,7 @@ function setWorkspaceVisible(visible) {
   if (workspaceNode) workspaceNode.classList.toggle("workspace-hidden", !visible);
   if (switchProjectBtn) switchProjectBtn.hidden = !visible;
   if (activeProjectChip) activeProjectChip.hidden = !visible;
+  if (!visible) closeWorkerSetupModal();
 }
 
 function setGenerateEnabled(enabled) {
@@ -307,6 +332,7 @@ function resetProgressUi() {
   state.lastAnnouncedComputeMode = "idle";
   state.etaSeconds = null;
   state.etaUpdatedAtMs = null;
+  state.etaStage = null;
   state.workerFallbackTimeoutSeconds = 0;
   state.queuedRemoteSinceMs = null;
   state.lastRunningStatusKey = null;
@@ -335,6 +361,31 @@ const etaStageOrder = [
   "completed",
 ];
 
+function expectedStageSecondsForCurrentMode(stage) {
+  const key = String(stage || "");
+  const base = stageExpectedSeconds[key];
+  if (!Number.isFinite(base) || base <= 0) {
+    return 90;
+  }
+
+  if (key === "queued_remote" && state.workerFallbackTimeoutSeconds > 0) {
+    return Math.max(base, state.workerFallbackTimeoutSeconds);
+  }
+
+  if (state.computeMode === "server") {
+    if (["model_load", "generation", "captioning"].includes(key)) {
+      return Math.round(base * 1.25);
+    }
+    return Math.round(base * 1.12);
+  }
+
+  if (state.computeMode === "worker") {
+    return Math.round(base * 0.95);
+  }
+
+  return base;
+}
+
 function estimateEtaSeconds(progressPercent, stage) {
   if (state.currentStatus !== "running") return null;
   const nowMs = Date.now();
@@ -349,14 +400,14 @@ function estimateEtaSeconds(progressPercent, stage) {
     }
   }
 
-  const stageExpected = stageExpectedSeconds[stage] ?? null;
+  const stageExpected = expectedStageSecondsForCurrentMode(stage);
   let stageBased = null;
-  if (stageExpected && state.stageStartedAtMs) {
+  if (stageExpected > 0 && state.stageStartedAtMs) {
     const elapsedStageSec = Math.max(0, (nowMs - state.stageStartedAtMs) / 1000);
     let remainingStage = stageExpected - elapsedStageSec;
     if (remainingStage < 0) {
       // Keep ETA moving even if a stage runs longer than expected.
-      remainingStage = Math.min(240, 20 + Math.abs(remainingStage) * 0.6);
+      remainingStage = Math.min(300, 20 + Math.abs(remainingStage) * 0.5);
     }
 
     let remainingFuture = 0;
@@ -364,7 +415,7 @@ function estimateEtaSeconds(progressPercent, stage) {
     if (idx >= 0) {
       for (const nextStage of etaStageOrder.slice(idx + 1)) {
         if (nextStage === "completed") continue;
-        remainingFuture += stageExpectedSeconds[nextStage] ?? 0;
+        remainingFuture += expectedStageSecondsForCurrentMode(nextStage);
       }
     }
     stageBased = Math.max(0, remainingStage + remainingFuture);
@@ -375,15 +426,24 @@ function estimateEtaSeconds(progressPercent, stage) {
 
   // Keep queue/fallback stages conservative, but avoid large ETA jumps once actively processing.
   if (["queued", "queued_remote", "fallback_local"].includes(stage)) {
-    return Math.max(progressBased, stageBased * 0.8);
+    return Math.max(progressBased, stageBased * 0.9);
   }
-  return (progressBased * 0.82) + (stageBased * 0.18);
+
+  // Early progress is noisy; keep estimates conservative to reduce upward jumps.
+  if (clamped < 45) {
+    return (progressBased * 0.2) + (stageBased * 0.8);
+  }
+  if (clamped < 70) {
+    return (progressBased * 0.4) + (stageBased * 0.6);
+  }
+  return (progressBased * 0.65) + (stageBased * 0.35);
 }
 
 function smoothEtaDisplay(etaSeconds, stage) {
   if (!Number.isFinite(etaSeconds) || etaSeconds <= 0) {
     state.etaSeconds = null;
     state.etaUpdatedAtMs = null;
+    state.etaStage = null;
     return null;
   }
 
@@ -391,6 +451,7 @@ function smoothEtaDisplay(etaSeconds, stage) {
   if (state.etaSeconds === null || state.etaUpdatedAtMs === null) {
     state.etaSeconds = etaSeconds;
     state.etaUpdatedAtMs = nowMs;
+    state.etaStage = stage;
     return state.etaSeconds;
   }
 
@@ -398,23 +459,32 @@ function smoothEtaDisplay(etaSeconds, stage) {
   const decayed = Math.max(0, state.etaSeconds - elapsedSec);
   const diff = Math.abs(etaSeconds - decayed);
   const isWaitingStage = stage === "queued_remote" || state.computeMode === "waiting_worker";
+  const stageChanged = state.etaStage !== null && state.etaStage !== stage;
 
   let nextEta;
   if (diff <= 4) {
     nextEta = decayed;
   } else {
-    nextEta = (decayed * 0.7) + (etaSeconds * 0.3);
+    nextEta = (decayed * 0.75) + (etaSeconds * 0.25);
   }
 
-  // Prevent visible spikes near stage boundaries (for example around ~79%).
-  // Waiting-for-worker can still rise a bit as queue conditions change.
-  const maxStepUp = isWaitingStage ? 12 : 2;
+  // Keep ETA mostly decreasing while a stage is in progress.
+  // Allow a bigger one-off correction on stage transitions and queue waits.
+  let maxStepUp;
+  if (stageChanged) {
+    maxStepUp = isWaitingStage ? 14 : 8;
+  } else if (isWaitingStage) {
+    maxStepUp = Math.max(1.2, elapsedSec * 2.0);
+  } else {
+    maxStepUp = Math.max(0.2, elapsedSec * 0.35);
+  }
   if (nextEta > decayed + maxStepUp) {
     nextEta = decayed + maxStepUp;
   }
 
   state.etaSeconds = Math.max(0, nextEta);
   state.etaUpdatedAtMs = nowMs;
+  state.etaStage = stage;
   return state.etaSeconds;
 }
 
@@ -920,12 +990,10 @@ async function refreshWorkerStatus({ announceErrors = false } = {}) {
     const detail = describeWorkerAvailability(online, total);
     if (online > 0) {
       setWorkerStatusUi("online", detail);
-      if (workerSetupBtn) workerSetupBtn.hidden = true;
-      hideWorkerSetupLinks();
     } else {
       setWorkerStatusUi("offline", detail);
-      if (workerSetupBtn) workerSetupBtn.hidden = false;
     }
+    if (workerSetupBtn) workerSetupBtn.hidden = false;
   } catch (err) {
     setWorkerStatusUi("unknown", "Could not check helper status.");
     if (workerSetupBtn) workerSetupBtn.hidden = false;
@@ -939,15 +1007,17 @@ async function refreshWorkerStatus({ announceErrors = false } = {}) {
 
 async function ensureWorkerSetupLinks() {
   if (
-    state.workerSetupWindowsUrl &&
-    state.workerSetupMacosUrl &&
-    state.workerSetupMacosCommand &&
+    state.workerSetupWindowsUrl ||
+    state.workerSetupMacosUrl ||
+    state.workerSetupMacosCommand ||
     state.workerSetupLinuxCommand
   ) {
     if (workerSetupLinksNode) workerSetupLinksNode.hidden = false;
+    setWorkerSetupModalStatus("Setup options are ready. Install once on each helper computer.");
     return;
   }
   if (workerSetupBtn) workerSetupBtn.disabled = true;
+  setWorkerSetupModalStatus("Generating secure setup options...");
   try {
     const data = await requestJSON("/workers/invite", "POST", { capabilities: ["synthesize"] });
     state.workerSetupWindowsUrl = String(data.windows_installer_url || "").trim();
@@ -962,8 +1032,9 @@ async function ensureWorkerSetupLinks() {
       workerSetupMacosLinkNode.href = state.workerSetupMacosUrl;
     }
     if (workerSetupLinksNode) workerSetupLinksNode.hidden = false;
-    setGenerateStatus("Helper setup links are ready. Run the installer once on each colleague device.");
+    setWorkerSetupModalStatus("Setup options are ready. Install once on each helper computer.");
   } catch (err) {
+    setWorkerSetupModalStatus(`Could not generate setup options: ${String(err)}`, true);
     setGenerateStatus(`Could not generate helper setup links: ${String(err)}`, true);
   } finally {
     if (workerSetupBtn) workerSetupBtn.disabled = false;
@@ -1407,7 +1478,7 @@ function calculateSyntheticTarget() {
   const stage = state.currentStage || "queued";
   const floor = stageProgressFloors[stage] ?? 0;
   const cap = stageProgressCaps[stage] ?? state.actualProgress;
-  const expectedSec = stageExpectedSeconds[stage] ?? 90;
+  const expectedSec = expectedStageSecondsForCurrentMode(stage);
   const stageStart = state.stageStartedAtMs || Date.now();
   const elapsedSec = Math.max(0, (Date.now() - stageStart) / 1000);
   const ratio = Math.min(1, elapsedSec / expectedSec);
@@ -1420,7 +1491,17 @@ function progressAnimationTick() {
   const delta = target - state.displayProgress;
 
   if (delta > 0) {
-    state.displayProgress += Math.min(delta, 0.6);
+    const stage = state.currentStage || "queued";
+    let maxRisePerTick = 0.32;
+    if (stage === "queued" || stage === "queued_remote") {
+      maxRisePerTick = 0.22;
+    } else if (stage === "generation") {
+      maxRisePerTick = 0.28;
+    }
+    if (state.computeMode === "waiting_worker") {
+      maxRisePerTick = Math.min(maxRisePerTick, 0.2);
+    }
+    state.displayProgress += Math.min(delta, maxRisePerTick);
   } else {
     state.displayProgress = target;
   }
@@ -1778,8 +1859,29 @@ function bindWorkerStatus() {
     });
   }
 
+  if (workerSetupCloseBtn) {
+    workerSetupCloseBtn.addEventListener("click", () => {
+      closeWorkerSetupModal();
+    });
+  }
+
+  if (workerSetupModalNode) {
+    workerSetupModalNode.addEventListener("click", (event) => {
+      if (event.target === workerSetupModalNode) {
+        closeWorkerSetupModal();
+      }
+    });
+  }
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    if (!workerSetupModalNode || workerSetupModalNode.hidden) return;
+    closeWorkerSetupModal();
+  });
+
   if (workerSetupBtn) {
     workerSetupBtn.addEventListener("click", () => {
+      openWorkerSetupModal();
       void ensureWorkerSetupLinks();
     });
   }

@@ -232,18 +232,13 @@ body {
   padding: 14px;
 }
 
-.workspace-intro h2 {
-  margin: 0 0 6px;
-  font-size: 1.15rem;
-}
-
-.workspace-intro p {
-  margin: 0;
-  color: #444;
+.workspace-intro {
+  padding-top: 12px;
+  padding-bottom: 12px;
 }
 
 .worker-status-row {
-  margin-top: 10px;
+  margin-top: 0;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -309,6 +304,84 @@ body {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+body.modal-open {
+  overflow: hidden;
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.52);
+}
+
+.modal-card {
+  width: min(920px, 100%);
+  max-height: calc(100vh - 40px);
+  overflow: auto;
+  background: var(--uc-white);
+  border: 1px solid var(--uc-grey-300);
+  border-radius: var(--uc-radius-lg);
+  box-shadow: var(--uc-shadow-md);
+  padding: 14px;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.modal-header h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.modal-copy {
+  margin: 10px 0 0;
+  color: #3b3b3b;
+  font-size: 0.92rem;
+}
+
+.modal-status {
+  margin: 8px 0 0;
+  min-height: 20px;
+  color: #555;
+  font-size: 0.88rem;
+}
+
+.worker-setup-links-modal {
+  margin-top: 10px;
+  margin-bottom: 8px;
+}
+
+.worker-setup-guide {
+  margin-top: 8px;
+  border-top: 1px solid var(--uc-grey-200);
+  padding-top: 10px;
+}
+
+.worker-setup-guide h3 {
+  margin: 8px 0 6px;
+  font-size: 0.95rem;
+}
+
+.worker-setup-guide ol,
+.worker-setup-guide ul {
+  margin: 0 0 12px 20px;
+  padding: 0;
+  display: grid;
+  gap: 7px;
+  color: #3b3b3b;
+  font-size: 0.9rem;
+  line-height: 1.4;
 }
 
 .stack {
@@ -801,6 +874,18 @@ button.worker-mini-btn {
   .saved-sample-row,
   .script-version-row {
     grid-template-columns: 1fr;
+  }
+
+  .worker-status-detail {
+    width: 100%;
+  }
+
+  .modal-overlay {
+    padding: 10px;
+  }
+
+  .modal-card {
+    max-height: calc(100vh - 20px);
   }
 
   #restore-script-version-btn {
