@@ -59,8 +59,8 @@ const outputListNode = document.getElementById("output-list");
 
 const stageLabels = {
   queued: "Queued",
-  queued_remote: "Queued for worker",
-  worker_running: "Worker processing",
+  queued_remote: "Queued for helper device",
+  worker_running: "Helper device processing",
   fallback_local: "Switching to server",
   model_load: "Loading voice model",
   generation: "Generating speech",
@@ -195,13 +195,13 @@ function setWorkerStatusUi(mode, detailText) {
     workerStatusPillNode.classList.remove("worker-pill-online", "worker-pill-offline", "worker-pill-unknown");
     if (mode === "online") {
       workerStatusPillNode.classList.add("worker-pill-online");
-      workerStatusPillNode.textContent = "Worker status: connected";
+      workerStatusPillNode.textContent = "Helper status: connected";
     } else if (mode === "offline") {
       workerStatusPillNode.classList.add("worker-pill-offline");
-      workerStatusPillNode.textContent = "Worker status: not connected";
+      workerStatusPillNode.textContent = "Helper status: not connected";
     } else {
       workerStatusPillNode.classList.add("worker-pill-unknown");
-      workerStatusPillNode.textContent = "Worker status: checking";
+      workerStatusPillNode.textContent = "Helper status: checking";
     }
   }
   if (workerStatusDetailNode) {
@@ -226,7 +226,7 @@ function clearWorkerSetupLinks() {
 }
 
 function resetWorkerStatusUi() {
-  setWorkerStatusUi("unknown", "Select a project to check worker availability.");
+  setWorkerStatusUi("unknown", "Select a project to check helper availability.");
   if (workerSetupBtn) workerSetupBtn.hidden = true;
   clearWorkerSetupLinks();
 }
@@ -459,13 +459,13 @@ function detectComputeMode(job) {
 
 function computeModeProgressLabel() {
   if (state.computeMode === "worker") {
-    return "Processing on: local worker device";
+    return "Processing on: local helper device";
   }
   if (state.computeMode === "server") {
     return "Processing on: RADTTS server (Mac mini)";
   }
   if (state.computeMode === "waiting_worker") {
-    return "Processing on: pending worker assignment";
+    return "Processing on: waiting for helper device";
   }
   return "Processing on: --";
 }
@@ -477,9 +477,9 @@ function workerAvailabilitySummary() {
   const online = Math.max(0, Number(state.workerOnlineCount));
   const total = Number.isFinite(state.workerTotalCount) ? Math.max(online, Number(state.workerTotalCount)) : null;
   if (total !== null) {
-    return `${online}/${total} worker devices online`;
+    return `${online}/${total} helper devices online`;
   }
-  return `${online} worker device${online === 1 ? "" : "s"} online`;
+  return `${online} helper device${online === 1 ? "" : "s"} online`;
 }
 
 function fallbackWaitRemainingSeconds() {
@@ -499,7 +499,7 @@ function updateRunningStatusMessage() {
 
   if (state.computeMode === "worker") {
     if (state.lastRunningStatusKey !== "worker") {
-      setGenerateStatus("Worker connected. Processing on your local worker device.");
+      setGenerateStatus("Helper connected. Processing on your local helper device.");
       state.lastRunningStatusKey = "worker";
     }
     return;
@@ -510,11 +510,11 @@ function updateRunningStatusMessage() {
       if (state.expectedRemoteWorker) {
         const availability = workerAvailabilitySummary();
         if (Number(state.workerOnlineCount || 0) <= 0) {
-          setGenerateStatus("No active worker was connected, so this job is running on the RADTTS server (Mac mini).");
+          setGenerateStatus("No active helper was connected, so this job is running on the RADTTS server (Mac mini).");
         } else if (availability) {
-          setGenerateStatus(`No worker accepted this job (${availability}). Running on the RADTTS server (Mac mini).`);
+          setGenerateStatus(`No helper accepted this job (${availability}). Running on the RADTTS server (Mac mini).`);
         } else {
-          setGenerateStatus("No worker accepted this job. Processing on the RADTTS server (Mac mini).");
+          setGenerateStatus("No helper accepted this job. Processing on the RADTTS server (Mac mini).");
         }
       } else {
         setGenerateStatus("Processing on the RADTTS server (Mac mini).");
@@ -531,11 +531,11 @@ function updateRunningStatusMessage() {
     if (remaining === null) {
       if (state.lastRunningStatusKey !== "waiting_worker") {
         if (noWorkersKnown) {
-          setGenerateStatus("No active worker is connected yet. Waiting for a worker device.");
+          setGenerateStatus("No active helper is connected yet. Waiting for a helper device.");
         } else if (availability) {
-          setGenerateStatus(`Waiting for a worker device (${availability}).`);
+          setGenerateStatus(`Waiting for a helper device (${availability}).`);
         } else {
-          setGenerateStatus("Waiting for a worker device.");
+          setGenerateStatus("Waiting for a helper device.");
         }
         state.lastRunningStatusKey = "waiting_worker";
       }
@@ -547,14 +547,14 @@ function updateRunningStatusMessage() {
     if (state.lastRunningStatusKey !== waitingKey) {
       if (remaining > 0) {
         if (noWorkersKnown) {
-          setGenerateStatus(`No active worker is connected. Waiting up to ${remainingLabel} before server fallback.`);
+          setGenerateStatus(`No active helper is connected. Waiting up to ${remainingLabel} before server fallback.`);
         } else if (availability) {
-          setGenerateStatus(`Waiting for a worker device (${availability}). Server fallback in ${remainingLabel}.`);
+          setGenerateStatus(`Waiting for a helper device (${availability}). Server fallback in ${remainingLabel}.`);
         } else {
-          setGenerateStatus(`Waiting for a worker device. Server fallback in ${remainingLabel}.`);
+          setGenerateStatus(`Waiting for a helper device. Server fallback in ${remainingLabel}.`);
         }
       } else {
-        setGenerateStatus("No worker connected yet. Switching to server fallback...");
+        setGenerateStatus("No helper connected yet. Switching to server fallback...");
       }
       state.lastRunningStatusKey = waitingKey;
     }
@@ -800,11 +800,19 @@ function stripLogTimestamp(line) {
   return String(line || "").replace(/^\d{4}-\d{2}-\d{2}T[^\s]+\s+/, "").trim();
 }
 
+function humanizeWorkerTerms(text) {
+  return String(text || "")
+    .replace(/\bworker device\b/gi, "helper device")
+    .replace(/\bworker app\b/gi, "helper app")
+    .replace(/\bworkers\b/gi, "helper devices")
+    .replace(/\bworker\b/gi, "helper");
+}
+
 function friendlyStageDetail(stage) {
   const key = String(stage || "").trim().toLowerCase();
   if (key === "queued") return "Preparing your job";
-  if (key === "queued_remote") return "Checking for an available worker";
-  if (key === "worker_running") return "Processing on a worker device";
+  if (key === "queued_remote") return "Checking for an available helper device";
+  if (key === "worker_running") return "Processing on a helper device";
   if (key === "fallback_local") return "Switching to the RADTTS server";
   if (key === "model_load") return "Loading voice model";
   if (key === "generation") return "Generating speech";
@@ -828,15 +836,15 @@ function detailFromLogLine(line, currentStage) {
   }
 
   if (lower.includes("queued for worker execution")) {
-    return "Looking for an available worker device...";
+    return "Looking for an available helper device...";
   }
 
   if (lower.includes("started processing") && lower.includes("worker")) {
-    return "Worker accepted the job.";
+    return "Helper device accepted the job.";
   }
 
   if (lower.includes("switching to local server fallback")) {
-    return "No worker accepted in time. Starting on RADTTS server.";
+    return "No helper accepted in time. Starting on RADTTS server.";
   }
 
   const stageMatch = lower.match(/stage=([a-z_]+)/);
@@ -847,7 +855,7 @@ function detailFromLogLine(line, currentStage) {
     return `${stageText}.`;
   }
 
-  return cleaned;
+  return humanizeWorkerTerms(cleaned);
 }
 
 function formatEta(seconds) {
@@ -885,14 +893,14 @@ async function requestJSON(url, method, payload) {
 function describeWorkerAvailability(online, total) {
   if (online > 0) {
     if (total > 0) {
-      return `${online}/${total} worker device${total === 1 ? "" : "s"} online.`;
+      return `${online}/${total} helper device${total === 1 ? "" : "s"} online.`;
     }
-    return `${online} worker device${online === 1 ? "" : "s"} online.`;
+    return `${online} helper device${online === 1 ? "" : "s"} online.`;
   }
   if (total > 0) {
-    return `0/${total} workers online. Jobs will use server fallback when needed.`;
+    return `0/${total} helper devices online. Jobs will use server fallback when needed.`;
   }
-  return "No worker app connected yet. Jobs will use server fallback when needed.";
+  return "No helper app connected yet. Jobs will use server fallback when needed.";
 }
 
 async function refreshWorkerStatus({ announceErrors = false } = {}) {
@@ -919,10 +927,10 @@ async function refreshWorkerStatus({ announceErrors = false } = {}) {
       if (workerSetupBtn) workerSetupBtn.hidden = false;
     }
   } catch (err) {
-    setWorkerStatusUi("unknown", "Could not check worker status.");
+    setWorkerStatusUi("unknown", "Could not check helper status.");
     if (workerSetupBtn) workerSetupBtn.hidden = false;
     if (announceErrors) {
-      setGenerateStatus(`Could not check worker status: ${String(err)}`, true);
+      setGenerateStatus(`Could not check helper status: ${String(err)}`, true);
     }
   } finally {
     if (workerRefreshBtn) workerRefreshBtn.disabled = false;
@@ -954,9 +962,9 @@ async function ensureWorkerSetupLinks() {
       workerSetupMacosLinkNode.href = state.workerSetupMacosUrl;
     }
     if (workerSetupLinksNode) workerSetupLinksNode.hidden = false;
-    setGenerateStatus("Worker setup links are ready. Run the installer once on each colleague device.");
+    setGenerateStatus("Helper setup links are ready. Run the installer once on each colleague device.");
   } catch (err) {
-    setGenerateStatus(`Could not generate worker setup links: ${String(err)}`, true);
+    setGenerateStatus(`Could not generate helper setup links: ${String(err)}`, true);
   } finally {
     if (workerSetupBtn) workerSetupBtn.disabled = false;
   }
@@ -1358,7 +1366,7 @@ function updateProgressVisuals(progressPercent, stage) {
   if (progressDetailNode) {
     let detail = state.latestDetail || "Processing...";
     if (state.computeMode === "waiting_worker" && state.currentStage === "queued_remote") {
-      detail = "Looking for a connected worker app. Server fallback is automatic if none responds.";
+      detail = "Looking for a connected helper app. Server fallback is automatic if none responds.";
     }
     progressDetailNode.textContent = detail;
   }
@@ -1580,9 +1588,9 @@ async function handleGenerate() {
 
     if (workerMode) {
       if (workerOnlineCount !== null && workerOnlineCount <= 0) {
-        setGenerateStatus("No active worker is connected right now. Waiting for worker assignment...");
+        setGenerateStatus("No active helper is connected right now. Waiting for helper assignment...");
       } else {
-        setGenerateStatus("Job queued for worker assignment...");
+        setGenerateStatus("Job queued for helper assignment...");
       }
     } else {
       setGenerateStatus("Generation started on this server.");
@@ -1592,7 +1600,7 @@ async function handleGenerate() {
     startPolling(data.job_id, {
       initialStage: String(data.stage || (workerMode ? "queued_remote" : "queued")),
       initialDetail: workerMode
-        ? "Checking for an available worker device..."
+        ? "Checking for an available helper device..."
         : "Job queued. Preparing model...",
       expectedRemoteWorker: workerMode,
       fallbackTimeoutSeconds: workerMode && fallbackEnabled ? fallbackTimeout : 0,
@@ -1759,7 +1767,7 @@ function bindWorkerStatus() {
       navigator.clipboard
         .writeText(command)
         .then(() => {
-          setGenerateStatus("Linux worker setup command copied.");
+          setGenerateStatus("Linux helper setup command copied.");
         })
         .catch(() => {
           setGenerateStatus("Could not copy Linux setup command.", true);
@@ -1777,7 +1785,7 @@ function bindWorkerStatus() {
       navigator.clipboard
         .writeText(command)
         .then(() => {
-          setGenerateStatus("Mac worker setup command copied.");
+          setGenerateStatus("Mac helper setup command copied.");
         })
         .catch(() => {
           setGenerateStatus("Could not copy Mac setup command.", true);
