@@ -19,6 +19,8 @@ from radtts.models import (
     CaptionRequest,
     ClipRequest,
     PauseConfig,
+    ProjectAccessGrantRequest,
+    ProjectAccessRevokeRequest,
     ProjectReferenceAudioUploadRequest,
     ProjectCreateRequest,
     SimpleSynthesisRequest,
@@ -79,6 +81,7 @@ SCOPE_PROJECTS_BY_USER = _env_bool("RADTTS_SCOPE_PROJECTS_BY_USER", True)
 SIMPLE_SYNTH_DEFAULT_TO_WORKER = _env_bool("RADTTS_SIMPLE_SYNTH_DEFAULT_TO_WORKER", True)
 WORKER_FALLBACK_TO_LOCAL = _env_bool("RADTTS_WORKER_FALLBACK_TO_LOCAL", True)
 WORKER_FALLBACK_TIMEOUT_SECONDS = max(5, _env_int("RADTTS_WORKER_FALLBACK_TIMEOUT_SECONDS", 90))
+SCOPED_PROJECT_RE = re.compile(r"^u[0-9a-f]{12}__.+$")
 
 
 def _infer_psychek_admin_url(login_url: str) -> str:
@@ -177,6 +180,186 @@ def _descope_project_id(request: Request, project_id: str) -> str:
     if project_id.startswith(marker):
         return project_id[len(marker):]
     return project_id
+
+
+def _looks_scoped_project_id(project_id: str) -> bool:
+    return bool(SCOPED_PROJECT_RE.match(project_id.strip()))
+
+
+def _display_project_id(project_id: str) -> str:
+    value = project_id.strip()
+    if _looks_scoped_project_id(value) and "__" in value:
+        return value.split("__", 1)[1]
+    return value
+
+
+def _inferred_owner_key_from_project_id(scoped_project_id: str) -> str:
+    if "__" not in scoped_project_id:
+        return ""
+    prefix, _ = scoped_project_id.split("__", 1)
+    return prefix if prefix.startswith("u") and len(prefix) == 13 else ""
+
+
+def _project_access_file(scoped_project_id: str) -> Path:
+    return pipeline.project_manager.get_paths(scoped_project_id).manifests / "access.json"
+
+
+def _load_project_access(scoped_project_id: str) -> dict[str, object]:
+    access_path = _project_access_file(scoped_project_id)
+    try:
+        payload = json.loads(access_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        payload = {}
+    except json.JSONDecodeError:
+        payload = {}
+
+    if not isinstance(payload, dict):
+        payload = {}
+
+    owner = payload.get("owner") if isinstance(payload.get("owner"), dict) else {}
+    owner_key = str(owner.get("user_key") or "").strip()
+    owner_email = str(owner.get("email") or "").strip().lower()
+    owner_label = str(owner.get("display_name") or owner.get("email") or owner.get("sub") or owner_key).strip()
+
+    inferred_owner_key = _inferred_owner_key_from_project_id(scoped_project_id)
+    if not owner_key and inferred_owner_key:
+        owner_key = inferred_owner_key
+        if not owner_label:
+            owner_label = owner_key
+
+    collaborators_raw = payload.get("collaborators") if isinstance(payload.get("collaborators"), list) else []
+    collaborators: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for row in collaborators_raw:
+        if not isinstance(row, dict):
+            continue
+        email = str(row.get("email") or "").strip().lower()
+        if not email or email in seen:
+            continue
+        seen.add(email)
+        collaborators.append(
+            {
+                "email": email,
+                "granted_at": str(row.get("granted_at") or ""),
+                "granted_by": str(row.get("granted_by") or ""),
+            }
+        )
+
+    return {
+        "owner": {
+            "user_key": owner_key,
+            "email": owner_email,
+            "display_name": owner_label,
+        },
+        "collaborators": collaborators,
+        "updated_at": str(payload.get("updated_at") or ""),
+    }
+
+
+def _write_project_access(scoped_project_id: str, access: dict[str, object]) -> None:
+    access_path = _project_access_file(scoped_project_id)
+    access_path.parent.mkdir(parents=True, exist_ok=True)
+    access_path.write_text(json.dumps(access, indent=2), encoding="utf-8")
+
+
+def _bootstrap_owner_access_if_missing(request: Request, scoped_project_id: str) -> None:
+    access_path = _project_access_file(scoped_project_id)
+    if access_path.exists():
+        return
+    user = _current_user(request) or {}
+    user_key, user_label = _current_user_key_and_label(request)
+    access = {
+        "owner": {
+            "user_key": user_key or _inferred_owner_key_from_project_id(scoped_project_id),
+            "email": str(user.get("email") or "").strip().lower(),
+            "display_name": user_label or "",
+        },
+        "collaborators": [],
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _write_project_access(scoped_project_id, access)
+
+
+def _resolve_access_for_user(request: Request, scoped_project_id: str) -> dict[str, object]:
+    access = _load_project_access(scoped_project_id)
+    session_user = _current_user(request)
+    user = session_user or {}
+    has_user = session_user is not None
+    user_key, _ = _current_user_key_and_label(request)
+    user_email = str(user.get("email") or "").strip().lower()
+    is_admin = bool(user.get("is_admin", False)) if has_user else False
+
+    owner = access.get("owner") if isinstance(access.get("owner"), dict) else {}
+    owner_key = str(owner.get("user_key") or "")
+    owner_email = str(owner.get("email") or "").strip().lower()
+
+    collaborator_emails: set[str] = set()
+    for row in access.get("collaborators", []):
+        if isinstance(row, dict):
+            email = str(row.get("email") or "").strip().lower()
+            if email:
+                collaborator_emails.add(email)
+
+    is_owner = bool(
+        (user_key and owner_key and user_key == owner_key)
+        or (user_email and owner_email and user_email == owner_email)
+    )
+    is_collaborator = bool(user_email and user_email in collaborator_emails)
+    if has_user:
+        can_access = is_admin or is_owner or is_collaborator
+    else:
+        can_access = not AUTH_REQUIRED
+    can_manage = is_admin or is_owner
+
+    return {
+        "can_access": can_access,
+        "can_manage": can_manage,
+        "is_owner": is_owner,
+        "is_collaborator": is_collaborator,
+        "is_admin": is_admin,
+        "owner": owner,
+        "collaborators": access.get("collaborators", []),
+    }
+
+
+def _resolve_project_id_for_request(request: Request, project_id: str) -> str:
+    requested = project_id.strip()
+    if not requested:
+        raise HTTPException(status_code=404, detail="project not found")
+
+    candidate_ids: list[str] = []
+    if not SCOPE_PROJECTS_BY_USER:
+        candidate_ids.append(requested)
+    else:
+        if _looks_scoped_project_id(requested):
+            candidate_ids.append(requested)
+        else:
+            candidate_ids.append(_scope_project_id(request, requested))
+            for candidate in pipeline.list_projects():
+                if _display_project_id(candidate) == requested:
+                    candidate_ids.append(candidate)
+
+    seen: set[str] = set()
+    existing: list[str] = []
+    for candidate in candidate_ids:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            pipeline.project_manager.ensure_project(candidate)
+        except FileNotFoundError:
+            continue
+        existing.append(candidate)
+
+    if not existing:
+        raise HTTPException(status_code=404, detail="project not found")
+
+    for candidate in existing:
+        access = _resolve_access_for_user(request, candidate)
+        if bool(access.get("can_access")):
+            return candidate
+
+    raise HTTPException(status_code=403, detail="project access denied")
 
 
 def _safe_filename(filename: str) -> str:
@@ -286,7 +469,7 @@ def _project_cache_entries(
         return []
 
     cache = _load_reference_cache(paths.manifests)
-    visible_project_id = _descope_project_id(request, scoped_project_id)
+    visible_project_id = _display_project_id(scoped_project_id)
     items: list[dict[str, str | bool]] = []
 
     for audio_hash, entry in cache.items():
@@ -578,27 +761,35 @@ def home(request: Request):
 @app.post("/projects")
 def create_project(request: Request, req: ProjectCreateRequest):
     _require_auth(request)
-    scoped_req = req.model_copy(update={"project_id": _scope_project_id(request, req.project_id)})
+    scoped_project_id = _scope_project_id(request, req.project_id)
+    scoped_req = req.model_copy(update={"project_id": scoped_project_id})
     payload = pipeline.create_project(scoped_req)
+    _bootstrap_owner_access_if_missing(request, scoped_project_id)
     payload["project_id"] = req.project_id
+    payload["project_ref"] = scoped_project_id
     return payload
 
 
 @app.get("/projects")
 def list_projects(request: Request):
     _require_auth(request)
-    scoped_prefix = _scope_prefix(request) if SCOPE_PROJECTS_BY_USER else None
-    scoped_marker = f"{scoped_prefix}__" if scoped_prefix else None
+    projects: list[dict[str, object]] = []
+    for scoped_project_id in pipeline.list_projects():
+        access = _resolve_access_for_user(request, scoped_project_id)
+        if not bool(access.get("can_access")):
+            continue
 
-    projects: list[dict[str, str]] = []
-    for project_id in pipeline.list_projects():
-        if scoped_marker:
-            if not project_id.startswith(scoped_marker):
-                continue
-            visible_project_id = project_id[len(scoped_marker) :]
-        else:
-            visible_project_id = project_id
-        projects.append({"project_id": visible_project_id})
+        visible_project_id = _display_project_id(scoped_project_id)
+        owner = access.get("owner") if isinstance(access.get("owner"), dict) else {}
+        owner_label = str(owner.get("display_name") or owner.get("email") or owner.get("user_key") or "")
+        projects.append(
+            {
+                "project_id": visible_project_id,
+                "project_ref": scoped_project_id,
+                "shared": not bool(access.get("is_owner")),
+                "owner_label": owner_label,
+            }
+        )
 
     return {"projects": projects}
 
@@ -606,7 +797,7 @@ def list_projects(request: Request):
 @app.post("/projects/{project_id}/reference-audio")
 def upload_reference_audio(request: Request, project_id: str, req: ProjectReferenceAudioUploadRequest):
     _require_auth(request)
-    scoped_project_id = _scope_project_id(request, project_id)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
 
     try:
         paths = pipeline.project_manager.ensure_project(scoped_project_id)
@@ -636,7 +827,7 @@ def upload_reference_audio(request: Request, project_id: str, req: ProjectRefere
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "owner_key": owner_key or "",
             "owner_label": owner_label or "",
-            "project_id": project_id,
+            "project_id": _display_project_id(scoped_project_id),
         }
     )
     cache[audio_hash] = entry
@@ -644,7 +835,7 @@ def upload_reference_audio(request: Request, project_id: str, req: ProjectRefere
 
     artifact_url = f"/projects/{project_id}/artifact?path={quote(str(output_path), safe='')}"
     return {
-        "project_id": project_id,
+        "project_id": _display_project_id(scoped_project_id),
         "audio_hash": audio_hash,
         "filename": output_path.name,
         "saved_path": str(output_path),
@@ -655,12 +846,9 @@ def upload_reference_audio(request: Request, project_id: str, req: ProjectRefere
 @app.get("/projects/{project_id}/reference-audio")
 def list_reference_audio(request: Request, project_id: str):
     _require_auth(request)
-    scoped_project_id = _scope_project_id(request, project_id)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
 
-    try:
-        pipeline.project_manager.ensure_project(scoped_project_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="project not found") from exc
+    pipeline.project_manager.ensure_project(scoped_project_id)
 
     user_key, _ = _current_user_key_and_label(request)
     items: list[dict[str, str | bool]] = []
@@ -692,34 +880,161 @@ def list_reference_audio(request: Request, project_id: str):
                 seen_hashes.add(sample_hash)
 
     items.sort(key=lambda row: str(row.get("updated_at") or ""), reverse=True)
-    return {"project_id": project_id, "samples": items}
+    return {"project_id": _display_project_id(scoped_project_id), "samples": items}
+
+
+@app.get("/projects/{project_id}/access")
+def get_project_access(request: Request, project_id: str):
+    _require_auth(request)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
+    access = _resolve_access_for_user(request, scoped_project_id)
+    owner = access.get("owner") if isinstance(access.get("owner"), dict) else {}
+    collaborators = access.get("collaborators") if isinstance(access.get("collaborators"), list) else []
+    return {
+        "project_id": _display_project_id(scoped_project_id),
+        "project_ref": scoped_project_id,
+        "can_manage": bool(access.get("can_manage")),
+        "owner": {
+            "display_name": str(owner.get("display_name") or ""),
+            "email": str(owner.get("email") or ""),
+        },
+        "collaborators": collaborators,
+    }
+
+
+@app.post("/projects/{project_id}/access/grant")
+def grant_project_access(request: Request, project_id: str, req: ProjectAccessGrantRequest):
+    _require_auth(request)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
+    access = _resolve_access_for_user(request, scoped_project_id)
+    if not bool(access.get("can_manage")):
+        raise HTTPException(status_code=403, detail="project access denied")
+
+    email = req.email.strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=422, detail="valid email is required")
+
+    access_doc = _load_project_access(scoped_project_id)
+    owner = access_doc.get("owner") if isinstance(access_doc.get("owner"), dict) else {}
+    owner_email = str(owner.get("email") or "").strip().lower()
+    if owner_email and email == owner_email:
+        return {
+            "project_id": _display_project_id(scoped_project_id),
+            "project_ref": scoped_project_id,
+            "collaborators": access_doc.get("collaborators", []),
+            "updated": False,
+        }
+
+    collaborators_raw = access_doc.get("collaborators") if isinstance(access_doc.get("collaborators"), list) else []
+    collaborators: list[dict[str, str]] = []
+    found = False
+    granted_by = str((_current_user(request) or {}).get("email") or (_current_user(request) or {}).get("sub") or "").strip()
+    for row in collaborators_raw:
+        if not isinstance(row, dict):
+            continue
+        existing_email = str(row.get("email") or "").strip().lower()
+        if not existing_email:
+            continue
+        if existing_email == email:
+            found = True
+            collaborators.append(
+                {
+                    "email": existing_email,
+                    "granted_at": str(row.get("granted_at") or datetime.now(timezone.utc).isoformat()),
+                    "granted_by": str(row.get("granted_by") or granted_by),
+                }
+            )
+        else:
+            collaborators.append(
+                {
+                    "email": existing_email,
+                    "granted_at": str(row.get("granted_at") or ""),
+                    "granted_by": str(row.get("granted_by") or ""),
+                }
+            )
+
+    if not found:
+        collaborators.append(
+            {
+                "email": email,
+                "granted_at": datetime.now(timezone.utc).isoformat(),
+                "granted_by": granted_by,
+            }
+        )
+
+    access_doc["collaborators"] = collaborators
+    access_doc["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _write_project_access(scoped_project_id, access_doc)
+
+    return {
+        "project_id": _display_project_id(scoped_project_id),
+        "project_ref": scoped_project_id,
+        "collaborators": collaborators,
+        "updated": not found,
+    }
+
+
+@app.post("/projects/{project_id}/access/revoke")
+def revoke_project_access(request: Request, project_id: str, req: ProjectAccessRevokeRequest):
+    _require_auth(request)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
+    access = _resolve_access_for_user(request, scoped_project_id)
+    if not bool(access.get("can_manage")):
+        raise HTTPException(status_code=403, detail="project access denied")
+
+    email = req.email.strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=422, detail="valid email is required")
+
+    access_doc = _load_project_access(scoped_project_id)
+    collaborators_raw = access_doc.get("collaborators") if isinstance(access_doc.get("collaborators"), list) else []
+    collaborators = [
+        {
+            "email": str(row.get("email") or "").strip().lower(),
+            "granted_at": str(row.get("granted_at") or ""),
+            "granted_by": str(row.get("granted_by") or ""),
+        }
+        for row in collaborators_raw
+        if isinstance(row, dict) and str(row.get("email") or "").strip().lower() and str(row.get("email") or "").strip().lower() != email
+    ]
+
+    access_doc["collaborators"] = collaborators
+    access_doc["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _write_project_access(scoped_project_id, access_doc)
+
+    return {
+        "project_id": _display_project_id(scoped_project_id),
+        "project_ref": scoped_project_id,
+        "collaborators": collaborators,
+        "updated": True,
+    }
 
 
 @app.post("/transcribe")
 def transcribe(request: Request, req: TranscribeRequest):
     _require_auth(request)
-    scoped_req = req.model_copy(update={"project_id": _scope_project_id(request, req.project_id)})
+    scoped_req = req.model_copy(update={"project_id": _resolve_project_id_for_request(request, req.project_id)})
     return pipeline.transcribe(scoped_req)
 
 
 @app.post("/clip")
 def clip(request: Request, req: ClipRequest):
     _require_auth(request)
-    scoped_req = req.model_copy(update={"project_id": _scope_project_id(request, req.project_id)})
+    scoped_req = req.model_copy(update={"project_id": _resolve_project_id_for_request(request, req.project_id)})
     return pipeline.clip(scoped_req)
 
 
 @app.post("/synthesize")
 def synthesize(request: Request, req: SynthesisRequest):
     _require_auth(request)
-    scoped_req = req.model_copy(update={"project_id": _scope_project_id(request, req.project_id)})
+    scoped_req = req.model_copy(update={"project_id": _resolve_project_id_for_request(request, req.project_id)})
     return pipeline.synthesize(scoped_req)
 
 
 @app.post("/synthesize/simple")
 def synthesize_simple(request: Request, req: SimpleSynthesisRequest):
     _require_auth(request)
-    scoped_project_id = _scope_project_id(request, req.project_id)
+    scoped_project_id = _resolve_project_id_for_request(request, req.project_id)
 
     try:
         paths = pipeline.project_manager.ensure_project(scoped_project_id)
@@ -758,8 +1073,8 @@ def synthesize_simple(request: Request, req: SimpleSynthesisRequest):
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "owner_key": str(found_entry.get("owner_key") or owner_key or ""),
             "owner_label": str(found_entry.get("owner_label") or owner_label or ""),
-            "project_id": req.project_id,
-            "origin_project_id": _descope_project_id(request, source_project_id),
+            "project_id": _display_project_id(scoped_project_id),
+            "origin_project_id": _display_project_id(source_project_id),
         }
         reference_cache[reference_hash] = cached_entry
         _write_reference_cache(paths.manifests, reference_cache)
@@ -796,7 +1111,7 @@ def synthesize_simple(request: Request, req: SimpleSynthesisRequest):
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "owner_key": owner_key or "",
             "owner_label": owner_label or "",
-            "project_id": req.project_id,
+            "project_id": _display_project_id(scoped_project_id),
         }
         reference_cache[reference_hash] = refreshed_entry
         _write_reference_cache(paths.manifests, reference_cache)
@@ -874,7 +1189,7 @@ def synthesize_simple(request: Request, req: SimpleSynthesisRequest):
             "status": "queued",
             "stage": "queued_remote",
             "progress": 0.0,
-            "project_id": req.project_id,
+            "project_id": _display_project_id(scoped_project_id),
             "output_name": output_name,
             "worker_mode": True,
             "fallback_enabled": WORKER_FALLBACK_TO_LOCAL,
@@ -890,7 +1205,7 @@ def synthesize_simple(request: Request, req: SimpleSynthesisRequest):
         "status": "queued",
         "stage": "queued",
         "progress": 0.0,
-        "project_id": req.project_id,
+        "project_id": _display_project_id(scoped_project_id),
         "output_name": output_name,
         "worker_mode": False,
         "fallback_enabled": False,
@@ -901,7 +1216,7 @@ def synthesize_simple(request: Request, req: SimpleSynthesisRequest):
 @app.post("/synthesize/worker")
 def synthesize_worker(request: Request, req: WorkerSynthesisEnqueueRequest):
     _require_auth(request)
-    scoped_req = req.model_copy(update={"project_id": _scope_project_id(request, req.project_id)})
+    scoped_req = req.model_copy(update={"project_id": _resolve_project_id_for_request(request, req.project_id)})
     job_id = worker_manager.enqueue_synthesis_job(scoped_req)
     return {
         "job_id": job_id,
@@ -921,7 +1236,7 @@ def captions(request: Request, req: CaptionRequest):
 @app.get("/projects/{project_id}/outputs")
 def list_project_outputs(request: Request, project_id: str):
     _require_auth(request)
-    scoped_project_id = _scope_project_id(request, project_id)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
     try:
         rows = pipeline.list_outputs(scoped_project_id)
     except FileNotFoundError as exc:
@@ -955,17 +1270,14 @@ def list_project_outputs(request: Request, project_id: str):
             }
         )
 
-    return {"project_id": project_id, "outputs": outputs}
+    return {"project_id": _display_project_id(scoped_project_id), "outputs": outputs}
 
 
 @app.get("/projects/{project_id}/artifact")
 def get_project_artifact(request: Request, project_id: str, path: str):
     _require_auth(request)
-    scoped_project_id = _scope_project_id(request, project_id)
-    try:
-        project_paths = pipeline.project_manager.ensure_project(scoped_project_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="project not found") from exc
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
+    project_paths = pipeline.project_manager.ensure_project(scoped_project_id)
 
     raw_path = Path(path)
     candidate = raw_path if raw_path.is_absolute() else (Path.cwd() / raw_path)
@@ -986,7 +1298,7 @@ def get_project_artifact(request: Request, project_id: str, path: str):
 @app.get("/jobs/{job_id}")
 def get_job(request: Request, job_id: str, project_id: str):
     _require_auth(request)
-    scoped_project_id = _scope_project_id(request, project_id)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
     job = pipeline.get_job(scoped_project_id, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="job not found")
@@ -1003,28 +1315,28 @@ def get_job(request: Request, job_id: str, project_id: str):
             job = refreshed
 
     if isinstance(job, dict) and isinstance(job.get("project_id"), str):
-        job["project_id"] = _descope_project_id(request, job["project_id"])
+        job["project_id"] = _display_project_id(job["project_id"])
     return job
 
 
 @app.post("/jobs/{job_id}/cancel")
 def cancel_job(request: Request, job_id: str, project_id: str):
     _require_auth(request)
-    scoped_project_id = _scope_project_id(request, project_id)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
     if worker_manager.cancel_queued_job(
         job_id,
         reason="Cancellation requested before worker pickup.",
     ):
         return {
             "job_id": job_id,
-            "project_id": project_id,
+            "project_id": _display_project_id(scoped_project_id),
             "status": "cancelled",
             "requested_at": datetime.now(timezone.utc).isoformat(),
         }
 
     payload = pipeline.cancel_job(scoped_project_id, job_id)
     if isinstance(payload, dict) and isinstance(payload.get("project_id"), str):
-        payload["project_id"] = _descope_project_id(request, payload["project_id"])
+        payload["project_id"] = _display_project_id(payload["project_id"])
     return payload
 
 

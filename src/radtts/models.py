@@ -170,6 +170,14 @@ class ProjectReferenceAudioUploadRequest(BaseModel):
     audio_b64: str = Field(min_length=32)
 
 
+class ProjectAccessGrantRequest(BaseModel):
+    email: str = Field(min_length=3)
+
+
+class ProjectAccessRevokeRequest(BaseModel):
+    email: str = Field(min_length=3)
+
+
 class CaptionRequest(BaseModel):
     project_id: str = Field(min_length=2)
     audio_path: Path

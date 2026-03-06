@@ -1,6 +1,7 @@
 const projectGatewayNode = document.getElementById("project-gateway");
 const workspaceNode = document.getElementById("workspace");
 const switchProjectBtn = document.getElementById("switch-project-btn");
+const shareProjectBtn = document.getElementById("share-project-btn");
 const activeProjectChip = document.getElementById("active-project-chip");
 const activeProjectLabelNode = document.getElementById("active-project-label");
 
@@ -98,7 +99,9 @@ const stageExpectedSeconds = {
 };
 
 const state = {
-  activeProjectId: null,
+  activeProjectRef: null,
+  activeProjectLabel: null,
+  canManageActiveProject: false,
   selectedAudioFile: null,
   selectedAudioHash: null,
   activeJobId: null,
@@ -306,15 +309,32 @@ async function readScriptFile(file) {
   });
 }
 
-function applyActiveProject(projectId) {
-  state.activeProjectId = projectId;
+async function refreshProjectAccessInfo() {
+  if (!shareProjectBtn || !state.activeProjectRef) return;
+  try {
+    const data = await requestJSON(
+      `/projects/${encodeURIComponent(state.activeProjectRef)}/access`,
+      "GET"
+    );
+    state.canManageActiveProject = Boolean(data.can_manage);
+    shareProjectBtn.hidden = !state.canManageActiveProject;
+  } catch {
+    state.canManageActiveProject = false;
+    shareProjectBtn.hidden = true;
+  }
+}
+
+function applyActiveProject(projectRef, projectLabel = projectRef) {
+  state.activeProjectRef = projectRef;
+  state.activeProjectLabel = projectLabel;
+  state.canManageActiveProject = false;
   state.selectedAudioHash = null;
   state.referenceSamples = [];
   clearRecordingPreview();
   setSelectedAudioFile(null);
   if (savedSampleSelectNode) savedSampleSelectNode.innerHTML = '<option value="">Loading saved samples...</option>';
   setSavedSampleStatus("Loading saved samples...");
-  if (activeProjectLabelNode) activeProjectLabelNode.textContent = projectId;
+  if (activeProjectLabelNode) activeProjectLabelNode.textContent = projectLabel;
   setWorkspaceVisible(true);
   setGenerateStatus("");
   resetProgressUi();
@@ -323,13 +343,14 @@ function applyActiveProject(projectId) {
   setCancelVisible(false);
   void loadOutputs();
   void loadReferenceSamples();
+  void refreshProjectAccessInfo();
 }
 
 function requireActiveProject() {
-  if (!state.activeProjectId) {
+  if (!state.activeProjectRef) {
     throw new Error("Select or create a project first.");
   }
-  return state.activeProjectId;
+  return state.activeProjectRef;
 }
 
 function setSelectedAudioFile(file) {
@@ -389,7 +410,7 @@ function applySavedSampleSelection(audioHash) {
 }
 
 async function loadReferenceSamples(preferredHash = null) {
-  const projectId = state.activeProjectId;
+  const projectId = state.activeProjectRef;
   if (!projectId || !savedSampleSelectNode) return;
 
   savedSampleSelectNode.innerHTML = '<option value="">Loading saved samples...</option>';
@@ -537,9 +558,15 @@ async function loadProjects(preselectProjectId = null) {
     existingProjectSelectNode.appendChild(placeholder);
 
     for (const project of projects) {
+      const projectRef = String(project.project_ref || project.project_id || "");
+      const projectLabel = String(project.project_id || projectRef);
+      const shared = Boolean(project.shared);
+      const ownerLabel = String(project.owner_label || "").trim();
       const option = document.createElement("option");
-      option.value = project.project_id;
-      option.textContent = project.project_id;
+      option.value = projectRef;
+      option.dataset.projectLabel = projectLabel;
+      const sharedSuffix = shared ? ` (shared${ownerLabel ? ` from ${ownerLabel}` : ""})` : "";
+      option.textContent = `${projectLabel}${sharedSuffix}`;
       existingProjectSelectNode.appendChild(option);
     }
 
@@ -592,7 +619,7 @@ function renderOutputs(outputs) {
 }
 
 async function loadOutputs() {
-  const projectId = state.activeProjectId;
+  const projectId = state.activeProjectRef;
   if (!projectId) return;
 
   try {
@@ -705,11 +732,11 @@ function applyJobSnapshot(job) {
 }
 
 async function pollJob() {
-  if (!state.activeJobId || !state.activeProjectId) return;
+  if (!state.activeJobId || !state.activeProjectRef) return;
 
   try {
     const data = await requestJSON(
-      `/jobs/${encodeURIComponent(state.activeJobId)}?project_id=${encodeURIComponent(state.activeProjectId)}`,
+      `/jobs/${encodeURIComponent(state.activeJobId)}?project_id=${encodeURIComponent(state.activeProjectRef)}`,
       "GET"
     );
 
@@ -837,14 +864,14 @@ async function handleGenerate() {
 }
 
 async function handleCancel() {
-  if (!state.activeJobId || !state.activeProjectId) return;
+  if (!state.activeJobId || !state.activeProjectRef) return;
 
   try {
     setCancelEnabled(false);
     setGenerateStatus("Cancelling generation...");
     state.latestDetail = "Cancellation requested. Waiting for current stage to stop...";
     await requestJSON(
-      `/jobs/${encodeURIComponent(state.activeJobId)}/cancel?project_id=${encodeURIComponent(state.activeProjectId)}`,
+      `/jobs/${encodeURIComponent(state.activeJobId)}/cancel?project_id=${encodeURIComponent(state.activeProjectRef)}`,
       "POST"
     );
   } catch (err) {
@@ -874,10 +901,11 @@ function bindProjectGateway() {
       };
 
       try {
-        await requestJSON("/projects", "POST", payload);
-        applyActiveProject(projectId);
+        const created = await requestJSON("/projects", "POST", payload);
+        const projectRef = String(created.project_ref || projectId);
+        applyActiveProject(projectRef, projectId);
         setGatewayStatus("");
-        await loadProjects(projectId);
+        await loadProjects(projectRef);
       } catch (err) {
         setGatewayStatus(`Project create failed: ${String(err)}`, true);
       }
@@ -896,7 +924,9 @@ function bindProjectGateway() {
         setGatewayStatus("Select a project first.", true);
         return;
       }
-      applyActiveProject(projectId);
+      const selectedOption = existingProjectSelectNode.selectedOptions[0];
+      const projectLabel = selectedOption?.dataset?.projectLabel || projectId;
+      applyActiveProject(projectId, projectLabel);
       setGatewayStatus("");
     });
   }
@@ -911,10 +941,13 @@ function bindProjectGateway() {
     switchProjectBtn.addEventListener("click", async () => {
       stopRecordingIfActive();
       clearJobTracking();
-      state.activeProjectId = null;
+      state.activeProjectRef = null;
+      state.activeProjectLabel = null;
+      state.canManageActiveProject = false;
       state.selectedAudioHash = null;
       state.referenceSamples = [];
       if (activeProjectLabelNode) activeProjectLabelNode.textContent = "";
+      if (shareProjectBtn) shareProjectBtn.hidden = true;
       setWorkspaceVisible(false);
       setGenerateEnabled(true);
       setCancelVisible(false);
@@ -931,7 +964,37 @@ function bindProjectGateway() {
   }
 
   setWorkspaceVisible(false);
+  if (shareProjectBtn) shareProjectBtn.hidden = true;
   loadProjects();
+}
+
+function bindProjectSharing() {
+  if (!shareProjectBtn) return;
+
+  shareProjectBtn.addEventListener("click", async () => {
+    if (!state.activeProjectRef) return;
+    if (!state.canManageActiveProject) {
+      setGenerateStatus("Only project owners can share this project.", true);
+      return;
+    }
+
+    const emailInput = window.prompt("Share project with user email:");
+    const email = String(emailInput || "").trim().toLowerCase();
+    if (!email) return;
+
+    try {
+      const result = await requestJSON(
+        `/projects/${encodeURIComponent(state.activeProjectRef)}/access/grant`,
+        "POST",
+        { email }
+      );
+      const count = Array.isArray(result.collaborators) ? result.collaborators.length : 0;
+      setGenerateStatus(`Access granted to ${email}. Collaborators: ${count}.`);
+      await loadProjects(state.activeProjectRef);
+    } catch (err) {
+      setGenerateStatus(`Share failed: ${String(err)}`, true);
+    }
+  });
 }
 
 function bindAudioSelection() {
@@ -1143,6 +1206,7 @@ function bindFolderCopy() {
 }
 
 bindProjectGateway();
+bindProjectSharing();
 bindAudioSelection();
 bindRecording();
 bindScriptFileLoader();

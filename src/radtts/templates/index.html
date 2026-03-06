@@ -30,6 +30,7 @@
       </div>
       <div class="topbar-actions">
         <button id="switch-project-btn" class="topbar-btn" type="button" hidden>Projects</button>
+        <button id="share-project-btn" class="topbar-btn" type="button" hidden>Share</button>
         {% if current_user %}
         {% if current_user.is_admin and psychek_admin_url %}
         <a class="topbar-btn" href="{{ psychek_admin_url }}">Admin</a>
