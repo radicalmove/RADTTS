@@ -11,6 +11,7 @@ const workerSetupBtn = document.getElementById("worker-setup-btn");
 const workerSetupLinksNode = document.getElementById("worker-setup-links");
 const workerSetupWindowsLinkNode = document.getElementById("worker-setup-windows-link");
 const workerSetupMacosLinkNode = document.getElementById("worker-setup-macos-link");
+const workerCopyMacosBtn = document.getElementById("worker-copy-macos-btn");
 const workerCopyLinuxBtn = document.getElementById("worker-copy-linux-btn");
 
 const existingProjectSelectNode = document.getElementById("existing-project-select");
@@ -149,6 +150,7 @@ const state = {
   suppressScriptAutosave: false,
   workerStatusPollTimer: null,
   workerSetupLinuxCommand: "",
+  workerSetupMacosCommand: "",
   workerSetupWindowsUrl: "",
   workerSetupMacosUrl: "",
 };
@@ -215,6 +217,7 @@ function hideWorkerSetupLinks() {
 
 function clearWorkerSetupLinks() {
   state.workerSetupLinuxCommand = "";
+  state.workerSetupMacosCommand = "";
   state.workerSetupWindowsUrl = "";
   state.workerSetupMacosUrl = "";
   if (workerSetupWindowsLinkNode) workerSetupWindowsLinkNode.href = "#";
@@ -927,7 +930,12 @@ async function refreshWorkerStatus({ announceErrors = false } = {}) {
 }
 
 async function ensureWorkerSetupLinks() {
-  if (state.workerSetupWindowsUrl && state.workerSetupMacosUrl && state.workerSetupLinuxCommand) {
+  if (
+    state.workerSetupWindowsUrl &&
+    state.workerSetupMacosUrl &&
+    state.workerSetupMacosCommand &&
+    state.workerSetupLinuxCommand
+  ) {
     if (workerSetupLinksNode) workerSetupLinksNode.hidden = false;
     return;
   }
@@ -936,6 +944,7 @@ async function ensureWorkerSetupLinks() {
     const data = await requestJSON("/workers/invite", "POST", { capabilities: ["synthesize"] });
     state.workerSetupWindowsUrl = String(data.windows_installer_url || "").trim();
     state.workerSetupMacosUrl = String(data.macos_installer_url || "").trim();
+    state.workerSetupMacosCommand = String(data.install_command_macos || data.install_command || "").trim();
     state.workerSetupLinuxCommand = String(data.install_command_linux || data.install_command || "").trim();
 
     if (workerSetupWindowsLinkNode && state.workerSetupWindowsUrl) {
@@ -1754,6 +1763,24 @@ function bindWorkerStatus() {
         })
         .catch(() => {
           setGenerateStatus("Could not copy Linux setup command.", true);
+        });
+    });
+  }
+
+  if (workerCopyMacosBtn) {
+    workerCopyMacosBtn.addEventListener("click", () => {
+      const command = state.workerSetupMacosCommand;
+      if (!command) {
+        setGenerateStatus("No Mac setup command available yet.", true);
+        return;
+      }
+      navigator.clipboard
+        .writeText(command)
+        .then(() => {
+          setGenerateStatus("Mac worker setup command copied.");
+        })
+        .catch(() => {
+          setGenerateStatus("Could not copy Mac setup command.", true);
         });
     });
   }
