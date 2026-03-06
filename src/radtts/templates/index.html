@@ -47,6 +47,15 @@
         <h2>Choose project</h2>
         <p class="gateway-copy">Create a new project or open an existing one to continue.</p>
         <div class="gateway-grid">
+          <form id="open-project-form" class="stack">
+            <h3>Open existing</h3>
+            <select id="existing-project-select" required>
+              <option value="">Loading projects...</option>
+            </select>
+            <button id="refresh-projects-btn" type="button">Refresh</button>
+            <p id="project-gateway-status" class="gateway-status"></p>
+          </form>
+
           <form id="create-form" class="stack">
             <h3>Create new</h3>
             <input name="project_id" placeholder="Project ID (e.g., crju150-m9)" required />
@@ -54,18 +63,6 @@
             <input name="module" placeholder="Module (optional)" />
             <input name="lesson" placeholder="Lesson (optional)" />
             <button type="submit">Create Project</button>
-          </form>
-
-          <form id="open-project-form" class="stack">
-            <h3>Open existing</h3>
-            <select id="existing-project-select" required>
-              <option value="">Loading projects...</option>
-            </select>
-            <div class="row row-2">
-              <button id="refresh-projects-btn" type="button">Refresh</button>
-              <button id="open-project-btn" type="submit">Open Project</button>
-            </div>
-            <p id="project-gateway-status" class="gateway-status"></p>
           </form>
         </div>
       </section>

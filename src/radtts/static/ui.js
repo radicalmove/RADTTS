@@ -6,7 +6,6 @@ const activeProjectChip = document.getElementById("active-project-chip");
 const activeProjectLabelNode = document.getElementById("active-project-label");
 
 const existingProjectSelectNode = document.getElementById("existing-project-select");
-const openProjectFormNode = document.getElementById("open-project-form");
 const refreshProjectsBtn = document.getElementById("refresh-projects-btn");
 const projectGatewayStatusNode = document.getElementById("project-gateway-status");
 
@@ -244,12 +243,6 @@ function formatEta(seconds) {
     return `${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
   }
   return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
-}
-
-function updateOpenButtonState() {
-  const hasSelection = Boolean(existingProjectSelectNode && existingProjectSelectNode.value);
-  const openBtn = document.getElementById("open-project-btn");
-  if (openBtn) openBtn.disabled = !hasSelection;
 }
 
 async function requestJSON(url, method, payload) {
@@ -538,7 +531,6 @@ function extensionForMimeType(mimeType) {
 async function loadProjects(preselectProjectId = null) {
   if (!existingProjectSelectNode) return;
   existingProjectSelectNode.innerHTML = '<option value="">Loading projects...</option>';
-  updateOpenButtonState();
 
   try {
     const data = await requestJSON("/projects", "GET");
@@ -548,7 +540,6 @@ async function loadProjects(preselectProjectId = null) {
     if (!projects.length) {
       existingProjectSelectNode.innerHTML = '<option value="">No projects yet</option>';
       setGatewayStatus("No existing projects yet. Create one to continue.");
-      updateOpenButtonState();
       return;
     }
 
@@ -575,11 +566,9 @@ async function loadProjects(preselectProjectId = null) {
     }
 
     setGatewayStatus("");
-    updateOpenButtonState();
   } catch (err) {
     existingProjectSelectNode.innerHTML = '<option value="">Unable to load projects</option>';
     setGatewayStatus(`Could not load projects: ${String(err)}`, true);
-    updateOpenButtonState();
   }
 }
 
@@ -913,20 +902,15 @@ function bindProjectGateway() {
   }
 
   if (existingProjectSelectNode) {
-    existingProjectSelectNode.addEventListener("change", updateOpenButtonState);
-  }
-
-  if (openProjectFormNode) {
-    openProjectFormNode.addEventListener("submit", (event) => {
-      event.preventDefault();
-      const projectId = existingProjectSelectNode ? existingProjectSelectNode.value.trim() : "";
-      if (!projectId) {
-        setGatewayStatus("Select a project first.", true);
+    existingProjectSelectNode.addEventListener("change", () => {
+      const projectRef = existingProjectSelectNode.value.trim();
+      if (!projectRef) {
+        setGatewayStatus("");
         return;
       }
       const selectedOption = existingProjectSelectNode.selectedOptions[0];
-      const projectLabel = selectedOption?.dataset?.projectLabel || projectId;
-      applyActiveProject(projectId, projectLabel);
+      const projectLabel = selectedOption?.dataset?.projectLabel || projectRef;
+      applyActiveProject(projectRef, projectLabel);
       setGatewayStatus("");
     });
   }
