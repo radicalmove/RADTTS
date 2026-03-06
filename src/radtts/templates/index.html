@@ -87,6 +87,11 @@
               <small>WAV, MP3, M4A, FLAC, OGG</small>
             </label>
             <p id="audio-file-name" class="field-note">No file selected.</p>
+            <div class="record-controls">
+              <button id="record-audio-btn" class="record-btn" type="button">Record audio</button>
+              <audio id="record-preview" controls hidden></audio>
+            </div>
+            <p id="record-status" class="field-note">Use Record audio to capture a sample from your microphone.</p>
             <div class="saved-sample-block">
               <label class="saved-sample-label" for="saved-sample-select">Or choose a saved sample</label>
               <div class="saved-sample-row">
@@ -97,11 +102,6 @@
               </div>
               <p id="saved-sample-status" class="field-note">Saved samples are scoped to this project.</p>
             </div>
-            <div class="record-controls">
-              <button id="record-audio-btn" class="record-btn" type="button">Record audio</button>
-              <audio id="record-preview" controls hidden></audio>
-            </div>
-            <p id="record-status" class="field-note">Use Record audio to capture a sample from your microphone.</p>
           </section>
 
           <section class="input-card">

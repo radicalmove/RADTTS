@@ -443,7 +443,7 @@ textarea {
 }
 
 textarea {
-  min-height: 240px;
+  min-height: 300px;
   resize: vertical;
 }
 
@@ -669,6 +669,6 @@ button:hover {
   }
 
   textarea {
-    min-height: 190px;
+    min-height: 230px;
   }
 }
