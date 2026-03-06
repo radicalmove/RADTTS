@@ -46,6 +46,9 @@ const outputListNode = document.getElementById("output-list");
 
 const stageLabels = {
   queued: "Queued",
+  queued_remote: "Waiting for worker device",
+  worker_running: "Processing on worker device",
+  fallback_local: "Worker unavailable, running on server",
   model_load: "Loading voice model",
   generation: "Generating speech",
   stitching: "Finalizing audio",
@@ -57,6 +60,9 @@ const stageLabels = {
 
 const stageProgressFloors = {
   queued: 0,
+  queued_remote: 0,
+  worker_running: 18,
+  fallback_local: 8,
   model_load: 5,
   generation: 35,
   stitching: 72,
@@ -68,6 +74,9 @@ const stageProgressFloors = {
 
 const stageProgressCaps = {
   queued: 8,
+  queued_remote: 18,
+  worker_running: 82,
+  fallback_local: 34,
   model_load: 34,
   generation: 79,
   stitching: 84,
@@ -79,6 +88,9 @@ const stageProgressCaps = {
 
 const stageExpectedSeconds = {
   queued: 6,
+  queued_remote: 120,
+  worker_running: 300,
+  fallback_local: 40,
   model_load: 60,
   generation: 300,
   stitching: 45,
@@ -738,18 +750,20 @@ async function pollJob() {
   }
 }
 
-function startPolling(jobId) {
+function startPolling(jobId, options = {}) {
+  const initialStage = options.initialStage || "queued";
+  const initialDetail = options.initialDetail || "Job queued. Preparing model...";
   clearJobTracking();
   state.activeJobId = jobId;
   state.currentStatus = "running";
-  state.currentStage = "queued";
+  state.currentStage = initialStage;
   state.jobStartedAtMs = Date.now();
   state.stageStartedAtMs = Date.now();
   state.actualProgress = 0;
   state.displayProgress = 0;
-  state.latestDetail = "Job queued. Preparing model...";
+  state.latestDetail = initialDetail;
 
-  updateProgressVisuals(0, "queued");
+  updateProgressVisuals(0, initialStage);
   startProgressAnimator();
   state.pollTimer = setInterval(pollJob, 2000);
   void pollJob();
@@ -792,10 +806,29 @@ async function handleGenerate() {
     }
 
     const data = await requestJSON("/synthesize/simple", "POST", payload);
-    setGenerateStatus("Generation started.");
+    const workerMode = Boolean(data.worker_mode);
+    const fallbackEnabled = Boolean(data.fallback_enabled);
+    const fallbackTimeout = Number(data.fallback_timeout_seconds || 0);
+
+    if (workerMode) {
+      if (fallbackEnabled && fallbackTimeout > 0) {
+        setGenerateStatus(
+          `Waiting for a worker device. If none starts within ${fallbackTimeout}s, this server will run it automatically.`
+        );
+      } else {
+        setGenerateStatus("Waiting for a worker device to start processing.");
+      }
+    } else {
+      setGenerateStatus("Generation started on this server.");
+    }
     setCancelVisible(true);
     setCancelEnabled(true);
-    startPolling(data.job_id);
+    startPolling(data.job_id, {
+      initialStage: String(data.stage || (workerMode ? "queued_remote" : "queued")),
+      initialDetail: workerMode
+        ? "Job queued for worker processing."
+        : "Job queued. Preparing model...",
+    });
   } catch (err) {
     setGenerateEnabled(true);
     setCancelVisible(false);

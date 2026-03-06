@@ -82,6 +82,47 @@ def test_simple_synthesize_requires_voice_clone_authorization():
             shutil.rmtree(project_root)
 
 
+def test_simple_synthesize_queues_worker_by_default_and_cancel_works():
+    client = TestClient(app)
+    project_id = f"ui-{uuid.uuid4().hex[:8]}"
+    project_root = Path("projects") / project_id
+
+    try:
+        created = client.post("/projects", json={"project_id": project_id})
+        assert created.status_code == 200
+
+        queued = client.post(
+            "/synthesize/simple",
+            json={
+                "project_id": project_id,
+                "text": "Hello worker default.",
+                "reference_audio_b64": "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw",
+                "reference_audio_filename": "reference.wav",
+                "quality": "normal",
+                "add_fillers": False,
+                "average_gap_seconds": 0.8,
+                "output_format": "mp3",
+                "voice_clone_authorized": True,
+            },
+        )
+        assert queued.status_code == 200
+        payload = queued.json()
+        assert payload["worker_mode"] is True
+        assert payload["stage"] == "queued_remote"
+
+        job_id = payload["job_id"]
+        cancelled = client.post(f"/jobs/{job_id}/cancel?project_id={project_id}")
+        assert cancelled.status_code == 200
+        assert cancelled.json()["status"] == "cancelled"
+
+        job = client.get(f"/jobs/{job_id}?project_id={project_id}")
+        assert job.status_code == 200
+        assert job.json()["status"] == "cancelled"
+    finally:
+        if project_root.exists():
+            shutil.rmtree(project_root)
+
+
 def test_project_reference_audio_upload_persists_file():
     client = TestClient(app)
     project_id = f"ui-{uuid.uuid4().hex[:8]}"

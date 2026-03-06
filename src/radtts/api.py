@@ -9,6 +9,7 @@ import os
 import random
 import re
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -54,6 +55,16 @@ def _env_bool(name: str, default: bool) -> bool:
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 PROJECTS_ROOT = Path(os.environ.get("RADTTS_PROJECTS_ROOT", "projects"))
 MODULE_ROOT = Path(__file__).resolve().parent
 AUTH_REQUIRED = _env_bool("RADTTS_AUTH_REQUIRED", False)
@@ -65,6 +76,9 @@ BRIDGE_MAX_AGE_SECONDS = int(os.environ.get("RADTTS_BRIDGE_MAX_AGE_SECONDS", "12
 WORKER_SECRET = os.environ.get("RADTTS_WORKER_SECRET", SESSION_SECRET)
 WORKER_INVITE_MAX_AGE_SECONDS = int(os.environ.get("RADTTS_WORKER_INVITE_MAX_AGE_SECONDS", "86400"))
 SCOPE_PROJECTS_BY_USER = _env_bool("RADTTS_SCOPE_PROJECTS_BY_USER", True)
+SIMPLE_SYNTH_DEFAULT_TO_WORKER = _env_bool("RADTTS_SIMPLE_SYNTH_DEFAULT_TO_WORKER", True)
+WORKER_FALLBACK_TO_LOCAL = _env_bool("RADTTS_WORKER_FALLBACK_TO_LOCAL", True)
+WORKER_FALLBACK_TIMEOUT_SECONDS = max(5, _env_int("RADTTS_WORKER_FALLBACK_TIMEOUT_SECONDS", 90))
 
 
 def _infer_psychek_admin_url(login_url: str) -> str:
@@ -342,6 +356,180 @@ def _find_reference_audio_for_hash(
     return None
 
 
+def _read_reference_text_from_job_outputs(outputs: dict[str, object] | None) -> str | None:
+    if not isinstance(outputs, dict):
+        return None
+    metadata_path_raw = outputs.get("metadata_path")
+    if not isinstance(metadata_path_raw, str):
+        return None
+
+    metadata_path = Path(metadata_path_raw)
+    if not metadata_path.exists():
+        return None
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+
+    reference_text_value = metadata.get("reference_text")
+    if not isinstance(reference_text_value, str) or not reference_text_value.strip():
+        return None
+    return reference_text_value.strip()
+
+
+def _upsert_reference_cache_entry(
+    *,
+    paths,
+    audio_hash: str,
+    audio_path: Path,
+    source_filename: str,
+    owner_key: str,
+    owner_label: str,
+    reference_text: str | None = None,
+) -> None:
+    latest_cache = _load_reference_cache(paths.manifests)
+    latest_entry = latest_cache.get(audio_hash, {})
+    latest_entry.update(
+        {
+            "audio_hash": audio_hash,
+            "audio_path": str(audio_path),
+            "source_filename": source_filename,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "owner_key": str(latest_entry.get("owner_key") or owner_key or ""),
+            "owner_label": str(latest_entry.get("owner_label") or owner_label or ""),
+        }
+    )
+    if reference_text:
+        latest_entry.update(
+            {
+                "reference_text": reference_text,
+                "reference_text_updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+    latest_cache[audio_hash] = latest_entry
+    _write_reference_cache(paths.manifests, latest_cache)
+
+
+def _iso_age_seconds(value: str | None) -> float | None:
+    if not value:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    normalized = raw.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return max(0.0, (datetime.now(timezone.utc) - dt).total_seconds())
+
+
+def _run_local_synthesis_from_worker_payload(
+    *,
+    worker_payload: WorkerSynthesisEnqueueRequest,
+    job_id: str,
+    owner_key: str = "",
+    owner_label: str = "",
+) -> None:
+    try:
+        paths = pipeline.project_manager.ensure_project(worker_payload.project_id)
+    except FileNotFoundError:
+        return
+
+    try:
+        reference_bytes = base64.b64decode(worker_payload.reference_audio_b64.encode("utf-8"), validate=True)
+    except Exception:  # noqa: BLE001
+        return
+
+    reference_hash = hashlib.sha256(reference_bytes).hexdigest()
+    source_filename = _safe_filename(worker_payload.reference_audio_filename)
+    reference_ext = _safe_audio_extension(source_filename)
+    reference_path = (paths.assets_reference_audio / f"reference-{reference_hash[:16]}{reference_ext}").resolve()
+    reference_path.parent.mkdir(parents=True, exist_ok=True)
+    if not reference_path.exists():
+        reference_path.write_bytes(reference_bytes)
+
+    synth_req = SynthesisRequest(
+        project_id=worker_payload.project_id,
+        text=worker_payload.text,
+        reference_audio_path=reference_path,
+        reference_text=worker_payload.reference_text,
+        model_id=worker_payload.model_id,
+        max_new_tokens=worker_payload.max_new_tokens,
+        chunk_mode=worker_payload.chunk_mode,
+        pause_config=worker_payload.pause_config,
+        output_format=worker_payload.output_format,
+        output_name=worker_payload.output_name,
+        generate_transcript=True,
+        voice_clone_authorized=True,
+    )
+
+    try:
+        job = pipeline.orchestrator.run_synthesis_job(synth_req, job_id=job_id)
+    except Exception:
+        return
+
+    resolved_reference_text = _read_reference_text_from_job_outputs(job.outputs)
+    _upsert_reference_cache_entry(
+        paths=paths,
+        audio_hash=reference_hash,
+        audio_path=reference_path,
+        source_filename=source_filename,
+        owner_key=owner_key,
+        owner_label=owner_label,
+        reference_text=resolved_reference_text,
+    )
+
+
+def _maybe_trigger_worker_fallback(
+    request: Request,
+    *,
+    scoped_project_id: str,
+    job_payload: dict[str, object],
+) -> bool:
+    if not SIMPLE_SYNTH_DEFAULT_TO_WORKER or not WORKER_FALLBACK_TO_LOCAL:
+        return False
+    if str(job_payload.get("project_id") or "") != scoped_project_id:
+        return False
+
+    status = str(job_payload.get("status") or "")
+    stage = str(job_payload.get("stage") or "")
+    if status != "queued" or stage != "queued_remote":
+        return False
+
+    age_seconds = _iso_age_seconds(str(job_payload.get("created_at") or ""))
+    if age_seconds is None or age_seconds < WORKER_FALLBACK_TIMEOUT_SECONDS:
+        return False
+
+    job_id = str(job_payload.get("id") or "")
+    if not job_id:
+        return False
+
+    reason = (
+        f"No worker accepted this job after {WORKER_FALLBACK_TIMEOUT_SECONDS}s. "
+        "Switching to local server fallback."
+    )
+    worker_payload = worker_manager.claim_job_for_local_fallback(job_id, reason=reason)
+    if worker_payload is None:
+        return False
+
+    owner_key, owner_label = _current_user_key_and_label(request)
+    thread = threading.Thread(
+        target=lambda: _run_local_synthesis_from_worker_payload(
+            worker_payload=worker_payload,
+            job_id=job_id,
+            owner_key=owner_key or "",
+            owner_label=owner_label or "",
+        ),
+        name=f"radtts-fallback-{job_id}",
+        daemon=True,
+    )
+    thread.start()
+    return True
+
+
 @app.get("/auth/bridge")
 def auth_bridge(request: Request, token: str):
     try:
@@ -570,7 +758,7 @@ def synthesize_simple(request: Request, req: SimpleSynthesisRequest):
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "owner_key": str(found_entry.get("owner_key") or owner_key or ""),
             "owner_label": str(found_entry.get("owner_label") or owner_label or ""),
-            "project_id": project_id,
+            "project_id": req.project_id,
             "origin_project_id": _descope_project_id(request, source_project_id),
         }
         reference_cache[reference_hash] = cached_entry
@@ -608,7 +796,7 @@ def synthesize_simple(request: Request, req: SimpleSynthesisRequest):
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "owner_key": owner_key or "",
             "owner_label": owner_label or "",
-            "project_id": project_id,
+            "project_id": req.project_id,
         }
         reference_cache[reference_hash] = refreshed_entry
         _write_reference_cache(paths.manifests, reference_cache)
@@ -618,72 +806,83 @@ def synthesize_simple(request: Request, req: SimpleSynthesisRequest):
     reference_text = cached_reference_text if isinstance(cached_reference_text, str) and cached_reference_text.strip() else None
 
     output_name = _build_output_name(req.text, req.output_name)
-
     model_id = MODEL_MODE_ALIASES["quality"] if req.quality == "high" else MODEL_MODE_ALIASES["fast"]
     add_ums = req.add_ums or req.add_fillers
     add_ahs = req.add_ahs or req.add_fillers
     scripted_text = _inject_fillers(req.text, add_ums=add_ums, add_ahs=add_ahs)
     min_gap = round(max(0.15, req.average_gap_seconds * 0.7), 3)
     max_gap = round(min(2.5, req.average_gap_seconds * 1.3), 3)
-
-    synth_req = SynthesisRequest(
-        project_id=scoped_project_id,
-        text=scripted_text,
-        reference_audio_path=reference_path,
-        reference_text=reference_text,
-        model_id=model_id,
-        max_new_tokens=1400 if req.quality == "high" else 1000,
-        chunk_mode="sentence",
-        pause_config=PauseConfig(
-            strategy="random_uniform_with_length_adjustment",
-            min_seconds=min_gap,
-            max_seconds=max_gap,
-            seed=None,
-        ),
-        output_format=req.output_format,
-        output_name=output_name,
-        generate_transcript=req.generate_transcript,
-        voice_clone_authorized=req.voice_clone_authorized,
+    pause_config = PauseConfig(
+        strategy="random_uniform_with_length_adjustment",
+        min_seconds=min_gap,
+        max_seconds=max_gap,
+        seed=None,
     )
+    max_new_tokens = 1400 if req.quality == "high" else 1000
 
-    job_id = f"job_{uuid.uuid4().hex[:12]}"
-
-    def run_local_job() -> None:
+    def run_local_job(*, job_id: str) -> None:
+        synth_req = SynthesisRequest(
+            project_id=scoped_project_id,
+            text=scripted_text,
+            reference_audio_path=reference_path,
+            reference_text=reference_text,
+            model_id=model_id,
+            max_new_tokens=max_new_tokens,
+            chunk_mode="sentence",
+            pause_config=pause_config,
+            output_format=req.output_format,
+            output_name=output_name,
+            generate_transcript=req.generate_transcript,
+            voice_clone_authorized=req.voice_clone_authorized,
+        )
         try:
             job = pipeline.orchestrator.run_synthesis_job(synth_req, job_id=job_id)
-            metadata_path_raw = job.outputs.get("metadata_path") if isinstance(job.outputs, dict) else None
-            if not isinstance(metadata_path_raw, str):
-                return
-
-            metadata_path = Path(metadata_path_raw)
-            if not metadata_path.exists():
-                return
-
-            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-            reference_text_value = metadata.get("reference_text")
-            if not isinstance(reference_text_value, str) or not reference_text_value.strip():
-                return
-
-            latest_cache = _load_reference_cache(paths.manifests)
-            latest_entry = latest_cache.get(reference_hash, {})
-            latest_entry.update(
-                {
-                    "audio_hash": reference_hash,
-                    "audio_path": str(reference_path),
-                    "source_filename": source_filename,
-                    "reference_text": reference_text_value.strip(),
-                    "reference_text_updated_at": datetime.now(timezone.utc).isoformat(),
-                    "owner_key": str(latest_entry.get("owner_key") or owner_key or ""),
-                    "owner_label": str(latest_entry.get("owner_label") or owner_label or ""),
-                }
-            )
-            latest_cache[reference_hash] = latest_entry
-            _write_reference_cache(paths.manifests, latest_cache)
         except Exception:
             # Job failure details are persisted in manifest by orchestrator.
             return
 
-    thread = threading.Thread(target=run_local_job, name=f"radtts-{job_id}", daemon=True)
+        resolved_reference_text = _read_reference_text_from_job_outputs(job.outputs)
+        _upsert_reference_cache_entry(
+            paths=paths,
+            audio_hash=reference_hash,
+            audio_path=reference_path,
+            source_filename=source_filename,
+            owner_key=owner_key or "",
+            owner_label=owner_label or "",
+            reference_text=resolved_reference_text,
+        )
+
+    if SIMPLE_SYNTH_DEFAULT_TO_WORKER:
+        reference_audio_b64 = base64.b64encode(reference_path.read_bytes()).decode("utf-8")
+        worker_req = WorkerSynthesisEnqueueRequest(
+            project_id=scoped_project_id,
+            text=scripted_text,
+            reference_audio_b64=reference_audio_b64,
+            reference_audio_filename=source_filename or reference_path.name,
+            reference_text=reference_text,
+            model_id=model_id,
+            max_new_tokens=max_new_tokens,
+            chunk_mode="sentence",
+            pause_config=pause_config,
+            output_format=req.output_format,
+            output_name=output_name,
+            voice_clone_authorized=True,
+        )
+        job_id = worker_manager.enqueue_synthesis_job(worker_req)
+        return {
+            "job_id": job_id,
+            "status": "queued",
+            "stage": "queued_remote",
+            "progress": 0.0,
+            "project_id": req.project_id,
+            "output_name": output_name,
+            "worker_mode": True,
+            "fallback_enabled": WORKER_FALLBACK_TO_LOCAL,
+            "fallback_timeout_seconds": WORKER_FALLBACK_TIMEOUT_SECONDS,
+        }
+
+    job_id = f"job_{uuid.uuid4().hex[:12]}"
+    thread = threading.Thread(target=lambda: run_local_job(job_id=job_id), name=f"radtts-{job_id}", daemon=True)
     thread.start()
 
     return {
@@ -693,6 +892,9 @@ def synthesize_simple(request: Request, req: SimpleSynthesisRequest):
         "progress": 0.0,
         "project_id": req.project_id,
         "output_name": output_name,
+        "worker_mode": False,
+        "fallback_enabled": False,
+        "fallback_timeout_seconds": 0,
     }
 
 
@@ -788,6 +990,18 @@ def get_job(request: Request, job_id: str, project_id: str):
     job = pipeline.get_job(scoped_project_id, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="job not found")
+
+    if isinstance(job, dict) and _maybe_trigger_worker_fallback(
+        request,
+        scoped_project_id=scoped_project_id,
+        job_payload=job,
+    ):
+        # Give the manifest a short moment to reflect the fallback claim stage.
+        time.sleep(0.05)
+        refreshed = pipeline.get_job(scoped_project_id, job_id)
+        if isinstance(refreshed, dict):
+            job = refreshed
+
     if isinstance(job, dict) and isinstance(job.get("project_id"), str):
         job["project_id"] = _descope_project_id(request, job["project_id"])
     return job
@@ -797,6 +1011,17 @@ def get_job(request: Request, job_id: str, project_id: str):
 def cancel_job(request: Request, job_id: str, project_id: str):
     _require_auth(request)
     scoped_project_id = _scope_project_id(request, project_id)
+    if worker_manager.cancel_queued_job(
+        job_id,
+        reason="Cancellation requested before worker pickup.",
+    ):
+        return {
+            "job_id": job_id,
+            "project_id": project_id,
+            "status": "cancelled",
+            "requested_at": datetime.now(timezone.utc).isoformat(),
+        }
+
     payload = pipeline.cancel_job(scoped_project_id, job_id)
     if isinstance(payload, dict) and isinstance(payload.get("project_id"), str):
         payload["project_id"] = _descope_project_id(request, payload["project_id"])
