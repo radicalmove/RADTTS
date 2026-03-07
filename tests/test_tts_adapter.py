@@ -47,7 +47,7 @@ def test_model_load_kwargs_prefers_mps_when_available(monkeypatch: pytest.Monkey
     kwargs = TTSService.model_load_kwargs()
 
     assert kwargs["device_map"] == "mps"
-    assert kwargs["dtype"] == torch.float16
+    assert kwargs["dtype"] == torch.float32
 
 
 def test_model_load_kwargs_respects_env_overrides(monkeypatch: pytest.MonkeyPatch):

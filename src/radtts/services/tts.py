@@ -184,8 +184,10 @@ class TTSService:
                 raise ValueError(f"Unsupported RADTTS_TTS_DTYPE value: {override}")
             return dtype_aliases[normalized]
 
-        if str(device).startswith("cuda") or str(device).startswith("mps"):
+        if str(device).startswith("cuda"):
             return torch.float16
+        if str(device).startswith("mps"):
+            return torch.float32
         return None
 
     @classmethod
