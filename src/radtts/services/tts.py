@@ -13,10 +13,10 @@ from typing import Any, Callable
 import numpy as np
 
 from radtts.constants import SUPPORTED_BASE_MODELS
-from radtts.exceptions import DependencyMissingError
+from radtts.exceptions import DependencyMissingError, ValidationError
 from radtts.models import ChunkMode, PauseConfig, SynthesisRequest
 from radtts.services.asr import ASRService
-from radtts.utils.audio import concat_with_silence, convert_audio, write_wav
+from radtts.utils.audio import concat_with_silence, convert_audio, probe_duration_seconds, write_wav
 from radtts.utils.text import split_sentences, word_count
 
 
@@ -39,6 +39,10 @@ class PausePlanner:
 
 
 class TTSService:
+    MIN_REFERENCE_DURATION_SECONDS = 2.5
+    MIN_REFERENCE_WORDS = 2
+    MIN_REFERENCE_TEXT_CHARS = 8
+
     def __init__(self, *, auto_reference_asr_model: str = "small"):
         self._model_cache: dict[str, Any] = {}
         self._pause_planner = PausePlanner()
@@ -100,6 +104,16 @@ class TTSService:
             return mp3_path, pauses, reference_text
 
     def _auto_reference_text(self, reference_audio_path: Path) -> str:
+        try:
+            duration_seconds = probe_duration_seconds(reference_audio_path)
+        except Exception:
+            duration_seconds = None
+
+        if duration_seconds is not None and duration_seconds < self.MIN_REFERENCE_DURATION_SECONDS:
+            raise ValidationError(
+                "Reference sample is too short. Please use at least 3 seconds of clear speech, ideally a full sentence."
+            )
+
         with tempfile.TemporaryDirectory(prefix="radtts_ref_asr_") as tmp:
             artifacts, _ = self._asr_service.transcribe(
                 reference_audio_path,
@@ -108,7 +122,17 @@ class TTSService:
                 language=None,
                 beam_size=3,
             )
-            return artifacts.txt_path.read_text(encoding="utf-8").strip()
+            transcript = artifacts.txt_path.read_text(encoding="utf-8").strip()
+
+        if (
+            len(transcript) < self.MIN_REFERENCE_TEXT_CHARS
+            or word_count(transcript) < self.MIN_REFERENCE_WORDS
+        ):
+            raise ValidationError(
+                "Reference sample is too short or unclear to clone reliably. Please use at least one clear full sentence."
+            )
+
+        return transcript
 
     @staticmethod
     def _prepare_reference_audio_path(

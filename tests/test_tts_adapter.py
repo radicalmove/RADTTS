@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 import torch
 
+from radtts.exceptions import ValidationError
 from radtts.services.tts import TTSService
 
 
@@ -78,3 +79,35 @@ def test_prepare_reference_audio_path_converts_non_wav(monkeypatch: pytest.Monke
 
     assert normalized.suffix == ".wav"
     assert converted == [(Path("/tmp/ref.webm"), normalized)]
+
+
+def test_auto_reference_text_rejects_too_short_audio(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    service = TTSService()
+    audio_path = tmp_path / "tiny.wav"
+    audio_path.write_bytes(b"RIFF")
+
+    monkeypatch.setattr("radtts.services.tts.probe_duration_seconds", lambda path: 1.2)
+
+    with pytest.raises(ValidationError, match="Reference sample is too short"):
+        service._auto_reference_text(audio_path)
+
+
+def test_auto_reference_text_rejects_empty_transcript(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    service = TTSService()
+    audio_path = tmp_path / "ref.wav"
+    audio_path.write_bytes(b"RIFF")
+
+    class DummyArtifacts:
+        def __init__(self, txt_path: Path):
+            self.txt_path = txt_path
+
+    def fake_transcribe(audio_path, output_dir, *, name, language=None, beam_size=5):  # noqa: ANN001
+        txt_path = output_dir / f"{name}.txt"
+        txt_path.write_text("hi", encoding="utf-8")
+        return DummyArtifacts(txt_path), []
+
+    monkeypatch.setattr("radtts.services.tts.probe_duration_seconds", lambda path: 4.0)
+    monkeypatch.setattr(service._asr_service, "transcribe", fake_transcribe)
+
+    with pytest.raises(ValidationError, match="too short or unclear"):
+        service._auto_reference_text(audio_path)
