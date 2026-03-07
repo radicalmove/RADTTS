@@ -85,6 +85,10 @@ SIMPLE_SYNTH_DEFAULT_TO_WORKER = _env_bool("RADTTS_SIMPLE_SYNTH_DEFAULT_TO_WORKE
 WORKER_FALLBACK_TO_LOCAL = _env_bool("RADTTS_WORKER_FALLBACK_TO_LOCAL", True)
 WORKER_FALLBACK_TIMEOUT_SECONDS = max(5, _env_int("RADTTS_WORKER_FALLBACK_TIMEOUT_SECONDS", 20))
 WORKER_ONLINE_WINDOW_SECONDS = max(10, _env_int("RADTTS_WORKER_ONLINE_WINDOW_SECONDS", 30))
+WORKER_RUNNING_STALL_TIMEOUT_SECONDS = max(
+    WORKER_FALLBACK_TIMEOUT_SECONDS + 60,
+    _env_int("RADTTS_WORKER_RUNNING_STALL_TIMEOUT_SECONDS", 180),
+)
 SCRIPT_VERSION_HISTORY_LIMIT = max(10, _env_int("RADTTS_SCRIPT_VERSION_HISTORY_LIMIT", 60))
 SCOPED_PROJECT_RE = re.compile(r"^u[0-9a-f]{12}__.+$")
 
@@ -909,28 +913,44 @@ def _maybe_trigger_worker_fallback(
 
     status = str(job_payload.get("status") or "")
     stage = str(job_payload.get("stage") or "")
-    if status != "queued" or stage != "queued_remote":
-        return False
-
     age_seconds = _iso_age_seconds(str(job_payload.get("created_at") or ""))
-    if age_seconds is None or age_seconds < WORKER_FALLBACK_TIMEOUT_SECONDS:
-        return False
-
     job_id = str(job_payload.get("id") or "")
     if not job_id:
         return False
 
-    reason = (
-        f"No worker accepted this job after {WORKER_FALLBACK_TIMEOUT_SECONDS}s. "
-        "Switching to local server fallback."
-    )
     owner_key, owner_label = _current_user_key_and_label(request)
-    return _claim_and_launch_local_fallback(
-        job_id=job_id,
-        reason=reason,
-        owner_key=owner_key or "",
-        owner_label=owner_label or "",
-    )
+
+    if status == "queued" and stage == "queued_remote":
+        if age_seconds is None or age_seconds < WORKER_FALLBACK_TIMEOUT_SECONDS:
+            return False
+        reason = (
+            f"No worker accepted this job after {WORKER_FALLBACK_TIMEOUT_SECONDS}s. "
+            "Switching to local server fallback."
+        )
+        return _claim_and_launch_local_fallback(
+            job_id=job_id,
+            reason=reason,
+            owner_key=owner_key or "",
+            owner_label=owner_label or "",
+        )
+
+    running_worker_stages = {"worker_running", "model_load", "generation", "stitching", "captioning"}
+    if status == "running" and stage in running_worker_stages:
+        updated_age_seconds = _iso_age_seconds(str(job_payload.get("updated_at") or ""))
+        if updated_age_seconds is None or updated_age_seconds < WORKER_RUNNING_STALL_TIMEOUT_SECONDS:
+            return False
+        reason = (
+            f"Helper device stopped reporting progress for over {WORKER_RUNNING_STALL_TIMEOUT_SECONDS}s. "
+            "Switching to local server fallback."
+        )
+        return _claim_and_launch_local_fallback(
+            job_id=job_id,
+            reason=reason,
+            owner_key=owner_key or "",
+            owner_label=owner_label or "",
+        )
+
+    return False
 
 
 @app.get("/auth/bridge")

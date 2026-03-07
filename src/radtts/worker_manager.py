@@ -205,11 +205,12 @@ class WorkerManager:
             entry = next((item for item in jobs if item.get("job_id") == job_id), None)
             if not entry:
                 return None
-            if entry.get("status") != "queued":
+            if entry.get("status") not in {"queued", "running"}:
                 return None
 
             entry["status"] = "fallback_local"
             entry["assigned_worker_id"] = "local-fallback"
+            entry["error"] = reason
             entry["updated_at"] = _now_iso()
             self._write_list(self.jobs_path, jobs)
 
