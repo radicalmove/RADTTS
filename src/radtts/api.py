@@ -900,6 +900,11 @@ def _schedule_worker_fallback_watch(
     watcher.start()
 
 
+def _cancel_existing_project_worker_jobs(scoped_project_id: str) -> list[str]:
+    reason = "Cancelled because a newer job was submitted for this project."
+    return worker_manager.cancel_project_jobs(scoped_project_id, reason=reason)
+
+
 def _maybe_trigger_worker_fallback(
     request: Request,
     *,
@@ -1496,6 +1501,7 @@ def synthesize_simple(request: Request, req: SimpleSynthesisRequest):
         )
 
     if SIMPLE_SYNTH_DEFAULT_TO_WORKER:
+        _cancel_existing_project_worker_jobs(scoped_project_id)
         reference_audio_b64 = base64.b64encode(reference_path.read_bytes()).decode("utf-8")
         worker_req = WorkerSynthesisEnqueueRequest(
             project_id=scoped_project_id,
@@ -1554,6 +1560,7 @@ def synthesize_simple(request: Request, req: SimpleSynthesisRequest):
 def synthesize_worker(request: Request, req: WorkerSynthesisEnqueueRequest):
     _require_auth(request)
     scoped_req = req.model_copy(update={"project_id": _resolve_project_id_for_request(request, req.project_id)})
+    _cancel_existing_project_worker_jobs(scoped_req.project_id)
     job_id = worker_manager.enqueue_synthesis_job(scoped_req)
     worker_snapshot = _worker_availability_snapshot()
     owner_key, owner_label = _current_user_key_and_label(request)

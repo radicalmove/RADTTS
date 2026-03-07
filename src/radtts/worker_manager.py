@@ -199,6 +199,39 @@ class WorkerManager:
 
         return job_id
 
+    def cancel_project_jobs(self, project_id: str, *, reason: str) -> list[str]:
+        cancelled_job_ids: list[str] = []
+        with self._lock:
+            jobs = self._read_list(self.jobs_path)
+            changed = False
+            for entry in jobs:
+                if entry.get("project_id") != project_id:
+                    continue
+                if entry.get("status") not in {"queued", "running", "fallback_local"}:
+                    continue
+                entry["status"] = "cancelled"
+                entry["error"] = reason
+                entry["updated_at"] = _now_iso()
+                cancelled_job_ids.append(str(entry.get("job_id") or ""))
+                changed = True
+            if changed:
+                self._write_list(self.jobs_path, jobs)
+
+        for job_id in cancelled_job_ids:
+            if not job_id:
+                continue
+            self._update_job_manifest(
+                project_id=project_id,
+                job_id=job_id,
+                status=JobStatus.CANCELLED,
+                stage="cancelled",
+                progress=0.0,
+                error=reason,
+                log=reason,
+            )
+
+        return [job_id for job_id in cancelled_job_ids if job_id]
+
     def claim_job_for_local_fallback(self, job_id: str, *, reason: str) -> WorkerSynthesisEnqueueRequest | None:
         with self._lock:
             jobs = self._read_list(self.jobs_path)
