@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import os
 import tempfile
 from pathlib import Path
 from random import Random
@@ -66,8 +67,6 @@ class TTSService:
         for idx, chunk in enumerate(chunks):
             if cancel_check and cancel_check():
                 raise RuntimeError("job cancelled")
-            if on_progress:
-                on_progress(f"generation chunk {idx + 1}/{len(chunks)}")
             audio, sample_rate = self._synthesize_chunk(
                 model=model,
                 text=chunk,
@@ -76,6 +75,8 @@ class TTSService:
                 max_new_tokens=req.max_new_tokens,
             )
             chunk_audio.append((audio, sample_rate))
+            if on_progress:
+                on_progress(f"generation chunk {idx + 1}/{len(chunks)}")
 
         if on_progress:
             on_progress("stitching chunks")
@@ -115,6 +116,97 @@ class TTSService:
             return [text.strip()]
         return chunks
 
+    @staticmethod
+    def _env_override(name: str) -> str | None:
+        raw = str(os.environ.get(name, "")).strip()
+        if not raw or raw.lower() in {"auto", "default"}:
+            return None
+        return raw
+
+    @classmethod
+    def _preferred_device(cls) -> str:
+        override = cls._env_override("RADTTS_TTS_DEVICE")
+        if override:
+            return override
+
+        try:
+            import torch
+        except Exception:
+            return "cpu"
+
+        if torch.cuda.is_available():
+            return "cuda:0"
+
+        mps_backend = getattr(getattr(torch, "backends", None), "mps", None)
+        if mps_backend is not None and mps_backend.is_available():
+            return "mps"
+
+        return "cpu"
+
+    @classmethod
+    def _preferred_dtype(cls, device: str) -> Any | None:
+        try:
+            import torch
+        except Exception:
+            return None
+
+        override = cls._env_override("RADTTS_TTS_DTYPE")
+        if override:
+            normalized = override.lower()
+            dtype_aliases = {
+                "float16": torch.float16,
+                "fp16": torch.float16,
+                "half": torch.float16,
+                "bfloat16": torch.bfloat16,
+                "bf16": torch.bfloat16,
+                "float32": torch.float32,
+                "fp32": torch.float32,
+            }
+            if normalized not in dtype_aliases:
+                raise ValueError(f"Unsupported RADTTS_TTS_DTYPE value: {override}")
+            return dtype_aliases[normalized]
+
+        if str(device).startswith("cuda") or str(device).startswith("mps"):
+            return torch.float16
+        return None
+
+    @classmethod
+    def model_load_kwargs(cls) -> dict[str, Any]:
+        device = cls._preferred_device()
+        dtype = cls._preferred_dtype(device)
+
+        kwargs: dict[str, Any] = {}
+        if device:
+            kwargs["device_map"] = device
+        if dtype is not None:
+            kwargs["dtype"] = dtype
+        return kwargs
+
+    @staticmethod
+    def describe_model_runtime(model: Any, *, model_id: str | None = None) -> str:
+        device = getattr(model, "device", None)
+        dtype = getattr(model, "dtype", None)
+        inner = getattr(model, "model", None)
+
+        if inner is not None:
+            try:
+                first_param = next(inner.parameters())
+                device = first_param.device
+                dtype = first_param.dtype
+            except Exception:
+                device = getattr(inner, "device", device)
+                dtype = getattr(inner, "dtype", dtype)
+
+        device_label = str(device or "unknown")
+        dtype_label = str(dtype or "unknown")
+        prefix = f"tts model={model_id} runtime" if model_id else "tts runtime"
+        return f"{prefix} device={device_label} dtype={dtype_label}"
+
+    def load_model_with_runtime(self, model_id: str) -> tuple[Any, str]:
+        self.ensure_supported_model(model_id)
+        model = self._load_model(model_id)
+        return model, self.describe_model_runtime(model, model_id=model_id)
+
     def _load_model(self, model_id: str) -> Any:
         if model_id in self._model_cache:
             return self._model_cache[model_id]
@@ -125,8 +217,9 @@ class TTSService:
                 "qwen-tts is required for synthesis. Install with 'pip install -e .[tts]'."
             ) from exc
 
+        load_kwargs = self.model_load_kwargs()
         if hasattr(Qwen3TTSModel, "from_pretrained"):
-            model = Qwen3TTSModel.from_pretrained(model_id)
+            model = Qwen3TTSModel.from_pretrained(model_id, **load_kwargs)
         else:
             model = Qwen3TTSModel(model_id)
         self._model_cache[model_id] = model

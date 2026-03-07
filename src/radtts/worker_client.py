@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import re
 import socket
 import tempfile
 import time
@@ -14,10 +15,18 @@ from typing import Any
 import requests
 
 from radtts.models import SynthesisRequest, WorkerSynthesisEnqueueRequest
+from radtts.progress import (
+    CAPTIONING_PROGRESS_START,
+    UPLOAD_PROGRESS,
+    generation_progress_for_chunk,
+    stitching_progress_for_output,
+)
 from radtts.services.captions import CaptionService
 from radtts.services.quality import QualityService
 from radtts.services.tts import TTSService
 from radtts.utils.audio import probe_duration_seconds
+
+_GENERATION_CHUNK_RE = re.compile(r"^generation chunk (\d+)/(\d+)$", re.IGNORECASE)
 
 
 class WorkerClient:
@@ -111,7 +120,7 @@ class WorkerClient:
 
             job_id = job["job_id"]
             try:
-                complete_payload = self._process_synthesis_job(job["payload"])
+                complete_payload = self._process_synthesis_job(job_id, job["payload"])
                 complete_payload.update({"worker_id": self.worker_id, "api_key": self.api_key})
                 self._post_json(
                     f"/workers/jobs/{job_id}/complete",
@@ -130,13 +139,65 @@ class WorkerClient:
             if once:
                 return
 
-    def _process_synthesis_job(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def _post_progress_update(
+        self,
+        job_id: str,
+        *,
+        progress: float,
+        detail: str | None = None,
+    ) -> None:
+        assert self.worker_id and self.api_key
+        payload = {
+            "worker_id": self.worker_id,
+            "api_key": self.api_key,
+            "progress": max(0.0, min(1.0, float(progress))),
+        }
+        if detail:
+            payload["detail"] = detail
+        try:
+            self._post_json(f"/workers/jobs/{job_id}/progress", payload, timeout=60)
+        except Exception:
+            # Progress updates are best-effort; synthesis should continue even if they fail.
+            return
+
+    def _process_synthesis_job(self, job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         req = WorkerSynthesisEnqueueRequest(**payload)
 
         with tempfile.TemporaryDirectory(prefix="radtts_worker_") as tmp:
             tmp_path = Path(tmp)
             reference_path = tmp_path / req.reference_audio_filename
             reference_path.write_bytes(base64.b64decode(req.reference_audio_b64.encode("utf-8")))
+            stage_durations_seconds: dict[str, float] = {}
+            model_load_started_at = time.monotonic()
+            _, runtime_summary = self.tts_service.load_model_with_runtime(req.model_id)
+            stage_durations_seconds["model_load"] = round(time.monotonic() - model_load_started_at, 3)
+            self._post_progress_update(job_id, progress=0.30, detail=runtime_summary)
+            synth_started_at = time.monotonic()
+            stitching_started_at: float | None = None
+
+            def on_tts_progress(message: str) -> None:
+                nonlocal stitching_started_at
+                cleaned = str(message or "").strip()
+                lower = cleaned.lower()
+                chunk_match = _GENERATION_CHUNK_RE.match(cleaned)
+
+                if chunk_match:
+                    progress = generation_progress_for_chunk(
+                        completed_chunks=int(chunk_match.group(1)),
+                        total_chunks=int(chunk_match.group(2)),
+                    )
+                    self._post_progress_update(job_id, progress=progress, detail=cleaned)
+                    return
+
+                if lower.startswith("stitching"):
+                    if stitching_started_at is None:
+                        stitching_started_at = time.monotonic()
+                        stage_durations_seconds["generation"] = round(stitching_started_at - synth_started_at, 3)
+                    progress = stitching_progress_for_output(
+                        req.output_format,
+                        encoding_started=(lower == "stitching encoding mp3"),
+                    )
+                    self._post_progress_update(job_id, progress=progress, detail=cleaned)
 
             synth_req = SynthesisRequest(
                 project_id=req.project_id,
@@ -154,7 +215,14 @@ class WorkerClient:
             output_path, pause_seconds, reference_text = self.tts_service.synthesize(
                 synth_req,
                 output_dir=tmp_path,
+                on_progress=on_tts_progress,
             )
+            synth_finished_at = time.monotonic()
+
+            if stitching_started_at is None:
+                stage_durations_seconds["generation"] = round(synth_finished_at - synth_started_at, 3)
+            else:
+                stage_durations_seconds["stitching"] = round(synth_finished_at - stitching_started_at, 3)
 
             duration = probe_duration_seconds(output_path)
 
@@ -162,6 +230,8 @@ class WorkerClient:
             captions_srt = None
             captions_vtt = None
             if req.generate_transcript:
+                caption_started_at = time.monotonic()
+                self._post_progress_update(job_id, progress=CAPTIONING_PROGRESS_START, detail="captioning started")
                 try:
                     caption_artifacts = self.caption_service.generate(
                         audio_path=output_path,
@@ -172,6 +242,8 @@ class WorkerClient:
                     captions_txt = caption_artifacts.txt_path.read_text(encoding="utf-8")
                     captions_srt = caption_artifacts.srt_path.read_text(encoding="utf-8")
                     captions_vtt = caption_artifacts.vtt_path.read_text(encoding="utf-8")
+                    stage_durations_seconds["captioning"] = round(time.monotonic() - caption_started_at, 3)
+                    self._post_progress_update(job_id, progress=0.95, detail="captioning complete")
                 except Exception:  # noqa: BLE001
                     pass
 
@@ -180,6 +252,7 @@ class WorkerClient:
                 duration_seconds=duration,
                 pause_seconds=pause_seconds,
             )
+            self._post_progress_update(job_id, progress=UPLOAD_PROGRESS, detail="uploading completed audio")
 
             return {
                 "output_audio_b64": base64.b64encode(output_path.read_bytes()).decode("utf-8"),
@@ -191,7 +264,7 @@ class WorkerClient:
                 "captions_srt": captions_srt,
                 "captions_vtt": captions_vtt,
                 "quality": quality.model_dump(mode="json"),
-                "stage_durations_seconds": {},
+                "stage_durations_seconds": stage_durations_seconds,
             }
 
 

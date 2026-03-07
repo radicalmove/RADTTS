@@ -335,6 +335,13 @@ class WorkerJobCompleteRequest(BaseModel):
     stage_durations_seconds: dict[str, float] = Field(default_factory=dict)
 
 
+class WorkerJobProgressRequest(BaseModel):
+    worker_id: str
+    api_key: str
+    progress: float = Field(ge=0.0, le=1.0)
+    detail: str | None = None
+
+
 class WorkerJobFailRequest(BaseModel):
     worker_id: str
     api_key: str

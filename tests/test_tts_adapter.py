@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
+import torch
 
 from radtts.services.tts import TTSService
 
@@ -34,3 +36,25 @@ def test_parse_generation_result_handles_single_item_audio_list():
     assert sample_rate == 24000
     assert audio.shape == (3,)
     assert np.allclose(audio, np.array([0.1, -0.2, 0.3], dtype=np.float32))
+
+
+def test_model_load_kwargs_prefers_mps_when_available(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("RADTTS_TTS_DEVICE", raising=False)
+    monkeypatch.delenv("RADTTS_TTS_DTYPE", raising=False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
+
+    kwargs = TTSService.model_load_kwargs()
+
+    assert kwargs["device_map"] == "mps"
+    assert kwargs["dtype"] == torch.float16
+
+
+def test_model_load_kwargs_respects_env_overrides(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("RADTTS_TTS_DEVICE", "cpu")
+    monkeypatch.setenv("RADTTS_TTS_DTYPE", "float32")
+
+    kwargs = TTSService.model_load_kwargs()
+
+    assert kwargs["device_map"] == "cpu"
+    assert kwargs["dtype"] == torch.float32

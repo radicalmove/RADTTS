@@ -146,6 +146,9 @@ const state = {
   workerOnlineCount: null,
   workerTotalCount: null,
   workerOnlineWindowSeconds: null,
+  generateTranscriptRequested: false,
+  outputFormatRequested: "mp3",
+  stageProgressSamples: [],
   scriptVersions: [],
   currentScriptVersionId: "",
   scriptSaveTimer: null,
@@ -339,6 +342,9 @@ function resetProgressUi() {
   state.workerOnlineCount = null;
   state.workerTotalCount = null;
   state.workerOnlineWindowSeconds = null;
+  state.generateTranscriptRequested = false;
+  state.outputFormatRequested = "mp3";
+  state.stageProgressSamples = [];
 
   if (progressWrapNode) progressWrapNode.hidden = true;
   if (progressFillNode) progressFillNode.style.width = "0%";
@@ -349,17 +355,55 @@ function resetProgressUi() {
   if (progressDetailNode) progressDetailNode.textContent = "Preparing generation...";
 }
 
-const etaStageOrder = [
-  "queued",
-  "queued_remote",
-  "fallback_local",
-  "worker_running",
-  "model_load",
-  "generation",
-  "stitching",
-  "captioning",
-  "completed",
-];
+const stageActualProgressEnds = {
+  queued: 8,
+  queued_remote: 18,
+  worker_running: 100,
+  fallback_local: 35,
+  model_load: 35,
+  generation: 72,
+  stitching: 85,
+  captioning: 100,
+  completed: 100,
+  failed: 100,
+  cancelled: 0,
+};
+
+function currentRunEtaOrder(stage) {
+  const currentStage = String(stage || state.currentStage || "queued");
+
+  if (currentStage === "worker_running" || state.computeMode === "worker") {
+    return ["queued_remote", "worker_running", "completed"];
+  }
+
+  if (currentStage === "queued_remote" && state.computeMode === "waiting_worker") {
+    if (Number.isFinite(state.workerOnlineCount) && state.workerOnlineCount > 0) {
+      return ["queued_remote", "worker_running", "completed"];
+    }
+
+    const waitingOrder = ["queued_remote"];
+    if (state.workerFallbackTimeoutSeconds > 0) {
+      waitingOrder.push("fallback_local");
+    }
+    waitingOrder.push("model_load", "generation", "stitching");
+    if (state.generateTranscriptRequested) {
+      waitingOrder.push("captioning");
+    }
+    waitingOrder.push("completed");
+    return waitingOrder;
+  }
+
+  const localOrder = ["queued"];
+  if (state.expectedRemoteWorker) {
+    localOrder.push("queued_remote", "fallback_local");
+  }
+  localOrder.push("model_load", "generation", "stitching");
+  if (state.generateTranscriptRequested) {
+    localOrder.push("captioning");
+  }
+  localOrder.push("completed");
+  return localOrder;
+}
 
 function expectedStageSecondsForCurrentMode(stage) {
   const key = String(stage || "");
@@ -370,6 +414,10 @@ function expectedStageSecondsForCurrentMode(stage) {
 
   if (key === "queued_remote" && state.workerFallbackTimeoutSeconds > 0) {
     return Math.max(base, state.workerFallbackTimeoutSeconds);
+  }
+
+  if (key === "stitching" && state.outputFormatRequested === "wav") {
+    return Math.max(12, Math.round(base * 0.55));
   }
 
   if (state.computeMode === "server") {
@@ -386,10 +434,53 @@ function expectedStageSecondsForCurrentMode(stage) {
   return base;
 }
 
+function expectedFutureStageSeconds(stage) {
+  let remainingFuture = 0;
+  const order = currentRunEtaOrder(stage);
+  const idx = order.indexOf(stage);
+  if (idx < 0) return remainingFuture;
+
+  for (const nextStage of order.slice(idx + 1)) {
+    if (nextStage === "completed") continue;
+    remainingFuture += expectedStageSecondsForCurrentMode(nextStage);
+  }
+  return remainingFuture;
+}
+
+function estimateEtaFromObservedVelocity(progressPercent, stage) {
+  if (!Array.isArray(state.stageProgressSamples) || state.stageProgressSamples.length < 2) {
+    return null;
+  }
+
+  const stageStart = stageProgressFloors[stage];
+  const stageEnd = stageActualProgressEnds[stage];
+  if (!Number.isFinite(stageStart) || !Number.isFinite(stageEnd) || stageEnd <= stageStart) {
+    return null;
+  }
+
+  const first = state.stageProgressSamples[0];
+  const last = state.stageProgressSamples[state.stageProgressSamples.length - 1];
+  const deltaProgress = last.progress - first.progress;
+  const deltaSeconds = (last.atMs - first.atMs) / 1000;
+  if (deltaProgress < 1 || deltaSeconds < 3) {
+    return null;
+  }
+
+  const speed = deltaProgress / deltaSeconds;
+  if (!Number.isFinite(speed) || speed <= 0) {
+    return null;
+  }
+
+  const currentProgress = Math.max(stageStart, Math.min(stageEnd, progressPercent));
+  const remainingCurrentStage = Math.max(0, stageEnd - currentProgress) / speed;
+  return remainingCurrentStage + expectedFutureStageSeconds(stage);
+}
+
 function estimateEtaSeconds(progressPercent, stage) {
   if (state.currentStatus !== "running") return null;
   const nowMs = Date.now();
   const clamped = Math.max(0, Math.min(100, progressPercent));
+  const observedBased = estimateEtaFromObservedVelocity(clamped, stage);
 
   let progressBased = null;
   if (state.jobStartedAtMs && clamped > 1 && clamped < 100) {
@@ -410,17 +501,14 @@ function estimateEtaSeconds(progressPercent, stage) {
       remainingStage = Math.min(300, 20 + Math.abs(remainingStage) * 0.5);
     }
 
-    let remainingFuture = 0;
-    const idx = etaStageOrder.indexOf(stage);
-    if (idx >= 0) {
-      for (const nextStage of etaStageOrder.slice(idx + 1)) {
-        if (nextStage === "completed") continue;
-        remainingFuture += expectedStageSecondsForCurrentMode(nextStage);
-      }
-    }
+    const remainingFuture = expectedFutureStageSeconds(stage);
     stageBased = Math.max(0, remainingStage + remainingFuture);
   }
 
+  if (observedBased !== null && stageBased !== null) {
+    return (observedBased * 0.72) + (stageBased * 0.28);
+  }
+  if (observedBased !== null) return observedBased;
   if (progressBased === null) return stageBased;
   if (stageBased === null) return progressBased;
 
@@ -898,6 +986,7 @@ function detailFromLogLine(line, currentStage) {
   const cleaned = stripLogTimestamp(line);
   if (!cleaned) return "";
   const lower = cleaned.toLowerCase();
+  const chunkMatch = lower.match(/^generation chunk (\d+)\/(\d+)$/);
 
   if (lower.startsWith("heartbeat:")) {
     const stageMatch = lower.match(/stage=([a-z_]+)/);
@@ -915,6 +1004,30 @@ function detailFromLogLine(line, currentStage) {
 
   if (lower.includes("switching to local server fallback")) {
     return "No helper accepted in time. Starting on RADTTS server.";
+  }
+
+  if (chunkMatch) {
+    return `Generating speech (${chunkMatch[1]}/${chunkMatch[2]} chunks complete)`;
+  }
+
+  if (lower === "stitching chunks") {
+    return "Combining generated chunks.";
+  }
+
+  if (lower === "stitching encoding mp3") {
+    return "Encoding MP3 output.";
+  }
+
+  if (lower === "captioning started") {
+    return "Creating transcript.";
+  }
+
+  if (lower === "captioning complete") {
+    return "Transcript complete.";
+  }
+
+  if (lower === "uploading completed audio") {
+    return "Uploading completed audio from helper device.";
   }
 
   const stageMatch = lower.match(/stage=([a-z_]+)/);
@@ -1452,7 +1565,8 @@ function updateProgressVisuals(progressPercent, stage) {
 
   if (progressEtaNode) {
     if (state.currentStatus === "running") {
-      const eta = smoothEtaDisplay(estimateEtaSeconds(clamped, stage), stage);
+      const etaProgress = state.actualProgress > 0 ? state.actualProgress : clamped;
+      const eta = smoothEtaDisplay(estimateEtaSeconds(etaProgress, stage), stage);
       progressEtaNode.textContent = `Time left to process: ${formatEta(eta)}`;
     } else {
       state.etaSeconds = null;
@@ -1483,7 +1597,14 @@ function calculateSyntheticTarget() {
   const elapsedSec = Math.max(0, (Date.now() - stageStart) / 1000);
   const ratio = Math.min(1, elapsedSec / expectedSec);
   const synthetic = floor + (cap - floor) * ratio;
-  return Math.max(state.actualProgress, synthetic);
+  let target = Math.max(state.actualProgress, synthetic);
+
+  if (state.actualProgress > 0 && ["model_load", "generation", "stitching", "captioning"].includes(stage)) {
+    const maxLead = stage === "generation" ? 4 : 3;
+    target = Math.min(target, state.actualProgress + maxLead);
+  }
+
+  return Math.max(state.actualProgress, Math.min(cap, target));
 }
 
 function progressAnimationTick() {
@@ -1518,6 +1639,7 @@ function startProgressAnimator() {
 function applyJobSnapshot(job) {
   const status = String(job.status || "running");
   const stage = String(job.stage || state.currentStage || "queued");
+  const stageChanged = state.currentStage !== stage;
 
   state.currentStatus = status;
 
@@ -1525,13 +1647,27 @@ function applyJobSnapshot(job) {
     state.jobStartedAtMs = Date.now();
   }
 
-  if (state.currentStage !== stage) {
+  if (stageChanged) {
     state.currentStage = stage;
     state.stageStartedAtMs = Date.now();
+    state.stageProgressSamples = [];
   }
 
+  let progressIncreased = false;
   if (Number.isFinite(Number(job.progress))) {
-    state.actualProgress = Math.max(state.actualProgress, Number(job.progress) * 100);
+    const nextProgress = Math.max(state.actualProgress, Number(job.progress) * 100);
+    progressIncreased = nextProgress > state.actualProgress + 0.05;
+    state.actualProgress = nextProgress;
+  }
+
+  if (stageChanged || progressIncreased) {
+    state.stageProgressSamples.push({
+      progress: Math.max(0, Math.min(100, state.actualProgress)),
+      atMs: Date.now(),
+    });
+    if (state.stageProgressSamples.length > 8) {
+      state.stageProgressSamples.shift();
+    }
   }
 
   const logs = Array.isArray(job.logs) ? job.logs : [];
@@ -1630,6 +1766,9 @@ function startPolling(jobId, options = {}) {
   state.workerFallbackTimeoutSeconds = fallbackTimeoutSeconds > 0 ? fallbackTimeoutSeconds : 0;
   state.queuedRemoteSinceMs = state.expectedRemoteWorker ? Date.now() : null;
   state.lastRunningStatusKey = null;
+  state.generateTranscriptRequested = Boolean(options.generateTranscript);
+  state.outputFormatRequested = String(options.outputFormat || "mp3").toLowerCase();
+  state.stageProgressSamples = [{ progress: 0, atMs: state.stageStartedAtMs }];
 
   updateProgressVisuals(0, initialStage);
   updateRunningStatusMessage();
@@ -1712,6 +1851,8 @@ async function handleGenerate() {
         : "Job queued. Preparing model...",
       expectedRemoteWorker: workerMode,
       fallbackTimeoutSeconds: workerMode && fallbackEnabled ? fallbackTimeout : 0,
+      generateTranscript: payload.generate_transcript,
+      outputFormat: payload.output_format,
     });
   } catch (err) {
     setGenerateEnabled(true);

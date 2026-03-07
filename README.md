@@ -146,6 +146,10 @@ Key worker endpoints:
 - Voice cloning requires explicit authorization in your workflow.
 - Qwen voice cloning is restricted to Base models in this app.
 - Processing is local-first by design.
+- TTS runtime defaults:
+  - Apple Silicon uses `mps` with `float16` when available.
+  - CUDA GPUs use `cuda:0` with `float16` when available.
+  - Override with `RADTTS_TTS_DEVICE` and `RADTTS_TTS_DTYPE` if needed.
 
 ## Linux deployment
 - Deployment guide: [`docs/MAC_MINI_LINUX_DEPLOYMENT.md`](docs/MAC_MINI_LINUX_DEPLOYMENT.md)

@@ -24,6 +24,7 @@ from radtts.models import (
     WorkerCapability,
     WorkerJobCompleteRequest,
     WorkerJobFailRequest,
+    WorkerJobProgressRequest,
     WorkerPullRequest,
     WorkerQueuedJob,
     WorkerRegisterRequest,
@@ -368,6 +369,32 @@ class WorkerManager:
             log=f"worker {req.worker_id} completed job",
         )
 
+    def progress_job(self, job_id: str, req: WorkerJobProgressRequest) -> None:
+        pull_req = WorkerPullRequest(worker_id=req.worker_id, api_key=req.api_key)
+        with self._lock:
+            self._authenticate_worker(pull_req)
+            jobs = self._read_list(self.jobs_path)
+            entry = next((item for item in jobs if item.get("job_id") == job_id), None)
+            if not entry:
+                raise FileNotFoundError(f"worker job not found: {job_id}")
+            if entry.get("assigned_worker_id") != req.worker_id:
+                raise PermissionError("job is assigned to a different worker")
+            if entry.get("status") != "running":
+                raise RuntimeError(f"job is not running: {entry.get('status')}")
+
+            entry["updated_at"] = _now_iso()
+            self._write_list(self.jobs_path, jobs)
+
+        detail = (req.detail or "").strip() or None
+        self._update_job_manifest(
+            project_id=entry["project_id"],
+            job_id=job_id,
+            status=JobStatus.RUNNING,
+            stage="worker_running",
+            progress=req.progress,
+            log=detail,
+        )
+
     def fail_job(self, job_id: str, req: WorkerJobFailRequest) -> None:
         pull_req = WorkerPullRequest(worker_id=req.worker_id, api_key=req.api_key)
         with self._lock:
@@ -422,7 +449,7 @@ class WorkerManager:
 
         job.status = status
         job.stage = stage
-        job.progress = progress
+        job.progress = max(job.progress, progress) if status == JobStatus.RUNNING else progress
         job.updated_at = datetime.now(timezone.utc)
         if error is not None:
             job.error = error

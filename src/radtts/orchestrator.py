@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -12,12 +13,20 @@ from radtts.constants import DEFAULT_STAGE_RETRIES, DEFAULT_STAGE_TIMEOUTS
 from radtts.exceptions import JobCancelledError
 from radtts.manifests import ManifestStore
 from radtts.models import JobRecord, JobStatus, OutputMetadata, SynthesisRequest
+from radtts.progress import (
+    GENERATION_PROGRESS_START,
+    STITCHING_PROGRESS_END,
+    generation_progress_for_chunk,
+    stitching_progress_for_output,
+)
 from radtts.project import ProjectManager
 from radtts.services.captions import CaptionService
 from radtts.services.quality import QualityService
 from radtts.services.tts import TTSService
 from radtts.utils.audio import probe_duration_seconds
 from radtts.utils.runtime import Heartbeat, run_with_retry_timeout
+
+_GENERATION_CHUNK_RE = re.compile(r"^generation chunk (\d+)/(\d+)$", re.IGNORECASE)
 
 
 class PipelineOrchestrator:
@@ -84,8 +93,8 @@ class PipelineOrchestrator:
         def model_load() -> None:
             if ensure_not_cancelled():
                 raise JobCancelledError("cancelled before model load")
-            self.tts_service.ensure_supported_model(req.model_id)
-            self.tts_service._load_model(req.model_id)  # noqa: SLF001
+            _, runtime_summary = self.tts_service.load_model_with_runtime(req.model_id)
+            self._log_job(store, job, runtime_summary)
 
         try:
             run_stage("model_load", 0.10, model_load)
@@ -93,11 +102,29 @@ class PipelineOrchestrator:
             stage_state = {"name": "generation"}
 
             def on_tts_progress(message: str) -> None:
-                if message.lower().startswith("stitching"):
+                chunk_match = _GENERATION_CHUNK_RE.match(message.strip())
+                if chunk_match:
+                    stage_state["name"] = "generation"
+                    completed = int(chunk_match.group(1))
+                    total = max(1, int(chunk_match.group(2)))
+                    self._update_job(
+                        store,
+                        job,
+                        stage="generation",
+                        progress=generation_progress_for_chunk(completed, total),
+                    )
+                elif message.lower() == "stitching encoding mp3":
                     stage_state["name"] = "stitching"
-                    self._update_job(store, job, stage="stitching", progress=0.72)
+                    self._update_job(store, job, stage="stitching", progress=STITCHING_PROGRESS_END)
+                elif message.lower().startswith("stitching"):
+                    stage_state["name"] = "stitching"
+                    stitching_progress = stitching_progress_for_output(
+                        req.output_format,
+                        encoding_started=False,
+                    )
+                    self._update_job(store, job, stage="stitching", progress=stitching_progress)
                 else:
-                    self._update_job(store, job, stage=stage_state["name"], progress=0.45)
+                    self._update_job(store, job, stage=stage_state["name"], progress=GENERATION_PROGRESS_START)
                 self._log_job(store, job, message)
 
             def generation() -> tuple[Path, list[float], str]:

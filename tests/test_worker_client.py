@@ -1,0 +1,109 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from radtts.constants import SUPPORTED_BASE_MODELS
+from radtts.models import CaptionArtifacts, OutputFormat, PauseConfig, QualityReport, WorkerSynthesisEnqueueRequest
+from radtts.worker_client import WorkerClient
+
+
+def test_worker_client_emits_progress_updates(tmp_path: Path, monkeypatch):
+    client = WorkerClient(
+        server_url="http://example.test",
+        config_path=tmp_path / "worker.json",
+        worker_name="test-worker",
+        invite_token=None,
+        poll_seconds=5,
+    )
+    client.worker_id = "worker-1"
+    client.api_key = "api-key"
+
+    progress_calls: list[tuple[str, float, str | None]] = []
+
+    def fake_post_json(path: str, payload: dict[str, object], timeout: int = 120):
+        if path.endswith("/progress"):
+            progress_calls.append((path, float(payload["progress"]), payload.get("detail")))
+        return {}
+
+    monkeypatch.setattr(client, "_post_json", fake_post_json)
+    monkeypatch.setattr("radtts.worker_client.probe_duration_seconds", lambda path: 4.2)
+    monkeypatch.setattr(
+        client.quality_service,
+        "evaluate",
+        lambda **_: QualityReport(
+            speech_rate_wpm=120.0,
+            pause_stats={"min": 0.3, "max": 0.4, "mean": 0.35, "stddev": 0.05},
+            warnings=[],
+        ),
+    )
+    monkeypatch.setattr(
+        client.tts_service,
+        "load_model_with_runtime",
+        lambda model_id: (object(), f"tts model={model_id} runtime device=mps:0 dtype=torch.float16"),
+    )
+
+    def fake_synthesize(req, output_dir, *, on_progress=None, cancel_check=None):
+        output_path = output_dir / f"{req.output_name}.mp3"
+        output_path.write_bytes(b"ID3")
+        assert on_progress is not None
+        for message in [
+            "generation chunk 1/2",
+            "generation chunk 2/2",
+            "stitching chunks",
+            "stitching encoding mp3",
+        ]:
+            on_progress(message)
+        return output_path, [0.3], "reference text"
+
+    monkeypatch.setattr(client.tts_service, "synthesize", fake_synthesize)
+
+    def fake_caption_generate(audio_path, output_dir, name, language=None):
+        txt_path = output_dir / f"{name}.txt"
+        srt_path = output_dir / f"{name}.srt"
+        vtt_path = output_dir / f"{name}.vtt"
+        txt_path.write_text("hello", encoding="utf-8")
+        srt_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nhello\n", encoding="utf-8")
+        vtt_path.write_text("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nhello\n", encoding="utf-8")
+        return CaptionArtifacts(txt_path=txt_path, srt_path=srt_path, vtt_path=vtt_path)
+
+    monkeypatch.setattr(client.caption_service, "generate", fake_caption_generate)
+
+    payload = WorkerSynthesisEnqueueRequest(
+        project_id="proj-worker",
+        text="One. Two.",
+        reference_audio_b64="QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw",
+        reference_audio_filename="reference.wav",
+        reference_text="hello",
+        model_id=SUPPORTED_BASE_MODELS[0],
+        max_new_tokens=400,
+        chunk_mode="sentence",
+        pause_config=PauseConfig(seed=1),
+        output_format=OutputFormat.MP3,
+        output_name="worker-progress",
+        generate_transcript=True,
+        voice_clone_authorized=True,
+    ).model_dump(mode="json")
+
+    result = client._process_synthesis_job("job-worker", payload)
+
+    assert [detail for _, _, detail in progress_calls] == [
+        f"tts model={SUPPORTED_BASE_MODELS[0]} runtime device=mps:0 dtype=torch.float16",
+        "generation chunk 1/2",
+        "generation chunk 2/2",
+        "stitching chunks",
+        "stitching encoding mp3",
+        "captioning started",
+        "captioning complete",
+        "uploading completed audio",
+    ]
+    assert [progress for _, progress, _ in progress_calls] == pytest.approx(
+        [0.30, 0.535, 0.72, 0.78, 0.84, 0.85, 0.95, 0.97],
+        rel=0,
+        abs=1e-4,
+    )
+    assert result["stage_durations_seconds"]["model_load"] >= 0
+    assert result["stage_durations_seconds"]["generation"] >= 0
+    assert result["stage_durations_seconds"]["stitching"] >= 0
+    assert result["stage_durations_seconds"]["captioning"] >= 0

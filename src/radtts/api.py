@@ -32,6 +32,7 @@ from radtts.models import (
     WorkerInviteResponse,
     WorkerJobCompleteRequest,
     WorkerJobFailRequest,
+    WorkerJobProgressRequest,
     WorkerPullRequest,
     WorkerPullResponse,
     WorkerRegisterRequest,
@@ -1735,6 +1736,12 @@ def worker_pull(req: WorkerPullRequest):
 def worker_complete(job_id: str, req: WorkerJobCompleteRequest):
     worker_manager.complete_job(job_id, req)
     return {"job_id": job_id, "status": "completed"}
+
+
+@app.post("/workers/jobs/{job_id}/progress")
+def worker_progress(job_id: str, req: WorkerJobProgressRequest):
+    worker_manager.progress_job(job_id, req)
+    return {"job_id": job_id, "status": "running", "progress": req.progress}
 
 
 @app.post("/workers/jobs/{job_id}/fail")

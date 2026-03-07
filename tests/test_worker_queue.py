@@ -68,6 +68,41 @@ def test_worker_queue_round_trip_completes_job():
         assert pulled_job is not None
         assert pulled_job["job_id"] == job_id
 
+        progress = client.post(
+            f"/workers/jobs/{job_id}/progress",
+            json={
+                "worker_id": worker_id,
+                "api_key": api_key,
+                "progress": 0.58,
+                "detail": "generation chunk 2/4",
+            },
+        )
+        assert progress.status_code == 200
+        assert progress.json()["progress"] == 0.58
+
+        job_running = client.get(f"/jobs/{job_id}?project_id={project_id}")
+        assert job_running.status_code == 200
+        running_payload = job_running.json()
+        assert running_payload["status"] == "running"
+        assert running_payload["stage"] == "worker_running"
+        assert running_payload["progress"] == 0.58
+        assert any("generation chunk 2/4" in line for line in running_payload["logs"])
+
+        stale_progress = client.post(
+            f"/workers/jobs/{job_id}/progress",
+            json={
+                "worker_id": worker_id,
+                "api_key": api_key,
+                "progress": 0.41,
+                "detail": "stale progress sample",
+            },
+        )
+        assert stale_progress.status_code == 200
+
+        job_after_stale = client.get(f"/jobs/{job_id}?project_id={project_id}")
+        assert job_after_stale.status_code == 200
+        assert job_after_stale.json()["progress"] == 0.58
+
         complete = client.post(
             f"/workers/jobs/{job_id}/complete",
             json={
