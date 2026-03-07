@@ -372,8 +372,13 @@ const stageActualProgressEnds = {
 function currentRunEtaOrder(stage) {
   const currentStage = String(stage || state.currentStage || "queued");
 
-  if (currentStage === "worker_running" || state.computeMode === "worker") {
-    return ["queued_remote", "worker_running", "completed"];
+  if (state.computeMode === "worker") {
+    const workerOrder = ["queued_remote", "worker_running", "model_load", "generation", "stitching"];
+    if (state.generateTranscriptRequested) {
+      workerOrder.push("captioning");
+    }
+    workerOrder.push("completed");
+    return workerOrder;
   }
 
   if (currentStage === "queued_remote" && state.computeMode === "waiting_worker") {
@@ -597,7 +602,13 @@ function detectComputeMode(job) {
   }
 
   if (["model_load", "generation", "stitching", "captioning"].includes(stage)) {
-    // These stages are emitted by local server processing.
+    if (
+      state.computeMode === "worker" ||
+      joinedLogs.includes("worker ") ||
+      joinedLogs.includes("helper ")
+    ) {
+      return "worker";
+    }
     return "server";
   }
 

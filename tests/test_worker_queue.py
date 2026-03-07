@@ -74,6 +74,7 @@ def test_worker_queue_round_trip_completes_job():
                 "worker_id": worker_id,
                 "api_key": api_key,
                 "progress": 0.58,
+                "stage": "generation",
                 "detail": "generation chunk 2/4",
             },
         )
@@ -84,7 +85,7 @@ def test_worker_queue_round_trip_completes_job():
         assert job_running.status_code == 200
         running_payload = job_running.json()
         assert running_payload["status"] == "running"
-        assert running_payload["stage"] == "worker_running"
+        assert running_payload["stage"] == "generation"
         assert running_payload["progress"] == 0.58
         assert any("generation chunk 2/4" in line for line in running_payload["logs"])
 

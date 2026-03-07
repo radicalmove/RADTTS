@@ -339,6 +339,7 @@ class WorkerJobProgressRequest(BaseModel):
     worker_id: str
     api_key: str
     progress: float = Field(ge=0.0, le=1.0)
+    stage: str | None = None
     detail: str | None = None
 
 

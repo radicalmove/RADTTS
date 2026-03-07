@@ -128,12 +128,13 @@ class WorkerClient:
                     timeout=1800,
                 )
             except Exception as exc:  # noqa: BLE001
+                error_text = str(exc).strip() or f"{exc.__class__.__name__}: {exc!r}"
                 self._post_json(
                     f"/workers/jobs/{job_id}/fail",
                     {
                         "worker_id": self.worker_id,
                         "api_key": self.api_key,
-                        "error": str(exc)[:1800],
+                        "error": error_text[:1800],
                     },
                 )
             if once:
@@ -144,6 +145,7 @@ class WorkerClient:
         job_id: str,
         *,
         progress: float,
+        stage: str | None = None,
         detail: str | None = None,
     ) -> None:
         assert self.worker_id and self.api_key
@@ -152,6 +154,8 @@ class WorkerClient:
             "api_key": self.api_key,
             "progress": max(0.0, min(1.0, float(progress))),
         }
+        if stage:
+            payload["stage"] = stage
         if detail:
             payload["detail"] = detail
         try:
@@ -171,7 +175,7 @@ class WorkerClient:
             model_load_started_at = time.monotonic()
             _, runtime_summary = self.tts_service.load_model_with_runtime(req.model_id)
             stage_durations_seconds["model_load"] = round(time.monotonic() - model_load_started_at, 3)
-            self._post_progress_update(job_id, progress=0.30, detail=runtime_summary)
+            self._post_progress_update(job_id, progress=0.30, stage="model_load", detail=runtime_summary)
             synth_started_at = time.monotonic()
             stitching_started_at: float | None = None
 
@@ -186,7 +190,7 @@ class WorkerClient:
                         completed_chunks=int(chunk_match.group(1)),
                         total_chunks=int(chunk_match.group(2)),
                     )
-                    self._post_progress_update(job_id, progress=progress, detail=cleaned)
+                    self._post_progress_update(job_id, progress=progress, stage="generation", detail=cleaned)
                     return
 
                 if lower.startswith("stitching"):
@@ -197,7 +201,7 @@ class WorkerClient:
                         req.output_format,
                         encoding_started=(lower == "stitching encoding mp3"),
                     )
-                    self._post_progress_update(job_id, progress=progress, detail=cleaned)
+                    self._post_progress_update(job_id, progress=progress, stage="stitching", detail=cleaned)
 
             synth_req = SynthesisRequest(
                 project_id=req.project_id,
@@ -231,7 +235,12 @@ class WorkerClient:
             captions_vtt = None
             if req.generate_transcript:
                 caption_started_at = time.monotonic()
-                self._post_progress_update(job_id, progress=CAPTIONING_PROGRESS_START, detail="captioning started")
+                self._post_progress_update(
+                    job_id,
+                    progress=CAPTIONING_PROGRESS_START,
+                    stage="captioning",
+                    detail="captioning started",
+                )
                 try:
                     caption_artifacts = self.caption_service.generate(
                         audio_path=output_path,
@@ -243,7 +252,7 @@ class WorkerClient:
                     captions_srt = caption_artifacts.srt_path.read_text(encoding="utf-8")
                     captions_vtt = caption_artifacts.vtt_path.read_text(encoding="utf-8")
                     stage_durations_seconds["captioning"] = round(time.monotonic() - caption_started_at, 3)
-                    self._post_progress_update(job_id, progress=0.95, detail="captioning complete")
+                    self._post_progress_update(job_id, progress=0.95, stage="captioning", detail="captioning complete")
                 except Exception:  # noqa: BLE001
                     pass
 
@@ -252,7 +261,13 @@ class WorkerClient:
                 duration_seconds=duration,
                 pause_seconds=pause_seconds,
             )
-            self._post_progress_update(job_id, progress=UPLOAD_PROGRESS, detail="uploading completed audio")
+            final_stage = "captioning" if req.generate_transcript else "stitching"
+            self._post_progress_update(
+                job_id,
+                progress=UPLOAD_PROGRESS,
+                stage=final_stage,
+                detail="uploading completed audio",
+            )
 
             return {
                 "output_audio_b64": base64.b64encode(output_path.read_bytes()).decode("utf-8"),

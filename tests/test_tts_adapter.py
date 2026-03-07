@@ -58,3 +58,23 @@ def test_model_load_kwargs_respects_env_overrides(monkeypatch: pytest.MonkeyPatc
 
     assert kwargs["device_map"] == "cpu"
     assert kwargs["dtype"] == torch.float32
+
+
+def test_prepare_reference_audio_path_converts_non_wav(monkeypatch: pytest.MonkeyPatch):
+    service = TTSService()
+    converted: list[tuple[Path, Path]] = []
+
+    def fake_convert(input_path: Path, output_path: Path) -> Path:
+        converted.append((input_path, output_path))
+        output_path.write_bytes(b"RIFF")
+        return output_path
+
+    monkeypatch.setattr("radtts.services.tts.convert_audio", fake_convert)
+
+    import contextlib
+
+    with contextlib.ExitStack() as stack:
+        normalized = service._prepare_reference_audio_path(Path("/tmp/ref.webm"), stack=stack)
+
+    assert normalized.suffix == ".wav"
+    assert converted == [(Path("/tmp/ref.webm"), normalized)]

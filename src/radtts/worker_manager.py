@@ -386,14 +386,32 @@ class WorkerManager:
             self._write_list(self.jobs_path, jobs)
 
         detail = (req.detail or "").strip() or None
+        stage = self._progress_stage_for_update(req.stage, detail)
         self._update_job_manifest(
             project_id=entry["project_id"],
             job_id=job_id,
             status=JobStatus.RUNNING,
-            stage="worker_running",
+            stage=stage,
             progress=req.progress,
             log=detail,
         )
+
+    @staticmethod
+    def _progress_stage_for_update(stage: str | None, detail: str | None) -> str:
+        normalized = str(stage or "").strip().lower()
+        if normalized in {"queued_remote", "worker_running", "model_load", "generation", "stitching", "captioning"}:
+            return normalized
+
+        lower_detail = str(detail or "").strip().lower()
+        if lower_detail.startswith("generation chunk "):
+            return "generation"
+        if lower_detail.startswith("stitching"):
+            return "stitching"
+        if lower_detail.startswith("captioning"):
+            return "captioning"
+        if lower_detail.startswith("tts model="):
+            return "model_load"
+        return "worker_running"
 
     def fail_job(self, job_id: str, req: WorkerJobFailRequest) -> None:
         pull_req = WorkerPullRequest(worker_id=req.worker_id, api_key=req.api_key)

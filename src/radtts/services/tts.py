@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import os
 import tempfile
@@ -58,43 +59,45 @@ class TTSService:
         self.ensure_supported_model(req.model_id)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        reference_text = req.reference_text or self._auto_reference_text(req.reference_audio_path)
-        chunks = self._build_chunks(req.text, req.chunk_mode)
-        pauses = self._pause_planner.build(chunks, req.pause_config) if req.chunk_mode == ChunkMode.SENTENCE else []
+        with contextlib.ExitStack() as stack:
+            reference_audio_path = self._prepare_reference_audio_path(req.reference_audio_path, stack=stack)
+            reference_text = req.reference_text or self._auto_reference_text(reference_audio_path)
+            chunks = self._build_chunks(req.text, req.chunk_mode)
+            pauses = self._pause_planner.build(chunks, req.pause_config) if req.chunk_mode == ChunkMode.SENTENCE else []
 
-        model = self._load_model(req.model_id)
-        chunk_audio: list[tuple[np.ndarray, int]] = []
-        for idx, chunk in enumerate(chunks):
-            if cancel_check and cancel_check():
-                raise RuntimeError("job cancelled")
-            audio, sample_rate = self._synthesize_chunk(
-                model=model,
-                text=chunk,
-                reference_audio_path=req.reference_audio_path,
-                reference_text=reference_text,
-                max_new_tokens=req.max_new_tokens,
-            )
-            chunk_audio.append((audio, sample_rate))
+            model = self._load_model(req.model_id)
+            chunk_audio: list[tuple[np.ndarray, int]] = []
+            for idx, chunk in enumerate(chunks):
+                if cancel_check and cancel_check():
+                    raise RuntimeError("job cancelled")
+                audio, sample_rate = self._synthesize_chunk(
+                    model=model,
+                    text=chunk,
+                    reference_audio_path=reference_audio_path,
+                    reference_text=reference_text,
+                    max_new_tokens=req.max_new_tokens,
+                )
+                chunk_audio.append((audio, sample_rate))
+                if on_progress:
+                    on_progress(f"generation chunk {idx + 1}/{len(chunks)}")
+
             if on_progress:
-                on_progress(f"generation chunk {idx + 1}/{len(chunks)}")
+                on_progress("stitching chunks")
+            sample_rate = chunk_audio[0][1]
+            stitched = concat_with_silence(chunk_audio, pauses, sample_rate)
 
-        if on_progress:
-            on_progress("stitching chunks")
-        sample_rate = chunk_audio[0][1]
-        stitched = concat_with_silence(chunk_audio, pauses, sample_rate)
+            base_name = req.output_name
+            wav_path = output_dir / f"{base_name}.wav"
+            write_wav(wav_path, stitched, sample_rate)
 
-        base_name = req.output_name
-        wav_path = output_dir / f"{base_name}.wav"
-        write_wav(wav_path, stitched, sample_rate)
+            if req.output_format.value == "wav":
+                return wav_path, pauses, reference_text
 
-        if req.output_format.value == "wav":
-            return wav_path, pauses, reference_text
-
-        if on_progress:
-            on_progress("stitching encoding mp3")
-        mp3_path = output_dir / f"{base_name}.mp3"
-        convert_audio(wav_path, mp3_path)
-        return mp3_path, pauses, reference_text
+            if on_progress:
+                on_progress("stitching encoding mp3")
+            mp3_path = output_dir / f"{base_name}.mp3"
+            convert_audio(wav_path, mp3_path)
+            return mp3_path, pauses, reference_text
 
     def _auto_reference_text(self, reference_audio_path: Path) -> str:
         with tempfile.TemporaryDirectory(prefix="radtts_ref_asr_") as tmp:
@@ -106,6 +109,21 @@ class TTSService:
                 beam_size=3,
             )
             return artifacts.txt_path.read_text(encoding="utf-8").strip()
+
+    @staticmethod
+    def _prepare_reference_audio_path(
+        reference_audio_path: Path,
+        *,
+        stack: contextlib.ExitStack,
+    ) -> Path:
+        path = Path(reference_audio_path)
+        if path.suffix.lower() == ".wav":
+            return path
+
+        temp_dir = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="radtts_ref_audio_")))
+        normalized_path = temp_dir / f"{path.stem or 'reference'}.wav"
+        convert_audio(path, normalized_path)
+        return normalized_path
 
     @staticmethod
     def _build_chunks(text: str, chunk_mode: ChunkMode) -> list[str]:

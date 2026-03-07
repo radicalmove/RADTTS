@@ -20,11 +20,11 @@ def test_worker_client_emits_progress_updates(tmp_path: Path, monkeypatch):
     client.worker_id = "worker-1"
     client.api_key = "api-key"
 
-    progress_calls: list[tuple[str, float, str | None]] = []
+    progress_calls: list[tuple[str, float, str | None, str | None]] = []
 
     def fake_post_json(path: str, payload: dict[str, object], timeout: int = 120):
         if path.endswith("/progress"):
-            progress_calls.append((path, float(payload["progress"]), payload.get("detail")))
+            progress_calls.append((path, float(payload["progress"]), payload.get("stage"), payload.get("detail")))
         return {}
 
     monkeypatch.setattr(client, "_post_json", fake_post_json)
@@ -88,7 +88,17 @@ def test_worker_client_emits_progress_updates(tmp_path: Path, monkeypatch):
 
     result = client._process_synthesis_job("job-worker", payload)
 
-    assert [detail for _, _, detail in progress_calls] == [
+    assert [stage for _, _, stage, _ in progress_calls] == [
+        "model_load",
+        "generation",
+        "generation",
+        "stitching",
+        "stitching",
+        "captioning",
+        "captioning",
+        "captioning",
+    ]
+    assert [detail for _, _, _, detail in progress_calls] == [
         f"tts model={SUPPORTED_BASE_MODELS[0]} runtime device=mps:0 dtype=torch.float16",
         "generation chunk 1/2",
         "generation chunk 2/2",
@@ -98,7 +108,7 @@ def test_worker_client_emits_progress_updates(tmp_path: Path, monkeypatch):
         "captioning complete",
         "uploading completed audio",
     ]
-    assert [progress for _, progress, _ in progress_calls] == pytest.approx(
+    assert [progress for _, progress, _, _ in progress_calls] == pytest.approx(
         [0.30, 0.535, 0.72, 0.78, 0.84, 0.85, 0.95, 0.97],
         rel=0,
         abs=1e-4,
