@@ -131,6 +131,7 @@ def _infer_psychek_app_url(login_url: str) -> str:
 
 PSYCHEK_ADMIN_URL = os.environ.get("PSYCHEK_ADMIN_URL", "").strip() or _infer_psychek_admin_url(PSYCHEK_LOGIN_URL)
 PSYCHEK_APP_URL = os.environ.get("PSYCHEK_APP_URL", "").strip() or _infer_psychek_app_url(PSYCHEK_LOGIN_URL)
+RADCAST_APP_URL = os.environ.get("RADCAST_APP_URL", "").strip()
 
 pipeline = RADTTSPipeline(projects_root=PROJECTS_ROOT)
 worker_manager = WorkerManager(
@@ -1064,6 +1065,7 @@ def home(request: Request):
             "current_user": current_user,
             "psychek_app_url": PSYCHEK_APP_URL,
             "psychek_admin_url": PSYCHEK_ADMIN_URL,
+            "radcast_app_url": RADCAST_APP_URL,
         },
     )
 

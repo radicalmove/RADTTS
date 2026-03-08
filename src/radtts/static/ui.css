@@ -89,6 +89,14 @@ body {
   min-width: 210px;
 }
 
+.topbar-app-links {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: center;
+  margin-right: 6px;
+}
+
 .topbar-center {
   flex: 1 1 auto;
   display: flex;
@@ -160,6 +168,23 @@ body {
 .topbar-btn.topbar-btn-danger:active {
   background: #a73527;
   border-color: #a73527;
+}
+
+.topbar-btn.topbar-btn-app {
+  min-width: 94px;
+}
+
+.topbar-btn.topbar-btn-psychek {
+  background: #145a46;
+  border-color: #145a46;
+  color: var(--uc-white);
+}
+
+.topbar-btn.topbar-btn-psychek:hover,
+.topbar-btn.topbar-btn-psychek:active {
+  background: #0f4637;
+  border-color: #0f4637;
+  color: var(--uc-white);
 }
 
 .layout {
@@ -906,6 +931,17 @@ button.worker-mini-btn {
 @media (max-width: 760px) {
   .topbar {
     padding: 12px 14px;
+  }
+
+  .topbar-actions {
+    min-width: 0;
+    width: 100%;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .topbar-app-links {
+    margin-right: 0;
   }
 
   .topbar h1 {
