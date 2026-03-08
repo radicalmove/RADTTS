@@ -233,3 +233,85 @@ def test_stale_worker_updates_are_ignored_after_project_job_cancel():
     finally:
         if project_root.exists():
             shutil.rmtree(project_root)
+
+
+def test_queue_fallback_does_not_claim_job_after_worker_accepts():
+    client = TestClient(app)
+    project_id = f"worker-accept-{uuid.uuid4().hex[:8]}"
+    project_root = Path("projects") / project_id
+
+    try:
+        create = client.post(
+            "/projects",
+            json={"project_id": project_id, "course": "C1", "module": "M1", "lesson": "L1"},
+        )
+        assert create.status_code == 200
+
+        invite = client.post("/workers/invite", json={"capabilities": ["synthesize"]})
+        assert invite.status_code == 200
+        invite_token = invite.json()["invite_token"]
+
+        register = client.post(
+            "/workers/register",
+            json={
+                "invite_token": invite_token,
+                "worker_name": "test-worker",
+                "capabilities": ["synthesize"],
+            },
+        )
+        assert register.status_code == 200
+        worker_id = register.json()["worker_id"]
+        api_key = register.json()["api_key"]
+
+        enqueue = client.post(
+            "/synthesize/worker",
+            json={
+                "project_id": project_id,
+                "text": "Hello from worker queue.",
+                "reference_audio_b64": _b64_blob(5),
+                "reference_audio_filename": "reference.wav",
+                "reference_text": "hello",
+                "model_id": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+                "max_new_tokens": 300,
+                "chunk_mode": "single",
+                "pause_config": {"min_seconds": 0.2, "max_seconds": 0.4, "seed": 1},
+                "output_format": "wav",
+                "output_name": "worker_accept_output",
+                "voice_clone_authorized": True,
+            },
+        )
+        assert enqueue.status_code == 200
+        job_id = enqueue.json()["job_id"]
+
+        pull = client.post("/workers/pull", json={"worker_id": worker_id, "api_key": api_key})
+        assert pull.status_code == 200
+        assert pull.json()["job"]["job_id"] == job_id
+
+        fallback_claim = worker_manager.claim_job_for_local_fallback(
+            job_id,
+            reason="No worker accepted this job after 20s. Switching to local server fallback.",
+            allowed_statuses={"queued"},
+        )
+        assert fallback_claim is None
+
+        progress = client.post(
+            f"/workers/jobs/{job_id}/progress",
+            json={
+                "worker_id": worker_id,
+                "api_key": api_key,
+                "progress": 0.3,
+                "stage": "model_load",
+                "detail": "tts model=Qwen/Qwen3-TTS-12Hz-0.6B-Base runtime device=mps:0 dtype=torch.float32",
+            },
+        )
+        assert progress.status_code == 200
+        assert progress.json()["status"] == "running"
+
+        job = client.get(f"/jobs/{job_id}?project_id={project_id}")
+        assert job.status_code == 200
+        payload = job.json()
+        assert payload["status"] == "running"
+        assert payload["stage"] == "model_load"
+    finally:
+        if project_root.exists():
+            shutil.rmtree(project_root)

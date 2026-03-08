@@ -232,13 +232,20 @@ class WorkerManager:
 
         return [job_id for job_id in cancelled_job_ids if job_id]
 
-    def claim_job_for_local_fallback(self, job_id: str, *, reason: str) -> WorkerSynthesisEnqueueRequest | None:
+    def claim_job_for_local_fallback(
+        self,
+        job_id: str,
+        *,
+        reason: str,
+        allowed_statuses: set[str] | None = None,
+    ) -> WorkerSynthesisEnqueueRequest | None:
+        permitted_statuses = allowed_statuses or {"queued", "running"}
         with self._lock:
             jobs = self._read_list(self.jobs_path)
             entry = next((item for item in jobs if item.get("job_id") == job_id), None)
             if not entry:
                 return None
-            if entry.get("status") not in {"queued", "running"}:
+            if entry.get("status") not in permitted_statuses:
                 return None
 
             entry["status"] = "fallback_local"

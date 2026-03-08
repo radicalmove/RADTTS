@@ -850,8 +850,13 @@ def _claim_and_launch_local_fallback(
     reason: str,
     owner_key: str = "",
     owner_label: str = "",
+    allowed_statuses: set[str] | None = None,
 ) -> bool:
-    worker_payload = worker_manager.claim_job_for_local_fallback(job_id, reason=reason)
+    worker_payload = worker_manager.claim_job_for_local_fallback(
+        job_id,
+        reason=reason,
+        allowed_statuses=allowed_statuses,
+    )
     if worker_payload is None:
         return False
 
@@ -890,6 +895,7 @@ def _schedule_worker_fallback_watch(
             reason=reason,
             owner_key=owner_key,
             owner_label=owner_label,
+            allowed_statuses={"queued"},
         )
 
     watcher = threading.Thread(
@@ -937,6 +943,7 @@ def _maybe_trigger_worker_fallback(
             reason=reason,
             owner_key=owner_key or "",
             owner_label=owner_label or "",
+            allowed_statuses={"queued"},
         )
 
     running_worker_stages = {"worker_running", "model_load", "generation", "stitching", "captioning"}
@@ -953,6 +960,7 @@ def _maybe_trigger_worker_fallback(
             reason=reason,
             owner_key=owner_key or "",
             owner_label=owner_label or "",
+            allowed_statuses={"running"},
         )
 
     return False
