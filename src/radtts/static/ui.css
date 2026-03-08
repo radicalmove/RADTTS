@@ -94,14 +94,20 @@ body {
   gap: 10px;
   align-items: center;
   justify-content: center;
-  margin-right: 6px;
+}
+
+.topbar-app-links-center {
+  margin-left: 14px;
+  flex-wrap: wrap;
 }
 
 .topbar-center {
   flex: 1 1 auto;
   display: flex;
+  align-items: center;
   justify-content: center;
   padding: 0 16px;
+  gap: 12px;
 }
 
 .chip {
@@ -174,17 +180,17 @@ body {
   min-width: 94px;
 }
 
-.topbar-btn.topbar-btn-psychek {
-  background: #145a46;
-  border-color: #145a46;
+.topbar-btn.topbar-btn-app-launch {
+  background: var(--uc-red);
+  border-color: var(--uc-red);
   color: var(--uc-white);
 }
 
-.topbar-btn.topbar-btn-psychek:hover,
-.topbar-btn.topbar-btn-psychek:active {
-  background: #0f4637;
-  border-color: #0f4637;
-  color: var(--uc-white);
+.topbar-btn.topbar-btn-app-launch:hover,
+.topbar-btn.topbar-btn-app-launch:active {
+  background: var(--uc-white);
+  border-color: var(--uc-red);
+  color: var(--uc-red);
 }
 
 .layout {
@@ -492,36 +498,39 @@ body.modal-open {
 
 .saved-sample-row {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 8px;
+  align-items: center;
 }
 
 .script-version-row {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 8px;
+  align-items: center;
 }
 
 .saved-sample-row select {
   margin: 0;
+  min-width: 0;
 }
 
 .script-version-row select {
   margin: 0;
+  min-width: 0;
 }
 
 #refresh-samples-btn {
-  min-width: 92px;
+  min-width: 82px;
 }
 
-#restore-script-version-btn,
-#delete-script-version-btn {
-  min-width: 180px;
+#restore-script-version-btn {
+  min-width: 156px;
 }
 
 .icon-bin-btn {
-  min-width: 46px !important;
-  width: 46px;
+  min-width: 40px !important;
+  width: 40px;
   padding: 10px 0;
   font-size: 1rem;
   line-height: 1;
@@ -970,10 +979,20 @@ button.worker-mini-btn {
     grid-template-columns: 1fr;
   }
 
-  .saved-sample-row,
-  .script-version-row,
-  .reference-trim-range-grid {
+.saved-sample-row,
+.script-version-row,
+.reference-trim-range-grid {
     grid-template-columns: 1fr;
+  }
+
+  .topbar-center {
+    justify-content: flex-start;
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .topbar-app-links-center {
+    margin-left: 0;
   }
 
   .worker-status-detail {

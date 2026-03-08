@@ -53,6 +53,7 @@ from radtts.constants import (
     SUPPORTED_BASE_MODELS,
 )
 from radtts.worker_manager import WorkerManager
+from radtts.utils.audio import probe_duration_seconds
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 try:
@@ -704,6 +705,18 @@ def _project_cache_entries(
         owner_key = str(entry.get("owner_key") or "")
         owner_label = str(entry.get("owner_label") or "")
         saved_path = str(entry.get("audio_path") or reference_path)
+        duration_seconds = None
+        cached_duration = entry.get("duration_seconds")
+        if cached_duration is not None:
+            try:
+                duration_seconds = float(cached_duration)
+            except (TypeError, ValueError):
+                duration_seconds = None
+        if duration_seconds is None:
+            try:
+                duration_seconds = round(probe_duration_seconds(reference_path), 3)
+            except Exception:
+                duration_seconds = None
         artifact_url = f"/projects/{visible_project_id}/artifact?path={quote(str(reference_path), safe='')}"
         items.append(
             {
@@ -711,6 +724,7 @@ def _project_cache_entries(
                 "source_filename": source_filename,
                 "saved_path": saved_path,
                 "updated_at": updated_at,
+                "duration_seconds": duration_seconds,
                 "has_reference_text": bool(str(entry.get("reference_text") or "").strip()),
                 "artifact_url": artifact_url,
                 "project_id": visible_project_id,

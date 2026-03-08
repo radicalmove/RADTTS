@@ -27,19 +27,21 @@
           <span class="chip-label">Project</span>
           <span id="active-project-label"></span>
         </div>
+        {% if current_user %}
+        <div class="topbar-app-links topbar-app-links-center">
+        {% if psychek_app_url %}
+        <a class="topbar-btn topbar-btn-app" href="{{ psychek_app_url }}">PsyCheck</a>
+        {% endif %}
+        {% if radcast_app_url %}
+        <a class="topbar-btn topbar-btn-app topbar-btn-app-launch" href="{{ radcast_app_url }}">RADcast</a>
+        {% endif %}
+        </div>
+        {% endif %}
       </div>
       <div class="topbar-actions">
         <button id="switch-project-btn" class="topbar-btn" type="button" hidden>Projects</button>
         <button id="share-project-btn" class="topbar-btn" type="button" hidden>Share</button>
         {% if current_user %}
-        <div class="topbar-app-links">
-        {% if psychek_app_url %}
-        <a class="topbar-btn topbar-btn-app topbar-btn-psychek" href="{{ psychek_app_url }}">PsyCheck</a>
-        {% endif %}
-        {% if radcast_app_url %}
-        <a class="topbar-btn topbar-btn-app" href="{{ radcast_app_url }}">RADcast</a>
-        {% endif %}
-        </div>
         {% if current_user.is_admin and psychek_admin_url %}
         <a class="topbar-btn" href="{{ psychek_admin_url }}">Admin</a>
         {% endif %}

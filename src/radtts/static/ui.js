@@ -128,14 +128,14 @@ const stageProgressCaps = {
 };
 
 const stageExpectedSeconds = {
-  queued: 6,
-  queued_remote: 120,
-  worker_running: 300,
-  fallback_local: 40,
-  model_load: 70,
-  generation: 360,
-  stitching: 45,
-  captioning: 150,
+  queued: 4,
+  queued_remote: 40,
+  worker_running: 90,
+  fallback_local: 24,
+  model_load: 26,
+  generation: 210,
+  stitching: 22,
+  captioning: 55,
 };
 
 const state = {
@@ -492,13 +492,13 @@ function expectedStageSecondsForCurrentMode(stage) {
 
   if (state.computeMode === "server") {
     if (["model_load", "generation", "captioning"].includes(key)) {
-      return Math.round(base * 1.25);
+      return Math.round(base * 1.08);
     }
-    return Math.round(base * 1.12);
+    return Math.round(base * 1.04);
   }
 
   if (state.computeMode === "worker") {
-    return Math.round(base * 0.95);
+    return Math.round(base * 0.9);
   }
 
   return base;
@@ -532,7 +532,7 @@ function estimateEtaFromObservedVelocity(progressPercent, stage) {
   const last = state.stageProgressSamples[state.stageProgressSamples.length - 1];
   const deltaProgress = last.progress - first.progress;
   const deltaSeconds = (last.atMs - first.atMs) / 1000;
-  if (deltaProgress < 1 || deltaSeconds < 3) {
+  if (deltaProgress < 0.75 || deltaSeconds < 2) {
     return null;
   }
 
@@ -579,7 +579,7 @@ function estimateEtaSeconds(progressPercent, stage) {
   }
 
   if (observedBased !== null && stageBased !== null) {
-    return (observedBased * 0.72) + (stageBased * 0.28);
+    return (observedBased * 0.84) + (stageBased * 0.16);
   }
   if (observedBased !== null) return observedBased;
   if (progressBased === null) return stageBased;
@@ -587,17 +587,17 @@ function estimateEtaSeconds(progressPercent, stage) {
 
   // Keep queue/fallback stages conservative, but avoid large ETA jumps once actively processing.
   if (["queued", "queued_remote", "fallback_local"].includes(stage)) {
-    return Math.max(progressBased, stageBased * 0.9);
+    return Math.max(progressBased, stageBased * 0.8);
   }
 
-  // Early progress is noisy; keep estimates conservative to reduce upward jumps.
+  // Early progress is still somewhat noisy, but the current defaults were too pessimistic.
   if (clamped < 45) {
-    return (progressBased * 0.2) + (stageBased * 0.8);
+    return (progressBased * 0.45) + (stageBased * 0.55);
   }
   if (clamped < 70) {
-    return (progressBased * 0.4) + (stageBased * 0.6);
+    return (progressBased * 0.65) + (stageBased * 0.35);
   }
-  return (progressBased * 0.65) + (stageBased * 0.35);
+  return (progressBased * 0.82) + (stageBased * 0.18);
 }
 
 function smoothEtaDisplay(etaSeconds, stage) {
@@ -818,6 +818,19 @@ function formatDurationSeconds(seconds) {
   const mins = Math.floor(totalSeconds / 60);
   const secs = totalSeconds % 60;
   return `${mins}:${String(secs).padStart(2, "0")}`;
+}
+
+function formatSampleOptionLabel(sample) {
+  const name = sample.source_filename || "sample";
+  const duration = Number(sample.duration_seconds || 0);
+  const durationLabel = Number.isFinite(duration) && duration > 0
+    ? formatDurationSeconds(duration)
+    : null;
+  const updated = sample.updated_at ? formatIso(sample.updated_at) : "Saved";
+  const sourceTag = sample.scope === "library" ? `My library (${sample.project_id || "other project"})` : "Project";
+  return durationLabel
+    ? `${name} (${durationLabel}) - ${sourceTag} - ${updated}`
+    : `${name} - ${sourceTag} - ${updated}`;
 }
 
 function clearScriptSaveTimer() {
@@ -1580,11 +1593,15 @@ function applySavedSampleSelection(audioHash) {
   if (audioFileNameNode) {
     const stamped = sample.updated_at ? `Saved ${formatIso(sample.updated_at)}` : "Saved in project";
     const projectHint = sample.project_id ? `, project ${sample.project_id}` : "";
-    audioFileNameNode.textContent = `${sample.source_filename || "saved-sample"} (${stamped}${projectHint})`;
+    const duration = Number(sample.duration_seconds || 0);
+    const durationHint = Number.isFinite(duration) && duration > 0 ? `, ${formatDurationSeconds(duration)}` : "";
+    audioFileNameNode.textContent = `${sample.source_filename || "saved-sample"} (${stamped}${projectHint}${durationHint})`;
   }
   const ownerHint = sample.owner_label ? ` by ${sample.owner_label}` : "";
+  const duration = Number(sample.duration_seconds || 0);
+  const durationHint = Number.isFinite(duration) && duration > 0 ? `, ${formatDurationSeconds(duration)}` : "";
   setSavedSampleStatus(
-    `Using saved sample: ${sample.source_filename || sample.audio_hash.slice(0, 8)}${ownerHint}.`
+    `Using saved sample: ${sample.source_filename || sample.audio_hash.slice(0, 8)}${durationHint}${ownerHint}.`
   );
   showReferencePreviewFromUrl(sample.artifact_url || "");
   updateSavedSampleDeleteButtonState();
@@ -1621,9 +1638,7 @@ async function loadReferenceSamples(preferredHash = null) {
     for (const sample of samples) {
       const option = document.createElement("option");
       option.value = sample.audio_hash;
-      const updated = sample.updated_at ? formatIso(sample.updated_at) : "Saved";
-      const sourceTag = sample.scope === "library" ? `My library (${sample.project_id || "other project"})` : "Project";
-      option.textContent = `${sample.source_filename || "sample"} - ${sourceTag} - ${updated}`;
+      option.textContent = formatSampleOptionLabel(sample);
       savedSampleSelectNode.appendChild(option);
     }
 
