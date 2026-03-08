@@ -289,7 +289,7 @@ def test_queue_fallback_does_not_claim_job_after_worker_accepts():
 
         fallback_claim = worker_manager.claim_job_for_local_fallback(
             job_id,
-            reason="No worker accepted this job after 20s. Switching to local server fallback.",
+            reason="No worker accepted this job after 40s. Switching to local server fallback.",
             allowed_statuses={"queued"},
         )
         assert fallback_claim is None

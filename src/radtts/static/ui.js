@@ -143,6 +143,10 @@ const state = {
   workerFallbackTimeoutSeconds: 0,
   queuedRemoteSinceMs: null,
   lastRunningStatusKey: null,
+  workerLiveCount: null,
+  workerRegisteredCount: null,
+  workerStaleCount: null,
+  workerLastLiveSeenAt: null,
   workerOnlineCount: null,
   workerTotalCount: null,
   workerOnlineWindowSeconds: null,
@@ -340,6 +344,10 @@ function resetProgressUi() {
   state.workerFallbackTimeoutSeconds = 0;
   state.queuedRemoteSinceMs = null;
   state.lastRunningStatusKey = null;
+  state.workerLiveCount = null;
+  state.workerRegisteredCount = null;
+  state.workerStaleCount = null;
+  state.workerLastLiveSeenAt = null;
   state.workerOnlineCount = null;
   state.workerTotalCount = null;
   state.workerOnlineWindowSeconds = null;
@@ -645,15 +653,20 @@ function computeModeProgressLabel() {
 }
 
 function workerAvailabilitySummary() {
-  if (!Number.isFinite(state.workerOnlineCount)) {
+  if (!Number.isFinite(state.workerLiveCount)) {
     return "";
   }
-  const online = Math.max(0, Number(state.workerOnlineCount));
-  const total = Number.isFinite(state.workerTotalCount) ? Math.max(online, Number(state.workerTotalCount)) : null;
-  if (total !== null) {
-    return `${online}/${total} helper devices online`;
+  const live = Math.max(0, Number(state.workerLiveCount));
+  const stale = Number.isFinite(state.workerStaleCount) ? Math.max(0, Number(state.workerStaleCount)) : 0;
+  const lastSeen = state.workerLastLiveSeenAt ? formatIso(state.workerLastLiveSeenAt) : "";
+  const parts = [`${live} live helper device${live === 1 ? "" : "s"}`];
+  if (stale > 0) {
+    parts.push(`${stale} stale registration${stale === 1 ? "" : "s"}`);
   }
-  return `${online} helper device${online === 1 ? "" : "s"} online`;
+  if (lastSeen) {
+    parts.push(`last seen ${lastSeen}`);
+  }
+  return parts.join(", ");
 }
 
 function fallbackWaitRemainingSeconds() {
@@ -683,10 +696,12 @@ function updateRunningStatusMessage() {
     if (state.lastRunningStatusKey !== "server") {
       if (state.expectedRemoteWorker) {
         const availability = workerAvailabilitySummary();
-        if (Number(state.workerOnlineCount || 0) <= 0) {
+        if (Number(state.workerLiveCount || 0) <= 0) {
           setGenerateStatus("No active helper was connected, so this job is running on the RADTTS server (Mac mini).");
         } else if (availability) {
-          setGenerateStatus(`No helper accepted this job (${availability}). Running on the RADTTS server (Mac mini).`);
+          setGenerateStatus(
+            `No live helper pulled this job within ${Math.round(state.workerFallbackTimeoutSeconds || 0)}s (${availability}). Running on the RADTTS server (Mac mini).`
+          );
         } else {
           setGenerateStatus("No helper accepted this job. Processing on the RADTTS server (Mac mini).");
         }
@@ -701,13 +716,13 @@ function updateRunningStatusMessage() {
   if (state.computeMode === "waiting_worker") {
     const remaining = fallbackWaitRemainingSeconds();
     const availability = workerAvailabilitySummary();
-    const noWorkersKnown = Number(state.workerOnlineCount || 0) <= 0;
+    const noWorkersKnown = Number(state.workerLiveCount || 0) <= 0;
     if (remaining === null) {
       if (state.lastRunningStatusKey !== "waiting_worker") {
         if (noWorkersKnown) {
           setGenerateStatus("No active helper is connected yet. Waiting for a helper device.");
         } else if (availability) {
-          setGenerateStatus(`Waiting for a helper device (${availability}).`);
+          setGenerateStatus(`Waiting up to ${Math.round(state.workerFallbackTimeoutSeconds || 0)}s for a live helper to pull this job (${availability}).`);
         } else {
           setGenerateStatus("Waiting for a helper device.");
         }
@@ -1102,15 +1117,25 @@ async function requestJSON(url, method, payload) {
   return data;
 }
 
-function describeWorkerAvailability(online, total) {
-  if (online > 0) {
-    if (total > 0) {
-      return `${online}/${total} helper device${total === 1 ? "" : "s"} online.`;
+function describeWorkerAvailability(live, registered, stale, lastSeenAt) {
+  const liveCount = Math.max(0, Number(live || 0));
+  const registeredCount = Math.max(liveCount, Number(registered || 0));
+  const staleCount = Math.max(0, Number(stale || Math.max(0, registeredCount - liveCount)));
+  const lastSeen = lastSeenAt ? formatIso(lastSeenAt) : "";
+  if (liveCount > 0) {
+    const parts = [`${liveCount} live helper device${liveCount === 1 ? "" : "s"}`];
+    if (staleCount > 0) {
+      parts.push(`${staleCount} stale registration${staleCount === 1 ? "" : "s"}`);
+    } else if (registeredCount > liveCount) {
+      parts.push(`${registeredCount - liveCount} stale registration${registeredCount - liveCount === 1 ? "" : "s"}`);
     }
-    return `${online} helper device${online === 1 ? "" : "s"} online.`;
+    if (lastSeen) {
+      parts.push(`last live helper seen ${lastSeen}`);
+    }
+    return `${parts.join(", ")}. Jobs will use server fallback if no live helper pulls the job in time.`;
   }
-  if (total > 0) {
-    return `0/${total} helper devices online. Jobs will use server fallback when needed.`;
+  if (registeredCount > 0) {
+    return `${registeredCount} helper registration${registeredCount === 1 ? "" : "s"}, 0 live. Jobs will use server fallback when needed.`;
   }
   return "No helper app connected yet. Jobs will use server fallback when needed.";
 }
@@ -1125,12 +1150,20 @@ async function refreshWorkerStatus({ announceErrors = false } = {}) {
     const data = await requestJSON("/workers/status", "GET");
     const online = Math.max(0, Number(data.worker_online_count || 0));
     const total = Math.max(0, Number(data.worker_total_count || 0));
+    const live = Math.max(0, Number(data.worker_live_count || online));
+    const registered = Math.max(live, Number(data.worker_registered_count || total));
+    const stale = Math.max(0, Number(data.worker_stale_count || Math.max(0, registered - live)));
+    const lastSeenAt = String(data.worker_last_live_seen_at || "").trim() || null;
+    state.workerLiveCount = live;
+    state.workerRegisteredCount = registered;
+    state.workerStaleCount = stale;
+    state.workerLastLiveSeenAt = lastSeenAt;
     state.workerOnlineCount = online;
     state.workerTotalCount = total;
     state.workerOnlineWindowSeconds = Math.max(0, Number(data.worker_online_window_seconds || 0));
 
-    const detail = describeWorkerAvailability(online, total);
-    if (online > 0) {
+    const detail = describeWorkerAvailability(live, registered, stale, lastSeenAt);
+    if (live > 0) {
       setWorkerStatusUi("online", detail);
     } else {
       setWorkerStatusUi("offline", detail);
@@ -1861,19 +1894,42 @@ async function handleGenerate() {
     const workerTotalCount = Number.isFinite(Number(data.worker_total_count))
       ? Number(data.worker_total_count)
       : null;
+    const workerLiveCount = Number.isFinite(Number(data.worker_live_count))
+      ? Number(data.worker_live_count)
+      : workerOnlineCount;
+    const workerRegisteredCount = Number.isFinite(Number(data.worker_registered_count))
+      ? Number(data.worker_registered_count)
+      : workerTotalCount;
+    const workerStaleCount = Number.isFinite(Number(data.worker_stale_count))
+      ? Number(data.worker_stale_count)
+      : (
+        Number.isFinite(workerRegisteredCount) && Number.isFinite(workerLiveCount)
+          ? Math.max(0, Number(workerRegisteredCount) - Number(workerLiveCount))
+          : null
+      );
+    const workerLastLiveSeenAt = String(data.worker_last_live_seen_at || "").trim() || null;
     const workerOnlineWindowSeconds = Number.isFinite(Number(data.worker_online_window_seconds))
       ? Number(data.worker_online_window_seconds)
       : null;
 
+    state.workerLiveCount = workerLiveCount;
+    state.workerRegisteredCount = workerRegisteredCount;
+    state.workerStaleCount = workerStaleCount;
+    state.workerLastLiveSeenAt = workerLastLiveSeenAt;
     state.workerOnlineCount = workerOnlineCount;
     state.workerTotalCount = workerTotalCount;
     state.workerOnlineWindowSeconds = workerOnlineWindowSeconds;
 
     if (workerMode) {
-      if (workerOnlineCount !== null && workerOnlineCount <= 0) {
+      if (workerLiveCount !== null && workerLiveCount <= 0) {
         setGenerateStatus("No active helper is connected right now. Waiting for helper assignment...");
       } else {
-        setGenerateStatus("Job queued for helper assignment...");
+        const availability = workerAvailabilitySummary();
+        setGenerateStatus(
+          availability
+            ? `Job queued for helper assignment. Waiting up to ${Math.round(fallbackTimeout)}s for a live helper to pull it (${availability}).`
+            : `Job queued for helper assignment. Waiting up to ${Math.round(fallbackTimeout)}s for a live helper to pull it.`
+        );
       }
     } else {
       setGenerateStatus("Generation started on this server.");

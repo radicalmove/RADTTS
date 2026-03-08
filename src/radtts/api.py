@@ -83,7 +83,7 @@ WORKER_INVITE_MAX_AGE_SECONDS = int(os.environ.get("RADTTS_WORKER_INVITE_MAX_AGE
 SCOPE_PROJECTS_BY_USER = _env_bool("RADTTS_SCOPE_PROJECTS_BY_USER", True)
 SIMPLE_SYNTH_DEFAULT_TO_WORKER = _env_bool("RADTTS_SIMPLE_SYNTH_DEFAULT_TO_WORKER", True)
 WORKER_FALLBACK_TO_LOCAL = _env_bool("RADTTS_WORKER_FALLBACK_TO_LOCAL", True)
-WORKER_FALLBACK_TIMEOUT_SECONDS = max(5, _env_int("RADTTS_WORKER_FALLBACK_TIMEOUT_SECONDS", 20))
+WORKER_FALLBACK_TIMEOUT_SECONDS = max(5, _env_int("RADTTS_WORKER_FALLBACK_TIMEOUT_SECONDS", 40))
 WORKER_ONLINE_WINDOW_SECONDS = max(10, _env_int("RADTTS_WORKER_ONLINE_WINDOW_SECONDS", 30))
 WORKER_RUNNING_STALL_TIMEOUT_SECONDS = max(
     WORKER_FALLBACK_TIMEOUT_SECONDS + 60,
@@ -210,10 +210,11 @@ def _display_project_id(project_id: str) -> str:
     return value
 
 
-def _worker_availability_snapshot() -> dict[str, int]:
+def _worker_availability_snapshot() -> dict[str, int | str | None]:
     now = datetime.now(timezone.utc)
     workers = worker_manager.list_workers()
     online = 0
+    latest_live_seen_at: datetime | None = None
 
     for worker in workers:
         raw_seen = worker.last_seen_at
@@ -228,11 +229,19 @@ def _worker_availability_snapshot() -> dict[str, int]:
         age_seconds = (now - last_seen).total_seconds()
         if age_seconds <= WORKER_ONLINE_WINDOW_SECONDS:
             online += 1
+            if latest_live_seen_at is None or last_seen > latest_live_seen_at:
+                latest_live_seen_at = last_seen
+
+    stale = max(0, len(workers) - online)
 
     return {
         "worker_total_count": len(workers),
         "worker_online_count": online,
+        "worker_live_count": online,
+        "worker_registered_count": len(workers),
+        "worker_stale_count": stale,
         "worker_online_window_seconds": WORKER_ONLINE_WINDOW_SECONDS,
+        "worker_last_live_seen_at": latest_live_seen_at.isoformat() if latest_live_seen_at else None,
     }
 
 
