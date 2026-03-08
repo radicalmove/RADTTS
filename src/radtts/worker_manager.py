@@ -319,7 +319,7 @@ class WorkerManager:
 
         return None
 
-    def complete_job(self, job_id: str, req: WorkerJobCompleteRequest) -> None:
+    def complete_job(self, job_id: str, req: WorkerJobCompleteRequest) -> str:
         pull_req = WorkerPullRequest(worker_id=req.worker_id, api_key=req.api_key)
         with self._lock:
             self._authenticate_worker(pull_req)
@@ -328,7 +328,9 @@ class WorkerManager:
             if not entry:
                 raise FileNotFoundError(f"worker job not found: {job_id}")
             if entry.get("assigned_worker_id") != req.worker_id:
-                raise PermissionError("job is assigned to a different worker")
+                return "ignored"
+            if entry.get("status") != "running":
+                return "ignored"
 
             entry["status"] = "completed"
             entry["updated_at"] = _now_iso()
@@ -402,8 +404,9 @@ class WorkerManager:
             outputs=outputs,
             log=f"worker {req.worker_id} completed job",
         )
+        return "completed"
 
-    def progress_job(self, job_id: str, req: WorkerJobProgressRequest) -> None:
+    def progress_job(self, job_id: str, req: WorkerJobProgressRequest) -> str:
         pull_req = WorkerPullRequest(worker_id=req.worker_id, api_key=req.api_key)
         with self._lock:
             self._authenticate_worker(pull_req)
@@ -412,9 +415,9 @@ class WorkerManager:
             if not entry:
                 raise FileNotFoundError(f"worker job not found: {job_id}")
             if entry.get("assigned_worker_id") != req.worker_id:
-                raise PermissionError("job is assigned to a different worker")
+                return "ignored"
             if entry.get("status") != "running":
-                raise RuntimeError(f"job is not running: {entry.get('status')}")
+                return "ignored"
 
             entry["updated_at"] = _now_iso()
             self._write_list(self.jobs_path, jobs)
@@ -429,6 +432,7 @@ class WorkerManager:
             progress=req.progress,
             log=detail,
         )
+        return "running"
 
     @staticmethod
     def _progress_stage_for_update(stage: str | None, detail: str | None) -> str:
@@ -447,7 +451,7 @@ class WorkerManager:
             return "model_load"
         return "worker_running"
 
-    def fail_job(self, job_id: str, req: WorkerJobFailRequest) -> None:
+    def fail_job(self, job_id: str, req: WorkerJobFailRequest) -> str:
         pull_req = WorkerPullRequest(worker_id=req.worker_id, api_key=req.api_key)
         with self._lock:
             self._authenticate_worker(pull_req)
@@ -456,7 +460,9 @@ class WorkerManager:
             if not entry:
                 raise FileNotFoundError(f"worker job not found: {job_id}")
             if entry.get("assigned_worker_id") != req.worker_id:
-                raise PermissionError("job is assigned to a different worker")
+                return "ignored"
+            if entry.get("status") != "running":
+                return "ignored"
 
             entry["status"] = "failed"
             entry["error"] = req.error
@@ -472,6 +478,7 @@ class WorkerManager:
             error=req.error,
             log=f"worker {req.worker_id} failed job: {req.error}",
         )
+        return "failed"
 
     def _update_job_manifest(
         self,

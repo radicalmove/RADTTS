@@ -1761,20 +1761,20 @@ def worker_pull(req: WorkerPullRequest):
 
 @app.post("/workers/jobs/{job_id}/complete")
 def worker_complete(job_id: str, req: WorkerJobCompleteRequest):
-    worker_manager.complete_job(job_id, req)
-    return {"job_id": job_id, "status": "completed"}
+    status = worker_manager.complete_job(job_id, req)
+    return {"job_id": job_id, "status": status}
 
 
 @app.post("/workers/jobs/{job_id}/progress")
 def worker_progress(job_id: str, req: WorkerJobProgressRequest):
-    worker_manager.progress_job(job_id, req)
-    return {"job_id": job_id, "status": "running", "progress": req.progress}
+    status = worker_manager.progress_job(job_id, req)
+    return {"job_id": job_id, "status": status, "progress": req.progress}
 
 
 @app.post("/workers/jobs/{job_id}/fail")
 def worker_fail(job_id: str, req: WorkerJobFailRequest):
-    worker_manager.fail_job(job_id, req)
-    return {"job_id": job_id, "status": "failed"}
+    status = worker_manager.fail_job(job_id, req)
+    return {"job_id": job_id, "status": status}
 
 
 @app.get("/workers/bootstrap/windows.cmd")

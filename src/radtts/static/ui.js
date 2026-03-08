@@ -160,6 +160,7 @@ const state = {
   workerSetupMacosCommand: "",
   workerSetupWindowsUrl: "",
   workerSetupMacosUrl: "",
+  currentJobLogs: [],
 };
 
 function cleanOptional(value) {
@@ -485,6 +486,9 @@ function estimateEtaSeconds(progressPercent, stage) {
   if (state.currentStatus !== "running") return null;
   const nowMs = Date.now();
   const clamped = Math.max(0, Math.min(100, progressPercent));
+  if (isEarlyGenerationWithoutChunkProgress(state.currentJobLogs, stage)) {
+    return null;
+  }
   const observedBased = estimateEtaFromObservedVelocity(clamped, stage);
 
   let progressBased = null;
@@ -587,18 +591,19 @@ function detectComputeMode(job) {
   const joinedLogs = logs.join("\n").toLowerCase();
 
   if (
+    stage === "fallback_local" ||
+    joinedLogs.includes("switching to local server fallback") ||
+    hasServerHeartbeatLog(logs)
+  ) {
+    return "server";
+  }
+
+  if (
     stage === "worker_running" ||
     (joinedLogs.includes("worker ") && joinedLogs.includes("started processing")) ||
     (joinedLogs.includes("worker ") && joinedLogs.includes("completed job"))
   ) {
     return "worker";
-  }
-
-  if (
-    stage === "fallback_local" ||
-    joinedLogs.includes("switching to local server fallback")
-  ) {
-    return "server";
   }
 
   if (["model_load", "generation", "stitching", "captioning"].includes(stage)) {
@@ -1002,6 +1007,7 @@ function detailFromLogLine(line, currentStage) {
   if (lower.startsWith("heartbeat:")) {
     const stageMatch = lower.match(/stage=([a-z_]+)/);
     const stage = stageMatch?.[1] || currentStage;
+    if (stage === "generation") return "Generating first chunk. This can take a while.";
     return `${friendlyStageDetail(stage)}...`;
   }
 
@@ -1062,6 +1068,18 @@ function formatEta(seconds) {
     return `${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
   }
   return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+}
+
+function hasChunkProgressLog(logs) {
+  return (Array.isArray(logs) ? logs : []).some((line) => /generation chunk \d+\/\d+/i.test(String(line || "")));
+}
+
+function hasServerHeartbeatLog(logs) {
+  return (Array.isArray(logs) ? logs : []).some((line) => String(line || "").toLowerCase().includes("heartbeat: stage="));
+}
+
+function isEarlyGenerationWithoutChunkProgress(logs, stage) {
+  return String(stage || "") === "generation" && !hasChunkProgressLog(logs);
 }
 
 async function requestJSON(url, method, payload) {
@@ -1578,7 +1596,9 @@ function updateProgressVisuals(progressPercent, stage) {
     if (state.currentStatus === "running") {
       const etaProgress = state.actualProgress > 0 ? state.actualProgress : clamped;
       const eta = smoothEtaDisplay(estimateEtaSeconds(etaProgress, stage), stage);
-      progressEtaNode.textContent = `Time left to process: ${formatEta(eta)}`;
+      progressEtaNode.textContent = eta === null
+        ? "Time left to process: estimating..."
+        : `Time left to process: ${formatEta(eta)}`;
     } else {
       state.etaSeconds = null;
       state.etaUpdatedAtMs = null;
@@ -1682,6 +1702,7 @@ function applyJobSnapshot(job) {
   }
 
   const logs = Array.isArray(job.logs) ? job.logs : [];
+  state.currentJobLogs = logs;
   const latestLog = logs.length ? detailFromLogLine(logs[logs.length - 1], stage) : "";
   const mode = detectComputeMode(job);
   if (mode) {
@@ -1692,6 +1713,10 @@ function applyJobSnapshot(job) {
     state.latestDetail = latestLog;
   } else {
     state.latestDetail = stageLabels[stage] || "Processing...";
+  }
+
+  if (isEarlyGenerationWithoutChunkProgress(logs, stage) && !hasChunkProgressLog(logs)) {
+    state.latestDetail = "Generating first chunk. This can take a while.";
   }
 
   if (status === "completed") {
