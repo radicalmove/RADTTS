@@ -7,10 +7,34 @@ SUPPORTED_BASE_MODELS = [
     "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
 ]
 
+SUPPORTED_CUSTOM_MODELS = [
+    "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+    "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+]
+
+SUPPORTED_TTS_MODELS = SUPPORTED_BASE_MODELS + SUPPORTED_CUSTOM_MODELS
+
 MODEL_MODE_ALIASES = {
     "fast": SUPPORTED_BASE_MODELS[0],
     "quality": SUPPORTED_BASE_MODELS[1],
 }
+
+BUILTIN_MODEL_MODE_ALIASES = {
+    "fast": SUPPORTED_CUSTOM_MODELS[0],
+    "quality": SUPPORTED_CUSTOM_MODELS[1],
+}
+
+QWEN_CUSTOM_VOICE_SPEAKERS = [
+    {"id": "Aiden", "label": "Aiden"},
+    {"id": "Dylan", "label": "Dylan"},
+    {"id": "Eric", "label": "Eric"},
+    {"id": "Ono_Anna", "label": "Ono Anna"},
+    {"id": "Ryan", "label": "Ryan"},
+    {"id": "Serena", "label": "Serena"},
+    {"id": "Sohee", "label": "Sohee"},
+    {"id": "Uncle_Fu", "label": "Uncle Fu"},
+    {"id": "Vivian", "label": "Vivian"},
+]
 
 DEFAULT_PRESETS = {
     "natural_lecture_intro": {

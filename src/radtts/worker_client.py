@@ -145,10 +145,12 @@ class WorkerClient:
             job_id = job["job_id"]
             payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
             LOG.info(
-                "claimed job job_id=%s project_id=%s model=%s max_new_tokens=%s chunk_mode=%s output_format=%s transcript=%s text_chars=%s has_reference_text=%s",
+                "claimed job job_id=%s project_id=%s voice_source=%s model=%s speaker=%s max_new_tokens=%s chunk_mode=%s output_format=%s transcript=%s text_chars=%s has_reference_text=%s",
                 job_id,
                 job.get("project_id"),
+                payload.get("voice_source"),
                 payload.get("model_id"),
+                payload.get("built_in_speaker"),
                 payload.get("max_new_tokens"),
                 payload.get("chunk_mode"),
                 payload.get("output_format"),
@@ -213,18 +215,22 @@ class WorkerClient:
 
         with tempfile.TemporaryDirectory(prefix="radtts_worker_") as tmp:
             tmp_path = Path(tmp)
-            reference_path = tmp_path / req.reference_audio_filename
-            reference_path.write_bytes(base64.b64decode(req.reference_audio_b64.encode("utf-8")))
-            try:
-                reference_duration_seconds = round(probe_duration_seconds(reference_path), 3)
-            except Exception:
-                reference_duration_seconds = None
+            reference_path = None
+            reference_duration_seconds = None
+            if req.voice_source == "reference":
+                reference_path = tmp_path / req.reference_audio_filename
+                reference_path.write_bytes(base64.b64decode(req.reference_audio_b64.encode("utf-8")))
+                try:
+                    reference_duration_seconds = round(probe_duration_seconds(reference_path), 3)
+                except Exception:
+                    reference_duration_seconds = None
             LOG.info(
-                "starting synthesis job_id=%s reference_audio=%s reference_seconds=%s reference_text_chars=%s",
+                "starting synthesis job_id=%s reference_audio=%s reference_seconds=%s reference_text_chars=%s built_in_speaker=%s",
                 job_id,
                 req.reference_audio_filename,
                 reference_duration_seconds,
                 len(str(req.reference_text or "")),
+                req.built_in_speaker,
             )
             stage_durations_seconds: dict[str, float] = {}
             progress_state = {
@@ -287,9 +293,12 @@ class WorkerClient:
                 synth_req = SynthesisRequest(
                     project_id=req.project_id,
                     text=req.text,
+                    voice_source=req.voice_source,
                     reference_audio_path=reference_path,
                     reference_text=req.reference_text,
                     model_id=req.model_id,
+                    built_in_speaker=req.built_in_speaker,
+                    built_in_instruct=req.built_in_instruct,
                     max_new_tokens=req.max_new_tokens,
                     chunk_mode=req.chunk_mode,
                     pause_config=req.pause_config,

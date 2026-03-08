@@ -28,6 +28,24 @@ def test_build_clone_kwargs_supports_ref_audio_key():
     assert kwargs["max_new_tokens"] == 321
 
 
+def test_build_builtin_kwargs_supports_speaker_and_instruct():
+    def fake_generate(text: str, speaker: str, instruct: str, max_new_tokens: int):  # noqa: ANN001
+        return text, speaker, instruct, max_new_tokens
+
+    kwargs = TTSService._build_builtin_kwargs(
+        fn=fake_generate,
+        text="hello",
+        speaker="vivian",
+        instruct="Warm and clear",
+        max_new_tokens=222,
+    )
+
+    assert kwargs["text"] == "hello"
+    assert kwargs["speaker"] == "vivian"
+    assert kwargs["instruct"] == "Warm and clear"
+    assert kwargs["max_new_tokens"] == 222
+
+
 def test_parse_generation_result_handles_single_item_audio_list():
     result = ([np.array([0.1, -0.2, 0.3], dtype=np.float32)], 24000)
     model = type("DummyModel", (), {"sample_rate": 16000})()

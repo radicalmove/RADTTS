@@ -1,4 +1,4 @@
-"""Qwen3-TTS voice cloning wrapper with sentence-chunk mode."""
+"""Qwen3-TTS wrapper for reference cloning and built-in speakers."""
 
 from __future__ import annotations
 
@@ -12,9 +12,9 @@ from typing import Any, Callable
 
 import numpy as np
 
-from radtts.constants import SUPPORTED_BASE_MODELS
+from radtts.constants import SUPPORTED_BASE_MODELS, SUPPORTED_CUSTOM_MODELS, SUPPORTED_TTS_MODELS
 from radtts.exceptions import DependencyMissingError, ValidationError
-from radtts.models import ChunkMode, PauseConfig, SynthesisRequest
+from radtts.models import ChunkMode, PauseConfig, SynthesisRequest, VoiceSource
 from radtts.services.asr import ASRService
 from radtts.utils.audio import concat_with_silence, convert_audio, probe_duration_seconds, write_wav
 from radtts.utils.text import split_sentences, word_count
@@ -49,7 +49,7 @@ class TTSService:
         self._asr_service = ASRService(model_size=auto_reference_asr_model)
 
     def ensure_supported_model(self, model_id: str) -> None:
-        if model_id not in SUPPORTED_BASE_MODELS:
+        if model_id not in SUPPORTED_TTS_MODELS:
             raise ValueError(f"Unsupported model id: {model_id}")
 
     def synthesize(
@@ -64,8 +64,14 @@ class TTSService:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         with contextlib.ExitStack() as stack:
-            reference_audio_path = self._prepare_reference_audio_path(req.reference_audio_path, stack=stack)
-            reference_text = req.reference_text or self._auto_reference_text(reference_audio_path)
+            reference_audio_path = None
+            reference_text = req.reference_text
+            if req.voice_source == VoiceSource.REFERENCE:
+                if req.reference_audio_path is None:
+                    raise ValidationError("Reference audio is required for reference voice synthesis.")
+                reference_audio_path = self._prepare_reference_audio_path(req.reference_audio_path, stack=stack)
+                reference_text = req.reference_text or self._auto_reference_text(reference_audio_path)
+
             chunks = self._build_chunks(req.text, req.chunk_mode)
             pauses = self._pause_planner.build(chunks, req.pause_config) if req.chunk_mode == ChunkMode.SENTENCE else []
 
@@ -74,13 +80,23 @@ class TTSService:
             for idx, chunk in enumerate(chunks):
                 if cancel_check and cancel_check():
                     raise RuntimeError("job cancelled")
-                audio, sample_rate = self._synthesize_chunk(
-                    model=model,
-                    text=chunk,
-                    reference_audio_path=reference_audio_path,
-                    reference_text=reference_text,
-                    max_new_tokens=req.max_new_tokens,
-                )
+                if req.voice_source == VoiceSource.REFERENCE:
+                    assert reference_audio_path is not None
+                    audio, sample_rate = self._synthesize_reference_chunk(
+                        model=model,
+                        text=chunk,
+                        reference_audio_path=reference_audio_path,
+                        reference_text=reference_text or "",
+                        max_new_tokens=req.max_new_tokens,
+                    )
+                else:
+                    audio, sample_rate = self._synthesize_builtin_chunk(
+                        model=model,
+                        text=chunk,
+                        speaker=req.built_in_speaker or "",
+                        instruct=req.built_in_instruct,
+                        max_new_tokens=req.max_new_tokens,
+                    )
                 chunk_audio.append((audio, sample_rate))
                 if on_progress:
                     on_progress(f"generation chunk {idx + 1}/{len(chunks)}")
@@ -95,13 +111,25 @@ class TTSService:
             write_wav(wav_path, stitched, sample_rate)
 
             if req.output_format.value == "wav":
-                return wav_path, pauses, reference_text
+                return wav_path, pauses, reference_text or ""
 
             if on_progress:
                 on_progress("stitching encoding mp3")
             mp3_path = output_dir / f"{base_name}.mp3"
             convert_audio(wav_path, mp3_path)
-            return mp3_path, pauses, reference_text
+            return mp3_path, pauses, reference_text or ""
+
+    def list_builtin_speakers(self, model_id: str) -> list[str]:
+        self.ensure_supported_model(model_id)
+        if model_id not in SUPPORTED_CUSTOM_MODELS:
+            raise ValueError("Built-in speakers require a CustomVoice model")
+        model = self._load_model(model_id)
+        getter = getattr(model, "get_supported_speakers", None)
+        if callable(getter):
+            speakers = getter()
+            if speakers:
+                return [str(item) for item in speakers]
+        return []
 
     def _auto_reference_text(self, reference_audio_path: Path) -> str:
         try:
@@ -269,7 +297,7 @@ class TTSService:
         self._model_cache[model_id] = model
         return model
 
-    def _synthesize_chunk(
+    def _synthesize_reference_chunk(
         self,
         *,
         model: Any,
@@ -295,6 +323,32 @@ class TTSService:
         except TypeError:
             result = fn(text, str(reference_audio_path), reference_text)
 
+        return self._parse_generation_result(result, model)
+
+    def _synthesize_builtin_chunk(
+        self,
+        *,
+        model: Any,
+        text: str,
+        speaker: str,
+        instruct: str | None,
+        max_new_tokens: int,
+    ) -> tuple[np.ndarray, int]:
+        fn = getattr(model, "generate_custom_voice", None)
+        if fn is None:
+            raise RuntimeError("Loaded model does not expose generate_custom_voice")
+
+        kwargs = self._build_builtin_kwargs(
+            fn=fn,
+            text=text,
+            speaker=speaker,
+            instruct=instruct,
+            max_new_tokens=max_new_tokens,
+        )
+        try:
+            result = fn(**kwargs)
+        except TypeError:
+            result = fn(text=text, speaker=speaker)
         return self._parse_generation_result(result, model)
 
     @staticmethod
@@ -352,6 +406,32 @@ class TTSService:
                 "max_new_tokens": int(max_new_tokens),
             }
 
+        return kwargs
+
+    @staticmethod
+    def _build_builtin_kwargs(
+        *,
+        fn: Callable[..., Any],
+        text: str,
+        speaker: str,
+        instruct: str | None,
+        max_new_tokens: int,
+    ) -> dict[str, Any]:
+        sig = inspect.signature(fn)
+        params = sig.parameters
+        names = set(params.keys())
+
+        kwargs: dict[str, Any] = {}
+        if "text" in names:
+            kwargs["text"] = text
+        if "speaker" in names:
+            kwargs["speaker"] = speaker
+        if instruct and "instruct" in names:
+            kwargs["instruct"] = instruct
+        if "max_new_tokens" in names:
+            kwargs["max_new_tokens"] = int(max_new_tokens)
+        elif "max_tokens" in names:
+            kwargs["max_tokens"] = int(max_new_tokens)
         return kwargs
 
     @staticmethod

@@ -173,6 +173,8 @@ class PipelineOrchestrator:
                 model=req.model_id,
                 reference_audio=req.reference_audio_path,
                 reference_text=reference_text,
+                voice_source=req.voice_source,
+                built_in_speaker=req.built_in_speaker,
                 input_text=req.text,
                 chunk_mode=req.chunk_mode,
                 pause_seconds=pause_seconds,

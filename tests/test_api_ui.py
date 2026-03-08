@@ -93,6 +93,35 @@ def test_workers_status_endpoint_returns_counts():
     assert "worker_online_window_seconds" in payload
 
 
+def test_builtin_voices_endpoint_returns_voice_list():
+    client = TestClient(app)
+    response = client.get("/voices/builtin?quality=normal")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["quality"] == "normal"
+    assert payload["model_id"].endswith("CustomVoice")
+    assert any(voice["id"] == "Vivian" for voice in payload["voices"])
+
+
+def test_builtin_voice_preview_returns_audio(monkeypatch):
+    client = TestClient(app)
+
+    def fake_synthesize(req, output_dir, *, on_progress=None, cancel_check=None):  # noqa: ANN001
+        output_path = output_dir / "voice_preview.wav"
+        output_path.write_bytes(b"RIFFdemo")
+        return output_path, [], ""
+
+    monkeypatch.setattr(app.state if hasattr(app, "state") else object(), "__noop__", None, raising=False)
+    monkeypatch.setattr("radtts.api.pipeline.orchestrator.tts_service.synthesize", fake_synthesize)
+
+    response = client.post("/voices/builtin/preview", json={"speaker": "Vivian", "quality": "normal"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["speaker"] == "Vivian"
+    assert payload["content_type"] == "audio/wav"
+    assert payload["audio_b64"]
+
+
 def test_windows_worker_bootstrap_cmd_download():
     client = TestClient(app)
     invite = client.post("/workers/invite", json={"capabilities": ["synthesize"]})
@@ -145,6 +174,38 @@ def test_simple_synthesize_requires_voice_clone_authorization():
             },
         )
         assert response.status_code == 422
+    finally:
+        if project_root.exists():
+            shutil.rmtree(project_root)
+
+
+def test_simple_synthesize_accepts_builtin_voice_without_reference_audio():
+    client = TestClient(app)
+    project_id = f"ui-{uuid.uuid4().hex[:8]}"
+    project_root = Path("projects") / project_id
+
+    try:
+        created = client.post("/projects", json={"project_id": project_id})
+        assert created.status_code == 200
+
+        queued = client.post(
+            "/synthesize/simple",
+            json={
+                "project_id": project_id,
+                "text": "Hello built in voice.",
+                "voice_source": "builtin",
+                "built_in_speaker": "Vivian",
+                "quality": "normal",
+                "add_fillers": False,
+                "average_gap_seconds": 0.8,
+                "output_format": "mp3",
+                "voice_clone_authorized": True,
+            },
+        )
+        assert queued.status_code == 200
+        payload = queued.json()
+        assert payload["worker_mode"] is True
+        assert payload["stage"] == "queued_remote"
     finally:
         if project_root.exists():
             shutil.rmtree(project_root)

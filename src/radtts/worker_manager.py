@@ -352,10 +352,12 @@ class WorkerManager:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(base64.b64decode(req.output_audio_b64.encode("utf-8")))
 
-        reference_filename = _slugify_filename(payload.reference_audio_filename)
-        reference_path = paths.assets_reference_audio / f"{payload.output_name}_{reference_filename}"
-        reference_path.parent.mkdir(parents=True, exist_ok=True)
-        reference_path.write_bytes(base64.b64decode(payload.reference_audio_b64.encode("utf-8")))
+        reference_path = None
+        if payload.voice_source == "reference" and payload.reference_audio_filename and payload.reference_audio_b64:
+            reference_filename = _slugify_filename(payload.reference_audio_filename)
+            reference_path = paths.assets_reference_audio / f"{payload.output_name}_{reference_filename}"
+            reference_path.parent.mkdir(parents=True, exist_ok=True)
+            reference_path.write_bytes(base64.b64decode(payload.reference_audio_b64.encode("utf-8")))
 
         captions: dict[str, Path] = {}
         if req.captions_txt is not None:
@@ -381,6 +383,8 @@ class WorkerManager:
             model=payload.model_id,
             reference_audio=reference_path,
             reference_text=req.reference_text,
+            voice_source=payload.voice_source,
+            built_in_speaker=payload.built_in_speaker,
             input_text=payload.text,
             chunk_mode=payload.chunk_mode,
             pause_seconds=req.pause_seconds,

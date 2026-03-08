@@ -25,6 +25,10 @@ const audioDropzoneNode = document.getElementById("audio-dropzone");
 const audioFileInputNode = document.getElementById("reference-audio-file");
 const audioDropzoneTitleNode = document.getElementById("audio-dropzone-title");
 const audioFileNameNode = document.getElementById("audio-file-name");
+const voiceSourceReferenceNode = document.getElementById("voice-source-reference");
+const voiceSourceBuiltinNode = document.getElementById("voice-source-builtin");
+const referenceVoicePaneNode = document.getElementById("reference-voice-pane");
+const builtinVoicePaneNode = document.getElementById("builtin-voice-pane");
 const savedSampleSelectNode = document.getElementById("saved-sample-select");
 const refreshSamplesBtn = document.getElementById("refresh-samples-btn");
 const savedSampleStatusNode = document.getElementById("saved-sample-status");
@@ -32,6 +36,24 @@ const recordAudioBtn = document.getElementById("record-audio-btn");
 const recordStatusNode = document.getElementById("record-status");
 const referencePreviewLabelNode = document.getElementById("reference-preview-label");
 const recordPreviewNode = document.getElementById("record-preview");
+const referenceTrimModalNode = document.getElementById("reference-trim-modal");
+const referenceTrimCloseBtn = document.getElementById("reference-trim-close-btn");
+const referenceTrimModalStatusNode = document.getElementById("reference-trim-modal-status");
+const referenceTrimSourceNameNode = document.getElementById("reference-trim-source-name");
+const referenceTrimSourceDurationNode = document.getElementById("reference-trim-source-duration");
+const referenceTrimPreviewNode = document.getElementById("reference-trim-preview");
+const referenceTrimStartNode = document.getElementById("reference-trim-start");
+const referenceTrimEndNode = document.getElementById("reference-trim-end");
+const referenceTrimStartValueNode = document.getElementById("reference-trim-start-value");
+const referenceTrimEndValueNode = document.getElementById("reference-trim-end-value");
+const referenceTrimSelectionSummaryNode = document.getElementById("reference-trim-selection-summary");
+const referenceTrimPlayBtn = document.getElementById("reference-trim-play-btn");
+const referenceTrimApplyBtn = document.getElementById("reference-trim-apply-btn");
+const referenceTrimSkipBtn = document.getElementById("reference-trim-skip-btn");
+const builtinVoiceSelectNode = document.getElementById("builtin-voice-select");
+const builtinVoiceStatusNode = document.getElementById("builtin-voice-status");
+const previewBuiltinVoiceBtn = document.getElementById("preview-builtin-voice-btn");
+const builtinVoicePreviewNode = document.getElementById("builtin-voice-preview");
 
 const scriptTextNode = document.getElementById("script-text");
 const scriptFileInputNode = document.getElementById("script-file");
@@ -134,7 +156,16 @@ const state = {
   recordingStream: null,
   recordingChunks: [],
   referencePreviewObjectUrl: null,
+  pendingReferenceFile: null,
+  pendingReferenceOriginLabel: "",
+  pendingReferenceDurationSeconds: null,
+  referenceTrimPreviewObjectUrl: null,
+  referenceTrimStopTimer: null,
   referenceSamples: [],
+  voiceSource: "reference",
+  builtinVoices: [],
+  selectedBuiltInSpeaker: "",
+  builtinVoicePreviewUrl: null,
   expectedRemoteWorker: false,
   computeMode: "idle",
   lastAnnouncedComputeMode: "idle",
@@ -195,6 +226,12 @@ function setSavedSampleStatus(message, isError = false) {
   if (!savedSampleStatusNode) return;
   savedSampleStatusNode.textContent = message || "";
   savedSampleStatusNode.style.color = isError ? "#a73527" : "#555";
+}
+
+function setBuiltinVoiceStatus(message, isError = false) {
+  if (!builtinVoiceStatusNode) return;
+  builtinVoiceStatusNode.textContent = message || "";
+  builtinVoiceStatusNode.style.color = isError ? "#a73527" : "#555";
 }
 
 function setScriptSaveStatus(message, isError = false) {
@@ -286,6 +323,22 @@ function setWorkspaceVisible(visible) {
   if (switchProjectBtn) switchProjectBtn.hidden = !visible;
   if (activeProjectChip) activeProjectChip.hidden = !visible;
   if (!visible) closeWorkerSetupModal();
+}
+
+function setVoiceSourceUi(source) {
+  state.voiceSource = source === "builtin" ? "builtin" : "reference";
+  if (voiceSourceReferenceNode) {
+    voiceSourceReferenceNode.checked = state.voiceSource === "reference";
+  }
+  if (voiceSourceBuiltinNode) {
+    voiceSourceBuiltinNode.checked = state.voiceSource === "builtin";
+  }
+  if (referenceVoicePaneNode) {
+    referenceVoicePaneNode.hidden = state.voiceSource !== "reference";
+  }
+  if (builtinVoicePaneNode) {
+    builtinVoicePaneNode.hidden = state.voiceSource !== "builtin";
+  }
 }
 
 function setGenerateEnabled(enabled) {
@@ -756,6 +809,13 @@ function formatIso(isoValue) {
   const date = new Date(isoValue);
   if (Number.isNaN(date.getTime())) return String(isoValue);
   return date.toLocaleString();
+}
+
+function formatDurationSeconds(seconds) {
+  const totalSeconds = Math.max(0, Math.round(Number(seconds || 0)));
+  const mins = Math.floor(totalSeconds / 60);
+  const secs = totalSeconds % 60;
+  return `${mins}:${String(secs).padStart(2, "0")}`;
 }
 
 function clearScriptSaveTimer() {
@@ -1261,6 +1321,96 @@ async function fileToBase64(file) {
   });
 }
 
+async function measureAudioDuration(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const audio = new Audio();
+    audio.preload = "metadata";
+    audio.onloadedmetadata = () => {
+      const duration = Number(audio.duration || 0);
+      URL.revokeObjectURL(url);
+      if (!Number.isFinite(duration) || duration <= 0) {
+        reject(new Error("Could not read audio duration"));
+        return;
+      }
+      resolve(duration);
+    };
+    audio.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("Could not read audio metadata"));
+    };
+    audio.src = url;
+  });
+}
+
+function encodeWavFromFloat32(samples, sampleRate) {
+  const frameCount = samples.length;
+  const buffer = new ArrayBuffer(44 + frameCount * 2);
+  const view = new DataView(buffer);
+
+  function writeString(offset, value) {
+    for (let idx = 0; idx < value.length; idx += 1) {
+      view.setUint8(offset + idx, value.charCodeAt(idx));
+    }
+  }
+
+  writeString(0, "RIFF");
+  view.setUint32(4, 36 + frameCount * 2, true);
+  writeString(8, "WAVE");
+  writeString(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeString(36, "data");
+  view.setUint32(40, frameCount * 2, true);
+
+  let offset = 44;
+  for (let idx = 0; idx < frameCount; idx += 1) {
+    const value = Math.max(-1, Math.min(1, samples[idx]));
+    view.setInt16(offset, value < 0 ? value * 0x8000 : value * 0x7fff, true);
+    offset += 2;
+  }
+
+  return new Blob([buffer], { type: "audio/wav" });
+}
+
+async function trimAudioFile(file, startSeconds, endSeconds) {
+  const buffer = await file.arrayBuffer();
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) {
+    throw new Error("Audio trimming is not supported in this browser.");
+  }
+
+  const audioContext = new AudioContextClass();
+  try {
+    const audioBuffer = await audioContext.decodeAudioData(buffer.slice(0));
+    const sampleRate = audioBuffer.sampleRate;
+    const startFrame = Math.max(0, Math.floor(startSeconds * sampleRate));
+    const endFrame = Math.min(audioBuffer.length, Math.ceil(endSeconds * sampleRate));
+    if (endFrame <= startFrame) {
+      throw new Error("Invalid trim range.");
+    }
+
+    const merged = new Float32Array(endFrame - startFrame);
+    for (let channel = 0; channel < audioBuffer.numberOfChannels; channel += 1) {
+      const channelData = audioBuffer.getChannelData(channel).subarray(startFrame, endFrame);
+      for (let idx = 0; idx < channelData.length; idx += 1) {
+        merged[idx] += channelData[idx] / audioBuffer.numberOfChannels;
+      }
+    }
+
+    const wavBlob = encodeWavFromFloat32(merged, sampleRate);
+    const baseName = file.name.replace(/\.[^.]+$/, "") || "reference";
+    return new File([wavBlob], `${baseName}-trimmed.wav`, { type: "audio/wav" });
+  } finally {
+    await audioContext.close();
+  }
+}
+
 async function readScriptFile(file) {
   const lower = file.name.toLowerCase();
 
@@ -1300,8 +1450,13 @@ function applyActiveProject(projectRef, projectLabel = projectRef) {
   state.activeProjectRef = projectRef;
   state.activeProjectLabel = projectLabel;
   state.canManageActiveProject = false;
+  state.voiceSource = "reference";
   state.selectedAudioHash = null;
   state.referenceSamples = [];
+  state.builtinVoices = [];
+  state.selectedBuiltInSpeaker = "";
+  clearBuiltinVoicePreview();
+  setVoiceSourceUi("reference");
   clearReferencePreview();
   setSelectedAudioFile(null);
   if (savedSampleSelectNode) savedSampleSelectNode.innerHTML = '<option value="">Loading saved samples...</option>';
@@ -1317,6 +1472,7 @@ function applyActiveProject(projectRef, projectLabel = projectRef) {
   clearWorkerSetupLinks();
   void loadOutputs();
   void loadReferenceSamples();
+  void loadBuiltinVoices();
   void loadProjectScript();
   void refreshProjectAccessInfo();
   startWorkerStatusPolling();
@@ -1503,6 +1659,160 @@ function showReferencePreviewFromFile(file) {
   state.referencePreviewObjectUrl = URL.createObjectURL(file);
   recordPreviewNode.src = state.referencePreviewObjectUrl;
   recordPreviewNode.hidden = false;
+}
+
+function clearBuiltinVoicePreview() {
+  if (builtinVoicePreviewNode) {
+    builtinVoicePreviewNode.pause();
+    builtinVoicePreviewNode.hidden = true;
+    builtinVoicePreviewNode.removeAttribute("src");
+    builtinVoicePreviewNode.load();
+  }
+  if (state.builtinVoicePreviewUrl) {
+    URL.revokeObjectURL(state.builtinVoicePreviewUrl);
+    state.builtinVoicePreviewUrl = null;
+  }
+}
+
+async function loadBuiltinVoices() {
+  if (!builtinVoiceSelectNode) return;
+  builtinVoiceSelectNode.innerHTML = '<option value="">Loading built-in voices...</option>';
+  builtinVoiceSelectNode.disabled = true;
+  if (previewBuiltinVoiceBtn) {
+    previewBuiltinVoiceBtn.disabled = true;
+  }
+  try {
+    const quality = qualityNode?.value === "high" ? "high" : "normal";
+    const data = await requestJSON(`/voices/builtin?quality=${encodeURIComponent(quality)}`, "GET");
+    const voices = Array.isArray(data.voices) ? data.voices : [];
+    state.builtinVoices = voices;
+
+    builtinVoiceSelectNode.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Choose built-in voice";
+    builtinVoiceSelectNode.appendChild(placeholder);
+
+    for (const voice of voices) {
+      const option = document.createElement("option");
+      option.value = String(voice.id || "");
+      option.textContent = String(voice.label || voice.id || "");
+      builtinVoiceSelectNode.appendChild(option);
+    }
+
+    builtinVoiceSelectNode.value = state.selectedBuiltInSpeaker || "";
+    setBuiltinVoiceStatus("Choose a built-in Qwen voice, then preview or generate.");
+  } catch (err) {
+    builtinVoiceSelectNode.innerHTML = '<option value="">Unable to load built-in voices</option>';
+    setBuiltinVoiceStatus(`Could not load built-in voices: ${String(err)}`, true);
+  } finally {
+    builtinVoiceSelectNode.disabled = false;
+    if (previewBuiltinVoiceBtn) {
+      previewBuiltinVoiceBtn.disabled = false;
+    }
+  }
+}
+
+function closeReferenceTrimModal() {
+  if (state.referenceTrimStopTimer) {
+    clearTimeout(state.referenceTrimStopTimer);
+    state.referenceTrimStopTimer = null;
+  }
+  if (referenceTrimPreviewNode) {
+    referenceTrimPreviewNode.pause();
+  }
+  if (state.referenceTrimPreviewObjectUrl) {
+    URL.revokeObjectURL(state.referenceTrimPreviewObjectUrl);
+    state.referenceTrimPreviewObjectUrl = null;
+  }
+  if (referenceTrimModalNode) {
+    referenceTrimModalNode.hidden = true;
+  }
+  document.body.classList.remove("modal-open");
+}
+
+function updateReferenceTrimSelectionUi() {
+  const maxSeconds = Number(state.pendingReferenceDurationSeconds || 0);
+  if (!referenceTrimStartNode || !referenceTrimEndNode) return;
+  let start = Math.max(0, Number(referenceTrimStartNode.value || 0));
+  let end = Math.max(start, Number(referenceTrimEndNode.value || 0));
+
+  if (end - start > 30) {
+    end = Math.min(maxSeconds, start + 30);
+    referenceTrimEndNode.value = String(end);
+  }
+  if (end <= start) {
+    end = Math.min(maxSeconds, start + 0.1);
+    referenceTrimEndNode.value = String(end);
+  }
+
+  if (referenceTrimStartValueNode) {
+    referenceTrimStartValueNode.textContent = formatDurationSeconds(start);
+  }
+  if (referenceTrimEndValueNode) {
+    referenceTrimEndValueNode.textContent = formatDurationSeconds(end);
+  }
+  if (referenceTrimSelectionSummaryNode) {
+    referenceTrimSelectionSummaryNode.textContent = `Selected clip length: ${formatDurationSeconds(end - start)}`;
+  }
+}
+
+function openReferenceTrimModal(file, durationSeconds, originLabel) {
+  state.pendingReferenceFile = file;
+  state.pendingReferenceOriginLabel = originLabel;
+  state.pendingReferenceDurationSeconds = durationSeconds;
+
+  const maxSeconds = Math.max(0.1, Number(durationSeconds || 0));
+  const defaultEnd = Math.min(30, maxSeconds);
+
+  if (referenceTrimSourceNameNode) {
+    referenceTrimSourceNameNode.textContent = file?.name || "Selected sample";
+  }
+  if (referenceTrimSourceDurationNode) {
+    referenceTrimSourceDurationNode.textContent = `${formatDurationSeconds(maxSeconds)} total`;
+  }
+  if (referenceTrimModalStatusNode) {
+    referenceTrimModalStatusNode.textContent = `${originLabel} is ${formatDurationSeconds(maxSeconds)} long. Choose up to 30 seconds to use as the reference sample.`;
+    referenceTrimModalStatusNode.style.color = "#555";
+  }
+  if (referenceTrimStartNode) {
+    referenceTrimStartNode.min = "0";
+    referenceTrimStartNode.max = String(maxSeconds);
+    referenceTrimStartNode.value = "0";
+  }
+  if (referenceTrimEndNode) {
+    referenceTrimEndNode.min = "0";
+    referenceTrimEndNode.max = String(maxSeconds);
+    referenceTrimEndNode.value = String(defaultEnd);
+  }
+
+  if (state.referenceTrimPreviewObjectUrl) {
+    URL.revokeObjectURL(state.referenceTrimPreviewObjectUrl);
+    state.referenceTrimPreviewObjectUrl = null;
+  }
+  if (referenceTrimPreviewNode) {
+    state.referenceTrimPreviewObjectUrl = URL.createObjectURL(file);
+    referenceTrimPreviewNode.src = state.referenceTrimPreviewObjectUrl;
+  }
+  updateReferenceTrimSelectionUi();
+  if (referenceTrimModalNode) {
+    referenceTrimModalNode.hidden = false;
+  }
+  document.body.classList.add("modal-open");
+}
+
+async function handleSelectedReferenceFile(file, originLabel) {
+  setSelectedAudioFile(file);
+  const durationSeconds = await measureAudioDuration(file);
+  if (durationSeconds > 30) {
+    setRecordStatus(
+      `${originLabel} is ${formatDurationSeconds(durationSeconds)} long. Trim it to 30 seconds or less for faster cloning.`
+    );
+    openReferenceTrimModal(file, durationSeconds, originLabel);
+    return;
+  }
+  setRecordStatus(`${originLabel} ready. Duration: ${formatDurationSeconds(durationSeconds)}.`);
+  await attachAudioFileToProject(file, originLabel);
 }
 
 function stopRecordingStreamTracks() {
@@ -1887,8 +2197,11 @@ async function handleGenerate() {
     const projectId = requireActiveProject();
     const scriptText = cleanOptional(scriptTextNode?.value || "");
 
-    if (!state.selectedAudioFile && !state.selectedAudioHash) {
+    if (state.voiceSource === "reference" && !state.selectedAudioFile && !state.selectedAudioHash) {
       throw new Error("Please select, record, or choose a saved audio sample.");
+    }
+    if (state.voiceSource === "builtin" && !state.selectedBuiltInSpeaker) {
+      throw new Error("Please choose a built-in Qwen voice.");
     }
     if (!scriptText) {
       throw new Error("Please provide script text.");
@@ -1904,6 +2217,7 @@ async function handleGenerate() {
     const payload = {
       project_id: projectId,
       text: scriptText,
+      voice_source: state.voiceSource,
       quality: qualityNode?.value || "normal",
       add_ums: Boolean(umsToggleNode?.checked),
       add_ahs: Boolean(ahsToggleNode?.checked),
@@ -1913,7 +2227,9 @@ async function handleGenerate() {
       generate_transcript: Boolean(transcriptToggleNode?.checked),
     };
 
-    if (state.selectedAudioHash) {
+    if (state.voiceSource === "builtin") {
+      payload.built_in_speaker = state.selectedBuiltInSpeaker;
+    } else if (state.selectedAudioHash) {
       payload.reference_audio_hash = state.selectedAudioHash;
     } else if (state.selectedAudioFile) {
       payload.reference_audio_b64 = await fileToBase64(state.selectedAudioFile);
@@ -2075,7 +2391,11 @@ function bindProjectGateway() {
       setCancelVisible(false);
       setGenerateStatus("");
       resetProgressUi();
+      state.builtinVoices = [];
+      state.selectedBuiltInSpeaker = "";
       setSelectedAudioFile(null);
+      clearBuiltinVoicePreview();
+      setVoiceSourceUi("reference");
       clearReferencePreview();
       resetWorkerStatusUi();
       resetScriptEditorState();
@@ -2236,6 +2556,185 @@ function bindWorkerStatus() {
   }
 }
 
+function bindReferenceTrimModal() {
+  if (referenceTrimCloseBtn) {
+    referenceTrimCloseBtn.addEventListener("click", () => {
+      closeReferenceTrimModal();
+    });
+  }
+
+  if (referenceTrimModalNode) {
+    referenceTrimModalNode.addEventListener("click", (event) => {
+      if (event.target === referenceTrimModalNode) {
+        closeReferenceTrimModal();
+      }
+    });
+  }
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    if (!referenceTrimModalNode || referenceTrimModalNode.hidden) return;
+    closeReferenceTrimModal();
+  });
+
+  const syncFromStart = () => {
+    if (!referenceTrimStartNode || !referenceTrimEndNode) return;
+    const start = Number(referenceTrimStartNode.value || 0);
+    const currentEnd = Number(referenceTrimEndNode.value || 0);
+    if (currentEnd < start) {
+      referenceTrimEndNode.value = String(start);
+    }
+    if (currentEnd - start > 30) {
+      referenceTrimEndNode.value = String(start + 30);
+    }
+    updateReferenceTrimSelectionUi();
+  };
+
+  const syncFromEnd = () => {
+    if (!referenceTrimStartNode || !referenceTrimEndNode) return;
+    const end = Number(referenceTrimEndNode.value || 0);
+    const currentStart = Number(referenceTrimStartNode.value || 0);
+    if (end < currentStart) {
+      referenceTrimStartNode.value = String(Math.max(0, end - 0.1));
+    }
+    if (end - Number(referenceTrimStartNode.value || 0) > 30) {
+      referenceTrimStartNode.value = String(Math.max(0, end - 30));
+    }
+    updateReferenceTrimSelectionUi();
+  };
+
+  if (referenceTrimStartNode) {
+    referenceTrimStartNode.addEventListener("input", syncFromStart);
+  }
+  if (referenceTrimEndNode) {
+    referenceTrimEndNode.addEventListener("input", syncFromEnd);
+  }
+
+  if (referenceTrimPlayBtn) {
+    referenceTrimPlayBtn.addEventListener("click", () => {
+      if (!referenceTrimPreviewNode || !referenceTrimStartNode || !referenceTrimEndNode) return;
+      const start = Number(referenceTrimStartNode.value || 0);
+      const end = Number(referenceTrimEndNode.value || 0);
+      if (state.referenceTrimStopTimer) {
+        clearTimeout(state.referenceTrimStopTimer);
+      }
+      referenceTrimPreviewNode.currentTime = start;
+      const playPromise = referenceTrimPreviewNode.play();
+      if (playPromise && typeof playPromise.catch === "function") {
+        playPromise.catch(() => {});
+      }
+      state.referenceTrimStopTimer = setTimeout(() => {
+        referenceTrimPreviewNode.pause();
+      }, Math.max(0, (end - start) * 1000));
+    });
+  }
+
+  if (referenceTrimApplyBtn) {
+    referenceTrimApplyBtn.addEventListener("click", () => {
+      void (async () => {
+        if (!state.pendingReferenceFile || !referenceTrimStartNode || !referenceTrimEndNode) return;
+        const start = Number(referenceTrimStartNode.value || 0);
+        const end = Number(referenceTrimEndNode.value || 0);
+        if (referenceTrimApplyBtn) referenceTrimApplyBtn.disabled = true;
+        if (referenceTrimModalStatusNode) {
+          referenceTrimModalStatusNode.textContent = "Trimming selected audio...";
+        }
+        try {
+          const trimmedFile = await trimAudioFile(state.pendingReferenceFile, start, end);
+          closeReferenceTrimModal();
+          await handleSelectedReferenceFile(trimmedFile, "Trimmed audio");
+        } catch (err) {
+          if (referenceTrimModalStatusNode) {
+            referenceTrimModalStatusNode.textContent = `Could not trim audio: ${String(err)}`;
+            referenceTrimModalStatusNode.style.color = "#a73527";
+          }
+        } finally {
+          if (referenceTrimApplyBtn) referenceTrimApplyBtn.disabled = false;
+        }
+      })();
+    });
+  }
+
+  if (referenceTrimSkipBtn) {
+    referenceTrimSkipBtn.addEventListener("click", () => {
+      void (async () => {
+        if (!state.pendingReferenceFile || !state.pendingReferenceOriginLabel) return;
+        closeReferenceTrimModal();
+        await attachAudioFileToProject(state.pendingReferenceFile, state.pendingReferenceOriginLabel);
+        setRecordStatus(
+          `${state.pendingReferenceOriginLabel} kept at full length (${formatDurationSeconds(state.pendingReferenceDurationSeconds)}).`
+        );
+      })();
+    });
+  }
+}
+
+function bindVoiceSource() {
+  if (voiceSourceReferenceNode) {
+    voiceSourceReferenceNode.addEventListener("change", () => {
+      if (!voiceSourceReferenceNode.checked) return;
+      setVoiceSourceUi("reference");
+      setGenerateStatus("");
+    });
+  }
+
+  if (voiceSourceBuiltinNode) {
+    voiceSourceBuiltinNode.addEventListener("change", () => {
+      if (!voiceSourceBuiltinNode.checked) return;
+      setVoiceSourceUi("builtin");
+      setGenerateStatus("");
+      if (!state.builtinVoices.length) {
+        void loadBuiltinVoices();
+      }
+    });
+  }
+
+  if (builtinVoiceSelectNode) {
+    builtinVoiceSelectNode.addEventListener("change", () => {
+      state.selectedBuiltInSpeaker = builtinVoiceSelectNode.value || "";
+      clearBuiltinVoicePreview();
+      if (state.selectedBuiltInSpeaker) {
+        setBuiltinVoiceStatus(`Selected built-in voice: ${state.selectedBuiltInSpeaker}.`);
+      } else {
+        setBuiltinVoiceStatus("Choose a built-in Qwen voice, then preview or generate.");
+      }
+    });
+  }
+
+  if (previewBuiltinVoiceBtn) {
+    previewBuiltinVoiceBtn.addEventListener("click", () => {
+      void (async () => {
+        if (!state.selectedBuiltInSpeaker) {
+          setBuiltinVoiceStatus("Choose a built-in voice first.", true);
+          return;
+        }
+        previewBuiltinVoiceBtn.disabled = true;
+        setBuiltinVoiceStatus(`Generating preview for ${state.selectedBuiltInSpeaker}...`);
+        try {
+          const quality = qualityNode?.value === "high" ? "high" : "normal";
+          const data = await requestJSON("/voices/builtin/preview", "POST", {
+            speaker: state.selectedBuiltInSpeaker,
+            quality,
+          });
+          clearBuiltinVoicePreview();
+          const bytes = Uint8Array.from(atob(String(data.audio_b64 || "")), (ch) => ch.charCodeAt(0));
+          const blob = new Blob([bytes], { type: String(data.content_type || "audio/wav") });
+          state.builtinVoicePreviewUrl = URL.createObjectURL(blob);
+          if (builtinVoicePreviewNode) {
+            builtinVoicePreviewNode.src = state.builtinVoicePreviewUrl;
+            builtinVoicePreviewNode.hidden = false;
+          }
+          setBuiltinVoiceStatus(`Preview ready for ${state.selectedBuiltInSpeaker}.`);
+        } catch (err) {
+          setBuiltinVoiceStatus(`Preview failed: ${String(err)}`, true);
+        } finally {
+          previewBuiltinVoiceBtn.disabled = false;
+        }
+      })();
+    });
+  }
+}
+
 function bindAudioSelection() {
   if (savedSampleSelectNode) {
     savedSampleSelectNode.addEventListener("change", () => {
@@ -2264,10 +2763,11 @@ function bindAudioSelection() {
   if (audioFileInputNode) {
     audioFileInputNode.addEventListener("change", async () => {
       const file = audioFileInputNode.files && audioFileInputNode.files[0];
-      setSelectedAudioFile(file || null);
-      if (file) {
-        await attachAudioFileToProject(file, "Uploaded audio");
+      if (!file) {
+        setSelectedAudioFile(null);
+        return;
       }
+      await handleSelectedReferenceFile(file, "Uploaded audio");
     });
   }
 
@@ -2291,8 +2791,7 @@ function bindAudioSelection() {
     const dt = event.dataTransfer;
     const file = dt && dt.files && dt.files[0];
     if (!file) return;
-    setSelectedAudioFile(file);
-    void attachAudioFileToProject(file, "Dropped audio");
+    void handleSelectedReferenceFile(file, "Dropped audio");
   });
 }
 
@@ -2350,8 +2849,7 @@ function bindRecording() {
         const filename = `recorded-voice-${stamp}.${extension}`;
         const file = new File([blob], filename, { type: recordedMimeType });
 
-        setSelectedAudioFile(file);
-        await attachAudioFileToProject(file, "Recorded audio");
+        await handleSelectedReferenceFile(file, "Recorded audio");
         state.recordingChunks = [];
         state.mediaRecorder = null;
       });
@@ -2439,6 +2937,13 @@ function bindGapSlider() {
   };
 
   gapSliderNode.addEventListener("input", update);
+  if (qualityNode) {
+    qualityNode.addEventListener("change", () => {
+      if (state.voiceSource === "builtin") {
+        void loadBuiltinVoices();
+      }
+    });
+  }
   update();
 }
 
@@ -2527,6 +3032,8 @@ function bindOutputActions() {
 bindProjectGateway();
 bindProjectSharing();
 bindWorkerStatus();
+bindReferenceTrimModal();
+bindVoiceSource();
 bindAudioSelection();
 bindRecording();
 bindScriptFileLoader();
@@ -2534,6 +3041,7 @@ bindScriptPersistence();
 bindGapSlider();
 bindGenerate();
 bindOutputActions();
+setVoiceSourceUi("reference");
 setSelectedAudioFile(null);
 resetScriptEditorState();
 resetWorkerStatusUi();

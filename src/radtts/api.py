@@ -8,6 +8,7 @@ import json
 import os
 import random
 import re
+import tempfile
 import threading
 import time
 import uuid
@@ -16,6 +17,7 @@ from pathlib import Path
 from urllib.parse import quote, urlencode
 
 from radtts.models import (
+    BuiltInVoicePreviewRequest,
     CaptionRequest,
     ClipRequest,
     PauseConfig,
@@ -28,6 +30,7 @@ from radtts.models import (
     SimpleSynthesisRequest,
     SynthesisRequest,
     TranscribeRequest,
+    VoiceSource,
     WorkerInviteRequest,
     WorkerInviteResponse,
     WorkerJobCompleteRequest,
@@ -40,7 +43,13 @@ from radtts.models import (
 )
 from radtts.orchestrator import PipelineOrchestrator
 from radtts.pipeline import RADTTSPipeline
-from radtts.constants import DEFAULT_PRESETS, MODEL_MODE_ALIASES, SUPPORTED_BASE_MODELS
+from radtts.constants import (
+    BUILTIN_MODEL_MODE_ALIASES,
+    DEFAULT_PRESETS,
+    MODEL_MODE_ALIASES,
+    QWEN_CUSTOM_VOICE_SPEAKERS,
+    SUPPORTED_BASE_MODELS,
+)
 from radtts.worker_manager import WorkerManager
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
@@ -817,27 +826,34 @@ def _run_local_synthesis_from_worker_payload(
     except FileNotFoundError:
         return
 
-    try:
-        reference_bytes = base64.b64decode(worker_payload.reference_audio_b64.encode("utf-8"), validate=True)
-    except Exception:  # noqa: BLE001
-        return
-
-    reference_hash = hashlib.sha256(reference_bytes).hexdigest()
-    source_filename = _safe_filename(worker_payload.reference_audio_filename)
-    reference_ext = _safe_audio_extension(source_filename)
-    reference_path = (paths.assets_reference_audio / f"reference-{reference_hash[:16]}{reference_ext}").resolve()
-    reference_path.parent.mkdir(parents=True, exist_ok=True)
-    if not reference_path.exists():
-        reference_path.write_bytes(reference_bytes)
-
     fallback_max_new_tokens = min(worker_payload.max_new_tokens, LOCAL_FALLBACK_MAX_NEW_TOKENS)
+    reference_hash = ""
+    source_filename = ""
+    reference_path = None
+
+    if worker_payload.voice_source == VoiceSource.REFERENCE:
+        try:
+            reference_bytes = base64.b64decode(worker_payload.reference_audio_b64.encode("utf-8"), validate=True)
+        except Exception:  # noqa: BLE001
+            return
+
+        reference_hash = hashlib.sha256(reference_bytes).hexdigest()
+        source_filename = _safe_filename(worker_payload.reference_audio_filename)
+        reference_ext = _safe_audio_extension(source_filename)
+        reference_path = (paths.assets_reference_audio / f"reference-{reference_hash[:16]}{reference_ext}").resolve()
+        reference_path.parent.mkdir(parents=True, exist_ok=True)
+        if not reference_path.exists():
+            reference_path.write_bytes(reference_bytes)
 
     synth_req = SynthesisRequest(
         project_id=worker_payload.project_id,
         text=worker_payload.text,
+        voice_source=worker_payload.voice_source,
         reference_audio_path=reference_path,
         reference_text=worker_payload.reference_text,
         model_id=worker_payload.model_id,
+        built_in_speaker=worker_payload.built_in_speaker,
+        built_in_instruct=worker_payload.built_in_instruct,
         max_new_tokens=fallback_max_new_tokens,
         chunk_mode=worker_payload.chunk_mode,
         pause_config=worker_payload.pause_config,
@@ -858,16 +874,17 @@ def _run_local_synthesis_from_worker_payload(
     except Exception:
         return
 
-    resolved_reference_text = _read_reference_text_from_job_outputs(job.outputs)
-    _upsert_reference_cache_entry(
-        paths=paths,
-        audio_hash=reference_hash,
-        audio_path=reference_path,
-        source_filename=source_filename,
-        owner_key=owner_key,
-        owner_label=owner_label,
-        reference_text=resolved_reference_text,
-    )
+    if worker_payload.voice_source == VoiceSource.REFERENCE and reference_path is not None:
+        resolved_reference_text = _read_reference_text_from_job_outputs(job.outputs)
+        _upsert_reference_cache_entry(
+            paths=paths,
+            audio_hash=reference_hash,
+            audio_path=reference_path,
+            source_filename=source_filename,
+            owner_key=owner_key,
+            owner_label=owner_label,
+            reference_text=resolved_reference_text,
+        )
 
 
 def _claim_and_launch_local_fallback(
@@ -1408,87 +1425,93 @@ def synthesize_simple(request: Request, req: SimpleSynthesisRequest):
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="project not found") from exc
 
+    owner_key, owner_label = _current_user_key_and_label(request)
     reference_cache = _load_reference_cache(paths.manifests)
     project_root = paths.root.resolve()
     reference_hash = ""
     source_filename = ""
-    owner_key, owner_label = _current_user_key_and_label(request)
+    reference_path = None
+    reference_text = None
+    cached_entry: dict[str, object] = {}
 
-    if req.reference_audio_hash:
-        reference_hash = req.reference_audio_hash.strip().lower()
-        found = _find_reference_audio_for_hash(
-            request,
-            scoped_project_id=scoped_project_id,
-            audio_hash=reference_hash,
-        )
-        if not found:
-            raise HTTPException(status_code=404, detail="saved reference audio not found")
-
-        found_entry, found_reference_path, source_project_id = found
-        source_filename = str(found_entry.get("source_filename") or found_reference_path.name)
-        source_ext = _safe_audio_extension(source_filename)
-        reference_path = (paths.assets_reference_audio / f"reference-{reference_hash[:16]}{source_ext}").resolve()
-        reference_path.parent.mkdir(parents=True, exist_ok=True)
-        if not reference_path.exists():
-            reference_path.write_bytes(found_reference_path.read_bytes())
-
-        cached_entry = {
-            **found_entry,
-            "audio_hash": reference_hash,
-            "audio_path": str(reference_path),
-            "source_filename": source_filename,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            "owner_key": str(found_entry.get("owner_key") or owner_key or ""),
-            "owner_label": str(found_entry.get("owner_label") or owner_label or ""),
-            "project_id": _display_project_id(scoped_project_id),
-            "origin_project_id": _display_project_id(source_project_id),
-        }
-        reference_cache[reference_hash] = cached_entry
-        _write_reference_cache(paths.manifests, reference_cache)
-    else:
-        cached_entry = {}
-        if not req.reference_audio_b64 or not req.reference_audio_filename:
-            raise HTTPException(
-                status_code=422,
-                detail="Provide either reference_audio_b64+reference_audio_filename or reference_audio_hash",
+    if req.voice_source == VoiceSource.REFERENCE:
+        if req.reference_audio_hash:
+            reference_hash = req.reference_audio_hash.strip().lower()
+            found = _find_reference_audio_for_hash(
+                request,
+                scoped_project_id=scoped_project_id,
+                audio_hash=reference_hash,
             )
+            if not found:
+                raise HTTPException(status_code=404, detail="saved reference audio not found")
 
-        try:
-            reference_audio = base64.b64decode(req.reference_audio_b64.encode("utf-8"), validate=True)
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=422, detail="invalid reference_audio_b64 payload") from exc
-
-        reference_hash = hashlib.sha256(reference_audio).hexdigest()
-        source_filename = _safe_filename(req.reference_audio_filename)
-        cached_entry = reference_cache.get(reference_hash, {})
-
-        reference_path = _resolve_reference_audio_path(project_root, cached_entry.get("audio_path"))
-        if reference_path is None:
-            reference_ext = _safe_audio_extension(req.reference_audio_filename)
-            reference_path = (paths.assets_reference_audio / f"reference-{reference_hash[:16]}{reference_ext}").resolve()
+            found_entry, found_reference_path, source_project_id = found
+            source_filename = str(found_entry.get("source_filename") or found_reference_path.name)
+            source_ext = _safe_audio_extension(source_filename)
+            reference_path = (paths.assets_reference_audio / f"reference-{reference_hash[:16]}{source_ext}").resolve()
             reference_path.parent.mkdir(parents=True, exist_ok=True)
             if not reference_path.exists():
-                reference_path.write_bytes(reference_audio)
+                reference_path.write_bytes(found_reference_path.read_bytes())
 
-        refreshed_entry = {
-            **cached_entry,
-            "audio_hash": reference_hash,
-            "audio_path": str(reference_path),
-            "source_filename": source_filename,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            "owner_key": owner_key or "",
-            "owner_label": owner_label or "",
-            "project_id": _display_project_id(scoped_project_id),
-        }
-        reference_cache[reference_hash] = refreshed_entry
-        _write_reference_cache(paths.manifests, reference_cache)
-        cached_entry = refreshed_entry
+            cached_entry = {
+                **found_entry,
+                "audio_hash": reference_hash,
+                "audio_path": str(reference_path),
+                "source_filename": source_filename,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "owner_key": str(found_entry.get("owner_key") or owner_key or ""),
+                "owner_label": str(found_entry.get("owner_label") or owner_label or ""),
+                "project_id": _display_project_id(scoped_project_id),
+                "origin_project_id": _display_project_id(source_project_id),
+            }
+            reference_cache[reference_hash] = cached_entry
+            _write_reference_cache(paths.manifests, reference_cache)
+        else:
+            if not req.reference_audio_b64 or not req.reference_audio_filename:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Provide either reference_audio_b64+reference_audio_filename or reference_audio_hash",
+                )
 
-    cached_reference_text = cached_entry.get("reference_text")
-    reference_text = cached_reference_text if isinstance(cached_reference_text, str) and cached_reference_text.strip() else None
+            try:
+                reference_audio = base64.b64decode(req.reference_audio_b64.encode("utf-8"), validate=True)
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(status_code=422, detail="invalid reference_audio_b64 payload") from exc
+
+            reference_hash = hashlib.sha256(reference_audio).hexdigest()
+            source_filename = _safe_filename(req.reference_audio_filename)
+            cached_entry = reference_cache.get(reference_hash, {})
+
+            reference_path = _resolve_reference_audio_path(project_root, cached_entry.get("audio_path"))
+            if reference_path is None:
+                reference_ext = _safe_audio_extension(req.reference_audio_filename)
+                reference_path = (paths.assets_reference_audio / f"reference-{reference_hash[:16]}{reference_ext}").resolve()
+                reference_path.parent.mkdir(parents=True, exist_ok=True)
+                if not reference_path.exists():
+                    reference_path.write_bytes(reference_audio)
+
+            refreshed_entry = {
+                **cached_entry,
+                "audio_hash": reference_hash,
+                "audio_path": str(reference_path),
+                "source_filename": source_filename,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "owner_key": owner_key or "",
+                "owner_label": owner_label or "",
+                "project_id": _display_project_id(scoped_project_id),
+            }
+            reference_cache[reference_hash] = refreshed_entry
+            _write_reference_cache(paths.manifests, reference_cache)
+            cached_entry = refreshed_entry
+
+        cached_reference_text = cached_entry.get("reference_text")
+        reference_text = cached_reference_text if isinstance(cached_reference_text, str) and cached_reference_text.strip() else None
 
     output_name = _build_output_name(req.text, req.output_name)
-    model_id = MODEL_MODE_ALIASES["quality"] if req.quality == "high" else MODEL_MODE_ALIASES["fast"]
+    if req.voice_source == VoiceSource.BUILTIN:
+        model_id = BUILTIN_MODEL_MODE_ALIASES["quality"] if req.quality == "high" else BUILTIN_MODEL_MODE_ALIASES["fast"]
+    else:
+        model_id = MODEL_MODE_ALIASES["quality"] if req.quality == "high" else MODEL_MODE_ALIASES["fast"]
     add_ums = req.add_ums or req.add_fillers
     add_ahs = req.add_ahs or req.add_fillers
     scripted_text = _inject_fillers(req.text, add_ums=add_ums, add_ahs=add_ahs)
@@ -1506,9 +1529,12 @@ def synthesize_simple(request: Request, req: SimpleSynthesisRequest):
         synth_req = SynthesisRequest(
             project_id=scoped_project_id,
             text=scripted_text,
+            voice_source=req.voice_source,
             reference_audio_path=reference_path,
             reference_text=reference_text,
             model_id=model_id,
+            built_in_speaker=req.built_in_speaker,
+            built_in_instruct=req.built_in_instruct,
             max_new_tokens=max_new_tokens,
             chunk_mode="sentence",
             pause_config=pause_config,
@@ -1523,27 +1549,34 @@ def synthesize_simple(request: Request, req: SimpleSynthesisRequest):
             # Job failure details are persisted in manifest by orchestrator.
             return
 
-        resolved_reference_text = _read_reference_text_from_job_outputs(job.outputs)
-        _upsert_reference_cache_entry(
-            paths=paths,
-            audio_hash=reference_hash,
-            audio_path=reference_path,
-            source_filename=source_filename,
-            owner_key=owner_key or "",
-            owner_label=owner_label or "",
-            reference_text=resolved_reference_text,
-        )
+        if req.voice_source == VoiceSource.REFERENCE and reference_path is not None:
+            resolved_reference_text = _read_reference_text_from_job_outputs(job.outputs)
+            _upsert_reference_cache_entry(
+                paths=paths,
+                audio_hash=reference_hash,
+                audio_path=reference_path,
+                source_filename=source_filename,
+                owner_key=owner_key or "",
+                owner_label=owner_label or "",
+                reference_text=resolved_reference_text,
+            )
 
     if SIMPLE_SYNTH_DEFAULT_TO_WORKER:
         _cancel_existing_project_worker_jobs(scoped_project_id)
-        reference_audio_b64 = base64.b64encode(reference_path.read_bytes()).decode("utf-8")
         worker_req = WorkerSynthesisEnqueueRequest(
             project_id=scoped_project_id,
             text=scripted_text,
-            reference_audio_b64=reference_audio_b64,
-            reference_audio_filename=source_filename or reference_path.name,
+            voice_source=req.voice_source,
+            reference_audio_b64=(
+                base64.b64encode(reference_path.read_bytes()).decode("utf-8")
+                if reference_path is not None
+                else None
+            ),
+            reference_audio_filename=(source_filename or reference_path.name) if reference_path is not None else None,
             reference_text=reference_text,
             model_id=model_id,
+            built_in_speaker=req.built_in_speaker,
+            built_in_instruct=req.built_in_instruct,
             max_new_tokens=max_new_tokens,
             chunk_mode="sentence",
             pause_config=pause_config,
@@ -1743,6 +1776,56 @@ def list_workers(request: Request):
 def workers_status(request: Request):
     _require_auth(request)
     return _worker_availability_snapshot()
+
+
+@app.get("/voices/builtin")
+def list_builtin_voices(request: Request, quality: str = "normal"):
+    _require_auth(request)
+    model_id = BUILTIN_MODEL_MODE_ALIASES["quality"] if quality == "high" else BUILTIN_MODEL_MODE_ALIASES["fast"]
+    return {
+        "quality": quality,
+        "model_id": model_id,
+        "voices": QWEN_CUSTOM_VOICE_SPEAKERS,
+        "preview_text": "This is a preview of the selected built-in Qwen voice.",
+    }
+
+
+@app.post("/voices/builtin/preview")
+def preview_builtin_voice(request: Request, req: BuiltInVoicePreviewRequest):
+    _require_auth(request)
+    model_id = BUILTIN_MODEL_MODE_ALIASES["quality"] if req.quality == "high" else BUILTIN_MODEL_MODE_ALIASES["fast"]
+    preview_text = (req.text or "").strip() or "This is a preview of the selected built-in Qwen voice."
+
+    with tempfile.TemporaryDirectory(prefix="radtts_voice_preview_") as tmp:
+        synth_req = SynthesisRequest(
+            project_id="voice-preview",
+            text=preview_text,
+            voice_source=VoiceSource.BUILTIN,
+            reference_audio_path=None,
+            reference_text=None,
+            model_id=model_id,
+            built_in_speaker=req.speaker,
+            built_in_instruct=None,
+            max_new_tokens=600 if req.quality == "normal" else 800,
+            chunk_mode="single",
+            pause_config=PauseConfig(min_seconds=0.2, max_seconds=0.35, seed=1),
+            output_format="wav",
+            output_name="voice_preview",
+            generate_transcript=False,
+            voice_clone_authorized=True,
+        )
+        output_path, _, _ = pipeline.orchestrator.tts_service.synthesize(
+            synth_req,
+            output_dir=Path(tmp),
+        )
+
+        return {
+            "speaker": req.speaker,
+            "model_id": model_id,
+            "preview_text": preview_text,
+            "audio_b64": base64.b64encode(output_path.read_bytes()).decode("utf-8"),
+            "content_type": "audio/wav",
+        }
 
 
 @app.post("/workers/invite", response_model=WorkerInviteResponse)

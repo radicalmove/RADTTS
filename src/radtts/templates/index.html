@@ -85,27 +85,52 @@
         <div class="input-grid">
           <section class="input-card">
             <h3>1. Voice sample</h3>
-            <label id="audio-dropzone" class="dropzone" for="reference-audio-file">
-              <input id="reference-audio-file" type="file" accept="audio/*" hidden />
-              <span id="audio-dropzone-title">Drop audio here or click to choose</span>
-              <small>WAV, MP3, M4A, FLAC, OGG</small>
-            </label>
-            <p id="audio-file-name" class="field-note">No file selected.</p>
-            <div class="record-controls">
-              <button id="record-audio-btn" class="record-btn" type="button">Record audio</button>
-              <span id="reference-preview-label" class="preview-label" hidden>Preview selected sample</span>
-              <audio id="record-preview" controls hidden></audio>
+            <div class="voice-source-toggle">
+              <label class="checkline simple-check">
+                <input id="voice-source-reference" name="voice-source" type="radio" value="reference" checked />
+                Clone from sample
+              </label>
+              <label class="checkline simple-check">
+                <input id="voice-source-builtin" name="voice-source" type="radio" value="builtin" />
+                Built-in Qwen voice
+              </label>
             </div>
-            <p id="record-status" class="field-note">Use Record audio to capture a sample from your microphone.</p>
-            <div class="saved-sample-block">
-              <label class="saved-sample-label" for="saved-sample-select">Or choose a saved sample</label>
-              <div class="saved-sample-row">
-                <select id="saved-sample-select">
-                  <option value="">No saved samples yet</option>
-                </select>
-                <button id="refresh-samples-btn" type="button">Refresh</button>
+
+            <div id="reference-voice-pane">
+              <label id="audio-dropzone" class="dropzone" for="reference-audio-file">
+                <input id="reference-audio-file" type="file" accept="audio/*" hidden />
+                <span id="audio-dropzone-title">Drop audio here or click to choose</span>
+                <small>WAV, MP3, M4A, FLAC, OGG</small>
+              </label>
+              <p id="audio-file-name" class="field-note">No file selected.</p>
+              <div class="record-controls">
+                <button id="record-audio-btn" class="record-btn" type="button">Record audio</button>
+                <span id="reference-preview-label" class="preview-label" hidden>Preview selected sample</span>
+                <audio id="record-preview" controls hidden></audio>
               </div>
-              <p id="saved-sample-status" class="field-note">Saved samples are scoped to this project.</p>
+              <p id="record-status" class="field-note">Use Record audio to capture a sample from your microphone.</p>
+              <div class="saved-sample-block">
+                <label class="saved-sample-label" for="saved-sample-select">Or choose a saved sample</label>
+                <div class="saved-sample-row">
+                  <select id="saved-sample-select">
+                    <option value="">No saved samples yet</option>
+                  </select>
+                  <button id="refresh-samples-btn" type="button">Refresh</button>
+                </div>
+                <p id="saved-sample-status" class="field-note">Saved samples are scoped to this project.</p>
+              </div>
+            </div>
+
+            <div id="builtin-voice-pane" hidden>
+              <label class="saved-sample-label" for="builtin-voice-select">Choose built-in voice</label>
+              <div class="saved-sample-row">
+                <select id="builtin-voice-select">
+                  <option value="">Loading built-in voices...</option>
+                </select>
+                <button id="preview-builtin-voice-btn" type="button">Preview voice</button>
+              </div>
+              <p id="builtin-voice-status" class="field-note">Built-in voices use the Qwen CustomVoice model and do not require a sample upload.</p>
+              <audio id="builtin-voice-preview" controls hidden></audio>
             </div>
           </section>
 
@@ -240,6 +265,42 @@
             <li>If helper count still does not increase, ask an admin to regenerate setup links and retry.</li>
           </ul>
         </section>
+      </section>
+    </div>
+
+    <div id="reference-trim-modal" class="modal-overlay" hidden>
+      <section class="modal-card reference-trim-modal-card" role="dialog" aria-modal="true" aria-labelledby="reference-trim-modal-title">
+        <header class="modal-header">
+          <h2 id="reference-trim-modal-title">Trim reference sample</h2>
+          <button id="reference-trim-close-btn" type="button" class="worker-mini-btn">Close</button>
+        </header>
+        <p class="modal-copy">
+          Long reference files slow voice cloning. Use up to 30 seconds of clear speech for the best balance of speed and reliability.
+        </p>
+        <p id="reference-trim-modal-status" class="modal-status">Select the part you want to use.</p>
+        <div class="reference-trim-summary">
+          <span id="reference-trim-source-name">No file selected</span>
+          <span id="reference-trim-source-duration">0:00 total</span>
+        </div>
+        <audio id="reference-trim-preview" controls></audio>
+        <div class="reference-trim-range-grid">
+          <label class="stack" for="reference-trim-start">
+            <span>Start</span>
+            <input id="reference-trim-start" type="range" min="0" max="30" step="0.1" value="0" />
+            <strong id="reference-trim-start-value">0:00</strong>
+          </label>
+          <label class="stack" for="reference-trim-end">
+            <span>End</span>
+            <input id="reference-trim-end" type="range" min="0" max="30" step="0.1" value="30" />
+            <strong id="reference-trim-end-value">0:30</strong>
+          </label>
+        </div>
+        <p id="reference-trim-selection-summary" class="field-note">Selected clip length: 0:30</p>
+        <div class="worker-setup-links worker-setup-links-modal reference-trim-actions">
+          <button id="reference-trim-play-btn" type="button" class="worker-mini-btn">Play selected portion</button>
+          <button id="reference-trim-apply-btn" type="button" class="worker-mini-btn">Use selected portion</button>
+          <button id="reference-trim-skip-btn" type="button" class="worker-mini-btn">Use full file anyway</button>
+        </div>
       </section>
     </div>
 

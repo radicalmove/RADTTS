@@ -501,10 +501,47 @@ body.modal-open {
   flex-wrap: wrap;
 }
 
+.voice-source-toggle {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
 .preview-label {
   font-size: 0.8rem;
   font-weight: 600;
   color: #555;
+}
+
+.reference-trim-summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+  font-size: 0.82rem;
+  color: #444;
+}
+
+.reference-trim-range-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.reference-trim-range-grid input[type="range"] {
+  width: 100%;
+}
+
+.reference-trim-actions {
+  margin-top: 12px;
+}
+
+#reference-trim-preview {
+  width: 100%;
+  margin-top: 6px;
 }
 
 .record-btn {
@@ -521,6 +558,13 @@ body.modal-open {
   width: 100%;
   max-width: 320px;
   height: 34px;
+}
+
+#builtin-voice-preview {
+  width: 100%;
+  max-width: 360px;
+  height: 34px;
+  margin-top: 8px;
 }
 
 .upload-line {
@@ -882,7 +926,8 @@ button.worker-mini-btn {
   }
 
   .saved-sample-row,
-  .script-version-row {
+  .script-version-row,
+  .reference-trim-range-grid {
     grid-template-columns: 1fr;
   }
 

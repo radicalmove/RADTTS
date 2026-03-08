@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from .constants import SUPPORTED_BASE_MODELS
+from .constants import QWEN_CUSTOM_VOICE_SPEAKERS, SUPPORTED_BASE_MODELS, SUPPORTED_CUSTOM_MODELS, SUPPORTED_TTS_MODELS
 
 
 class ChunkMode(str, Enum):
@@ -20,6 +20,11 @@ class ChunkMode(str, Enum):
 class OutputFormat(str, Enum):
     WAV = "wav"
     MP3 = "mp3"
+
+
+class VoiceSource(str, Enum):
+    REFERENCE = "reference"
+    BUILTIN = "builtin"
 
 
 class JobStatus(str, Enum):
@@ -89,9 +94,12 @@ class ClipRequest(BaseModel):
 class SynthesisRequest(BaseModel):
     project_id: str = Field(min_length=2)
     text: str = Field(min_length=1)
-    reference_audio_path: Path
+    voice_source: VoiceSource = VoiceSource.REFERENCE
+    reference_audio_path: Path | None = None
     reference_text: str | None = None
     model_id: str = SUPPORTED_BASE_MODELS[1]
+    built_in_speaker: str | None = None
+    built_in_instruct: str | None = None
     max_new_tokens: int = Field(default=1200, ge=64, le=8192)
     chunk_mode: ChunkMode = ChunkMode.SENTENCE
     pause_config: PauseConfig = Field(default_factory=PauseConfig)
@@ -102,22 +110,35 @@ class SynthesisRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_model(self) -> "SynthesisRequest":
-        if self.model_id not in SUPPORTED_BASE_MODELS:
+        if self.model_id not in SUPPORTED_TTS_MODELS:
             raise ValueError(
-                f"Unsupported model_id: {self.model_id}. Supported: {', '.join(SUPPORTED_BASE_MODELS)}"
+                f"Unsupported model_id: {self.model_id}. Supported: {', '.join(SUPPORTED_TTS_MODELS)}"
             )
-        if not self.voice_clone_authorized:
-            raise ValueError("voice_clone_authorized must be true before synthesis")
+        if self.voice_source == VoiceSource.REFERENCE:
+            if self.reference_audio_path is None:
+                raise ValueError("reference_audio_path is required for reference voice synthesis")
+            if self.model_id not in SUPPORTED_BASE_MODELS:
+                raise ValueError("reference voice synthesis requires a Base model")
+            if not self.voice_clone_authorized:
+                raise ValueError("voice_clone_authorized must be true before synthesis")
+        else:
+            if not self.built_in_speaker:
+                raise ValueError("built_in_speaker is required for builtin voice synthesis")
+            if self.model_id not in SUPPORTED_CUSTOM_MODELS:
+                raise ValueError("builtin voice synthesis requires a CustomVoice model")
         return self
 
 
 class WorkerSynthesisEnqueueRequest(BaseModel):
     project_id: str = Field(min_length=2)
     text: str = Field(min_length=1)
-    reference_audio_b64: str = Field(min_length=32)
-    reference_audio_filename: str = Field(min_length=1)
+    voice_source: VoiceSource = VoiceSource.REFERENCE
+    reference_audio_b64: str | None = Field(default=None, min_length=32)
+    reference_audio_filename: str | None = Field(default=None, min_length=1)
     reference_text: str | None = None
     model_id: str = SUPPORTED_BASE_MODELS[1]
+    built_in_speaker: str | None = None
+    built_in_instruct: str | None = None
     max_new_tokens: int = Field(default=1200, ge=64, le=8192)
     chunk_mode: ChunkMode = ChunkMode.SENTENCE
     pause_config: PauseConfig = Field(default_factory=PauseConfig)
@@ -128,21 +149,34 @@ class WorkerSynthesisEnqueueRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_model(self) -> "WorkerSynthesisEnqueueRequest":
-        if self.model_id not in SUPPORTED_BASE_MODELS:
+        if self.model_id not in SUPPORTED_TTS_MODELS:
             raise ValueError(
-                f"Unsupported model_id: {self.model_id}. Supported: {', '.join(SUPPORTED_BASE_MODELS)}"
+                f"Unsupported model_id: {self.model_id}. Supported: {', '.join(SUPPORTED_TTS_MODELS)}"
             )
-        if not self.voice_clone_authorized:
-            raise ValueError("voice_clone_authorized must be true before synthesis")
+        if self.voice_source == VoiceSource.REFERENCE:
+            if not self.reference_audio_b64 or not self.reference_audio_filename:
+                raise ValueError("reference_audio_b64 and reference_audio_filename are required for reference voice synthesis")
+            if self.model_id not in SUPPORTED_BASE_MODELS:
+                raise ValueError("reference voice synthesis requires a Base model")
+            if not self.voice_clone_authorized:
+                raise ValueError("voice_clone_authorized must be true before synthesis")
+        else:
+            if not self.built_in_speaker:
+                raise ValueError("built_in_speaker is required for builtin voice synthesis")
+            if self.model_id not in SUPPORTED_CUSTOM_MODELS:
+                raise ValueError("builtin voice synthesis requires a CustomVoice model")
         return self
 
 
 class SimpleSynthesisRequest(BaseModel):
     project_id: str = Field(min_length=2)
     text: str = Field(min_length=1)
+    voice_source: VoiceSource = VoiceSource.REFERENCE
     reference_audio_b64: str | None = Field(default=None, min_length=32)
     reference_audio_filename: str | None = Field(default=None, min_length=1)
     reference_audio_hash: str | None = Field(default=None, min_length=16)
+    built_in_speaker: str | None = None
+    built_in_instruct: str | None = None
     output_name: str | None = None
     quality: Literal["normal", "high"] = "normal"
     add_ums: bool = False
@@ -155,14 +189,21 @@ class SimpleSynthesisRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_authorization(self) -> "SimpleSynthesisRequest":
-        has_uploaded_reference = bool(self.reference_audio_b64 and self.reference_audio_filename)
-        has_library_reference = bool(self.reference_audio_hash)
-        if not has_uploaded_reference and not has_library_reference:
-            raise ValueError("Provide either reference_audio_b64+reference_audio_filename or reference_audio_hash")
-        if self.reference_audio_b64 and not self.reference_audio_filename:
-            raise ValueError("reference_audio_filename is required when reference_audio_b64 is provided")
-        if not self.voice_clone_authorized:
-            raise ValueError("voice_clone_authorized must be true before synthesis")
+        if self.voice_source == VoiceSource.REFERENCE:
+            has_uploaded_reference = bool(self.reference_audio_b64 and self.reference_audio_filename)
+            has_library_reference = bool(self.reference_audio_hash)
+            if not has_uploaded_reference and not has_library_reference:
+                raise ValueError("Provide either reference_audio_b64+reference_audio_filename or reference_audio_hash")
+            if self.reference_audio_b64 and not self.reference_audio_filename:
+                raise ValueError("reference_audio_filename is required when reference_audio_b64 is provided")
+            if not self.voice_clone_authorized:
+                raise ValueError("voice_clone_authorized must be true before synthesis")
+        else:
+            supported_speakers = {row["id"].lower() for row in QWEN_CUSTOM_VOICE_SPEAKERS}
+            if not self.built_in_speaker:
+                raise ValueError("built_in_speaker is required for builtin voice synthesis")
+            if str(self.built_in_speaker).lower() not in supported_speakers:
+                raise ValueError("Unsupported built_in_speaker")
         return self
 
 
@@ -248,8 +289,10 @@ class OutputMetadata(BaseModel):
     output_file: Path
     duration_seconds: float
     model: str
-    reference_audio: Path
-    reference_text: str
+    reference_audio: Path | None = None
+    reference_text: str | None = None
+    voice_source: VoiceSource = VoiceSource.REFERENCE
+    built_in_speaker: str | None = None
     input_text: str
     chunk_mode: ChunkMode
     pause_seconds: list[float]
@@ -356,6 +399,12 @@ class WorkerSummary(BaseModel):
     status: str
     last_seen_at: str | None = None
     created_at: str
+
+
+class BuiltInVoicePreviewRequest(BaseModel):
+    speaker: str = Field(min_length=2)
+    quality: Literal["normal", "high"] = "normal"
+    text: str | None = None
 
 
 def now_utc_iso() -> str:
