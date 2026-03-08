@@ -43,20 +43,28 @@ def run_with_retry_timeout(
     last_err: Exception | None = None
     for attempt in range(1, retries + 2):
         on_log(f"stage={stage_name} attempt={attempt} starting")
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            fut = pool.submit(fn)
-            try:
-                result = fut.result(timeout=timeout_seconds)
-                on_log(f"stage={stage_name} attempt={attempt} complete")
-                return result
-            except FuturesTimeoutError as exc:
-                fut.cancel()
-                last_err = StageTimeoutError(
-                    f"stage={stage_name} timed out after {timeout_seconds}s"
-                )
-                on_log(str(last_err))
-            except Exception as exc:  # noqa: BLE001
-                last_err = exc
-                on_log(f"stage={stage_name} attempt={attempt} failed: {exc}")
-        time.sleep(min(2, attempt))
+        pool = ThreadPoolExecutor(max_workers=1)
+        fut = pool.submit(fn)
+        shutdown_wait = True
+        try:
+            result = fut.result(timeout=timeout_seconds)
+            on_log(f"stage={stage_name} attempt={attempt} complete")
+            return result
+        except FuturesTimeoutError:
+            fut.cancel()
+            last_err = StageTimeoutError(
+                f"stage={stage_name} timed out after {timeout_seconds}s"
+            )
+            on_log(str(last_err))
+            shutdown_wait = False
+        except Exception as exc:  # noqa: BLE001
+            last_err = exc
+            on_log(f"stage={stage_name} attempt={attempt} failed: {exc}")
+        finally:
+            if not fut.done() or not shutdown_wait:
+                pool.shutdown(wait=False, cancel_futures=True)
+            else:
+                pool.shutdown(wait=True, cancel_futures=True)
+        if attempt < retries + 1:
+            time.sleep(min(2, attempt))
     raise StageRetryExceededError(f"stage={stage_name} failed after retries: {last_err}")

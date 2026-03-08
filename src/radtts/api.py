@@ -38,6 +38,7 @@ from radtts.models import (
     WorkerRegisterRequest,
     WorkerSynthesisEnqueueRequest,
 )
+from radtts.orchestrator import PipelineOrchestrator
 from radtts.pipeline import RADTTSPipeline
 from radtts.constants import DEFAULT_PRESETS, MODEL_MODE_ALIASES, SUPPORTED_BASE_MODELS
 from radtts.worker_manager import WorkerManager
@@ -85,6 +86,14 @@ SIMPLE_SYNTH_DEFAULT_TO_WORKER = _env_bool("RADTTS_SIMPLE_SYNTH_DEFAULT_TO_WORKE
 WORKER_FALLBACK_TO_LOCAL = _env_bool("RADTTS_WORKER_FALLBACK_TO_LOCAL", True)
 WORKER_FALLBACK_TIMEOUT_SECONDS = max(5, _env_int("RADTTS_WORKER_FALLBACK_TIMEOUT_SECONDS", 40))
 WORKER_ONLINE_WINDOW_SECONDS = max(10, _env_int("RADTTS_WORKER_ONLINE_WINDOW_SECONDS", 30))
+LOCAL_FALLBACK_GENERATION_TIMEOUT_SECONDS = max(
+    120,
+    _env_int("RADTTS_LOCAL_FALLBACK_GENERATION_TIMEOUT_SECONDS", 300),
+)
+LOCAL_FALLBACK_MAX_NEW_TOKENS = max(
+    128,
+    _env_int("RADTTS_LOCAL_FALLBACK_MAX_NEW_TOKENS", 600),
+)
 WORKER_RUNNING_STALL_TIMEOUT_SECONDS = max(
     WORKER_FALLBACK_TIMEOUT_SECONDS + 60,
     _env_int("RADTTS_WORKER_RUNNING_STALL_TIMEOUT_SECONDS", 180),
@@ -821,13 +830,15 @@ def _run_local_synthesis_from_worker_payload(
     if not reference_path.exists():
         reference_path.write_bytes(reference_bytes)
 
+    fallback_max_new_tokens = min(worker_payload.max_new_tokens, LOCAL_FALLBACK_MAX_NEW_TOKENS)
+
     synth_req = SynthesisRequest(
         project_id=worker_payload.project_id,
         text=worker_payload.text,
         reference_audio_path=reference_path,
         reference_text=worker_payload.reference_text,
         model_id=worker_payload.model_id,
-        max_new_tokens=worker_payload.max_new_tokens,
+        max_new_tokens=fallback_max_new_tokens,
         chunk_mode=worker_payload.chunk_mode,
         pause_config=worker_payload.pause_config,
         output_format=worker_payload.output_format,
@@ -837,7 +848,13 @@ def _run_local_synthesis_from_worker_payload(
     )
 
     try:
-        job = pipeline.orchestrator.run_synthesis_job(synth_req, job_id=job_id)
+        fallback_orchestrator = PipelineOrchestrator(
+            projects_root=pipeline.project_manager.projects_root,
+            stage_timeouts={"generation": LOCAL_FALLBACK_GENERATION_TIMEOUT_SECONDS},
+            stage_retries={"generation": 0},
+        )
+        fallback_orchestrator._cancelled = pipeline.orchestrator._cancelled
+        job = fallback_orchestrator.run_synthesis_job(synth_req, job_id=job_id)
     except Exception:
         return
 
