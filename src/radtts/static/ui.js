@@ -1716,6 +1716,30 @@ function getSelectedBuiltInVoice() {
   return state.builtinVoices.find((voice) => String(voice.id || "") === String(state.selectedBuiltInSpeaker || "")) || null;
 }
 
+function inferBuiltInTextLanguage(text) {
+  const sample = String(text || "").trim();
+  if (!sample) return "English";
+  if (/[\u4E00-\u9FFF]/.test(sample)) return "Chinese";
+  if (/[\u3040-\u30FF]/.test(sample)) return "Japanese";
+  if (/[\uAC00-\uD7AF]/.test(sample)) return "Korean";
+  return "English";
+}
+
+function builtinVoiceSelectionMessage(voice) {
+  if (!voice) {
+    return "Choose a built-in Qwen voice, then preview or generate.";
+  }
+  const nativeLanguage = String(voice.native_language || "").trim();
+  if (!nativeLanguage) {
+    return `Selected built-in voice: ${state.selectedBuiltInSpeaker}.`;
+  }
+  const scriptLanguage = inferBuiltInTextLanguage(scriptTextNode?.value || "");
+  if (scriptLanguage !== nativeLanguage) {
+    return `${voice.label || voice.id} is native to ${nativeLanguage}. Your script looks ${scriptLanguage}; for best English results, Ryan or Aiden are safer.`;
+  }
+  return `Selected built-in voice: ${voice.label || voice.id} (${nativeLanguage}-native).`;
+}
+
 async function loadBuiltinVoices() {
   if (!builtinVoiceSelectNode) return;
   builtinVoiceSelectNode.innerHTML = '<option value="">Loading built-in voices...</option>';
@@ -1743,7 +1767,7 @@ async function loadBuiltinVoices() {
     }
 
     builtinVoiceSelectNode.value = state.selectedBuiltInSpeaker || "";
-    setBuiltinVoiceStatus("Choose a built-in Qwen voice, then preview or generate.");
+    setBuiltinVoiceStatus(builtinVoiceSelectionMessage(getSelectedBuiltInVoice()));
   } catch (err) {
     builtinVoiceSelectNode.innerHTML = '<option value="">Unable to load built-in voices</option>';
     setBuiltinVoiceStatus(`Could not load built-in voices: ${String(err)}`, true);
@@ -2735,11 +2759,7 @@ function bindVoiceSource() {
     builtinVoiceSelectNode.addEventListener("change", () => {
       state.selectedBuiltInSpeaker = builtinVoiceSelectNode.value || "";
       clearBuiltinVoicePreview();
-      if (state.selectedBuiltInSpeaker) {
-        setBuiltinVoiceStatus(`Selected built-in voice: ${state.selectedBuiltInSpeaker}.`);
-      } else {
-        setBuiltinVoiceStatus("Choose a built-in Qwen voice, then preview or generate.");
-      }
+      setBuiltinVoiceStatus(builtinVoiceSelectionMessage(getSelectedBuiltInVoice()));
     });
   }
 

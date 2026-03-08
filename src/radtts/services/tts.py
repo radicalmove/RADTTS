@@ -344,6 +344,7 @@ class TTSService:
             speaker=speaker,
             instruct=instruct,
             max_new_tokens=max_new_tokens,
+            language=self._infer_builtin_language(text),
         )
         try:
             result = fn(**kwargs)
@@ -416,6 +417,7 @@ class TTSService:
         speaker: str,
         instruct: str | None,
         max_new_tokens: int,
+        language: str | None,
     ) -> dict[str, Any]:
         sig = inspect.signature(fn)
         params = sig.parameters
@@ -426,6 +428,8 @@ class TTSService:
             kwargs["text"] = text
         if "speaker" in names:
             kwargs["speaker"] = speaker
+        if language and "language" in names:
+            kwargs["language"] = language
         if instruct and "instruct" in names:
             kwargs["instruct"] = instruct
         if "max_new_tokens" in names:
@@ -433,6 +437,19 @@ class TTSService:
         elif "max_tokens" in names:
             kwargs["max_tokens"] = int(max_new_tokens)
         return kwargs
+
+    @staticmethod
+    def _infer_builtin_language(text: str) -> str:
+        sample = str(text or "").strip()
+        if not sample:
+            return "English"
+        if any("\u4e00" <= ch <= "\u9fff" for ch in sample):
+            return "Chinese"
+        if any("\u3040" <= ch <= "\u30ff" for ch in sample):
+            return "Japanese"
+        if any("\uac00" <= ch <= "\ud7af" for ch in sample):
+            return "Korean"
+        return "English"
 
     @staticmethod
     def _parse_generation_result(result: Any, model: Any) -> tuple[np.ndarray, int]:

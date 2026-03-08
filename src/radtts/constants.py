@@ -25,15 +25,15 @@ BUILTIN_MODEL_MODE_ALIASES = {
 }
 
 QWEN_CUSTOM_VOICE_SPEAKERS = [
-    {"id": "Aiden", "label": "Aiden"},
-    {"id": "Dylan", "label": "Dylan"},
-    {"id": "Eric", "label": "Eric"},
-    {"id": "Ono_Anna", "label": "Ono Anna"},
-    {"id": "Ryan", "label": "Ryan"},
-    {"id": "Serena", "label": "Serena"},
-    {"id": "Sohee", "label": "Sohee"},
-    {"id": "Uncle_Fu", "label": "Uncle Fu"},
-    {"id": "Vivian", "label": "Vivian"},
+    {"id": "Aiden", "label": "Aiden", "native_language": "English"},
+    {"id": "Dylan", "label": "Dylan", "native_language": "Chinese"},
+    {"id": "Eric", "label": "Eric", "native_language": "Chinese"},
+    {"id": "Ono_Anna", "label": "Ono Anna", "native_language": "Japanese"},
+    {"id": "Ryan", "label": "Ryan", "native_language": "English"},
+    {"id": "Serena", "label": "Serena", "native_language": "Chinese"},
+    {"id": "Sohee", "label": "Sohee", "native_language": "Korean"},
+    {"id": "Uncle_Fu", "label": "Uncle Fu", "native_language": "Chinese"},
+    {"id": "Vivian", "label": "Vivian", "native_language": "Chinese"},
 ]
 
 DEFAULT_PRESETS = {
