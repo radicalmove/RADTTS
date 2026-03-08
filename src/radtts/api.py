@@ -25,6 +25,7 @@ from radtts.models import (
     ProjectAccessRevokeRequest,
     ProjectReferenceAudioUploadRequest,
     ProjectCreateRequest,
+    ProjectReferenceAudioDeleteRequest,
     ProjectScriptDeleteRequest,
     ProjectScriptRestoreRequest,
     ProjectScriptSaveRequest,
@@ -1190,6 +1191,48 @@ def list_reference_audio(request: Request, project_id: str):
 
     items.sort(key=lambda row: str(row.get("updated_at") or ""), reverse=True)
     return {"project_id": _display_project_id(scoped_project_id), "samples": items}
+
+
+@app.post("/projects/{project_id}/reference-audio/delete")
+def delete_reference_audio(request: Request, project_id: str, req: ProjectReferenceAudioDeleteRequest):
+    _require_auth(request)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
+    target_project_id = req.source_project_id.strip() if req.source_project_id else project_id
+    target_scoped_project_id = _resolve_project_id_for_request(request, target_project_id)
+    target_paths = pipeline.project_manager.ensure_project(target_scoped_project_id)
+
+    audio_hash = req.audio_hash.strip().lower()
+    cache = _load_reference_cache(target_paths.manifests)
+    entry = cache.get(audio_hash)
+    if not isinstance(entry, dict):
+        raise HTTPException(status_code=404, detail="saved sample not found")
+
+    saved_path = str(entry.get("audio_path") or "")
+    del cache[audio_hash]
+    _write_reference_cache(target_paths.manifests, cache)
+
+    still_referenced = False
+    for candidate_project_id in pipeline.list_projects():
+        candidate_paths = pipeline.project_manager.get_paths(candidate_project_id)
+        candidate_entry = _load_reference_cache(candidate_paths.manifests).get(audio_hash)
+        if isinstance(candidate_entry, dict):
+            still_referenced = True
+            break
+
+    removed_file = False
+    if not still_referenced and saved_path:
+        candidate_path = _resolve_reference_audio_path(target_paths.root.resolve(), saved_path)
+        if candidate_path is not None and candidate_path.exists():
+            candidate_path.unlink(missing_ok=True)
+            removed_file = True
+
+    return {
+        "project_id": _display_project_id(scoped_project_id),
+        "deleted": True,
+        "audio_hash": audio_hash,
+        "source_project_id": _display_project_id(target_scoped_project_id),
+        "removed_file": removed_file,
+    }
 
 
 @app.get("/projects/{project_id}/script")

@@ -31,6 +31,7 @@ const referenceVoicePaneNode = document.getElementById("reference-voice-pane");
 const builtinVoicePaneNode = document.getElementById("builtin-voice-pane");
 const savedSampleSelectNode = document.getElementById("saved-sample-select");
 const refreshSamplesBtn = document.getElementById("refresh-samples-btn");
+const deleteSavedSampleBtn = document.getElementById("delete-saved-sample-btn");
 const savedSampleStatusNode = document.getElementById("saved-sample-status");
 const recordAudioBtn = document.getElementById("record-audio-btn");
 const recordStatusNode = document.getElementById("record-status");
@@ -1529,6 +1530,7 @@ function setSelectedAudioFile(file) {
   if (savedSampleSelectNode) {
     savedSampleSelectNode.value = "";
   }
+  updateSavedSampleDeleteButtonState();
   if (!audioFileNameNode || !audioDropzoneTitleNode) return;
 
   if (!state.selectedAudioFile) {
@@ -1552,6 +1554,11 @@ function findReferenceSampleByHash(audioHash) {
     }
   }
   return null;
+}
+
+function updateSavedSampleDeleteButtonState() {
+  if (!deleteSavedSampleBtn || !savedSampleSelectNode) return;
+  deleteSavedSampleBtn.disabled = !String(savedSampleSelectNode.value || "");
 }
 
 function applySavedSampleSelection(audioHash) {
@@ -1580,6 +1587,7 @@ function applySavedSampleSelection(audioHash) {
     `Using saved sample: ${sample.source_filename || sample.audio_hash.slice(0, 8)}${ownerHint}.`
   );
   showReferencePreviewFromUrl(sample.artifact_url || "");
+  updateSavedSampleDeleteButtonState();
 }
 
 async function loadReferenceSamples(preferredHash = null) {
@@ -1589,6 +1597,7 @@ async function loadReferenceSamples(preferredHash = null) {
   savedSampleSelectNode.innerHTML = '<option value="">Loading saved samples...</option>';
   savedSampleSelectNode.disabled = true;
   if (refreshSamplesBtn) refreshSamplesBtn.disabled = true;
+  if (deleteSavedSampleBtn) deleteSavedSampleBtn.disabled = true;
 
   try {
     const data = await requestJSON(`/projects/${encodeURIComponent(projectId)}/reference-audio`, "GET");
@@ -1600,6 +1609,7 @@ async function loadReferenceSamples(preferredHash = null) {
       savedSampleSelectNode.innerHTML = '<option value="">No saved samples yet</option>';
       savedSampleSelectNode.value = "";
       setSavedSampleStatus("No saved samples in this project yet.");
+      updateSavedSampleDeleteButtonState();
       return;
     }
 
@@ -1626,12 +1636,64 @@ async function loadReferenceSamples(preferredHash = null) {
     } else {
       setSavedSampleStatus(`Loaded ${samples.length} saved sample${samples.length === 1 ? "" : "s"}.`);
     }
+    updateSavedSampleDeleteButtonState();
   } catch (err) {
     savedSampleSelectNode.innerHTML = '<option value="">Unable to load samples</option>';
     setSavedSampleStatus(`Could not load saved samples: ${String(err)}`, true);
   } finally {
     savedSampleSelectNode.disabled = false;
     if (refreshSamplesBtn) refreshSamplesBtn.disabled = false;
+    updateSavedSampleDeleteButtonState();
+  }
+}
+
+async function handleDeleteSavedSample() {
+  if (!state.activeProjectRef || !savedSampleSelectNode) return;
+
+  const selectedHash = String(savedSampleSelectNode.value || "");
+  if (!selectedHash) return;
+  const sample = findReferenceSampleByHash(selectedHash);
+  if (!sample) {
+    setSavedSampleStatus("Saved sample not found. Refresh and try again.", true);
+    updateSavedSampleDeleteButtonState();
+    return;
+  }
+
+  const sampleLabel = sample.source_filename || sample.audio_hash?.slice(0, 8) || "selected sample";
+  const confirmed = window.confirm(`Delete this saved sample?\n\n${sampleLabel}`);
+  if (!confirmed) return;
+
+  if (deleteSavedSampleBtn) deleteSavedSampleBtn.disabled = true;
+  setSavedSampleStatus("Deleting saved sample...");
+
+  try {
+    await requestJSON(
+      `/projects/${encodeURIComponent(state.activeProjectRef)}/reference-audio/delete`,
+      "POST",
+      {
+        audio_hash: sample.audio_hash,
+        source_project_id: sample.project_id || state.activeProjectRef,
+      }
+    );
+
+    if (state.selectedAudioHash === sample.audio_hash) {
+      state.selectedAudioHash = null;
+      if (!state.selectedAudioFile) {
+        if (audioDropzoneTitleNode) {
+          audioDropzoneTitleNode.textContent = "Drop audio here or click to choose";
+        }
+        if (audioFileNameNode) {
+          audioFileNameNode.textContent = "No file selected.";
+        }
+        clearReferencePreview();
+      }
+    }
+
+    await loadReferenceSamples();
+    setSavedSampleStatus("Saved sample deleted.");
+  } catch (err) {
+    setSavedSampleStatus(`Could not delete saved sample: ${String(err)}`, true);
+    updateSavedSampleDeleteButtonState();
   }
 }
 
@@ -2826,12 +2888,19 @@ function bindAudioSelection() {
         }
         clearReferencePreview();
       }
+      updateSavedSampleDeleteButtonState();
     });
   }
 
   if (refreshSamplesBtn) {
     refreshSamplesBtn.addEventListener("click", () => {
       void loadReferenceSamples();
+    });
+  }
+
+  if (deleteSavedSampleBtn) {
+    deleteSavedSampleBtn.addEventListener("click", () => {
+      void handleDeleteSavedSample();
     });
   }
 

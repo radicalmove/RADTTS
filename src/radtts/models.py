@@ -212,6 +212,11 @@ class ProjectReferenceAudioUploadRequest(BaseModel):
     audio_b64: str = Field(min_length=32)
 
 
+class ProjectReferenceAudioDeleteRequest(BaseModel):
+    audio_hash: str = Field(min_length=16, max_length=128)
+    source_project_id: str | None = Field(default=None, min_length=2, max_length=128)
+
+
 class ProjectScriptSaveRequest(BaseModel):
     text: str = ""
     source: str = Field(default="autosave", min_length=2, max_length=32)

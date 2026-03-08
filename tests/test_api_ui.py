@@ -344,6 +344,45 @@ def test_project_reference_audio_list_returns_saved_samples():
             shutil.rmtree(project_root)
 
 
+def test_project_reference_audio_delete_removes_saved_sample():
+    client = TestClient(app)
+    project_id = f"ui-{uuid.uuid4().hex[:8]}"
+    project_root = Path("projects") / project_id
+    sample_b64 = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw"
+
+    try:
+        created = client.post("/projects", json={"project_id": project_id})
+        assert created.status_code == 200
+
+        uploaded = client.post(
+            f"/projects/{project_id}/reference-audio",
+            json={"filename": "voice-a.wav", "audio_b64": sample_b64},
+        )
+        assert uploaded.status_code == 200
+        uploaded_payload = uploaded.json()
+        saved_path = Path(uploaded_payload["saved_path"])
+        assert saved_path.exists()
+
+        deleted = client.post(
+            f"/projects/{project_id}/reference-audio/delete",
+            json={"audio_hash": uploaded_payload["audio_hash"], "source_project_id": project_id},
+        )
+        assert deleted.status_code == 200
+        deleted_payload = deleted.json()
+        assert deleted_payload["deleted"] is True
+        assert deleted_payload["audio_hash"] == uploaded_payload["audio_hash"]
+        assert deleted_payload["source_project_id"] == project_id
+        assert deleted_payload["removed_file"] is True
+        assert not saved_path.exists()
+
+        listed = client.get(f"/projects/{project_id}/reference-audio")
+        assert listed.status_code == 200
+        assert listed.json()["samples"] == []
+    finally:
+        if project_root.exists():
+            shutil.rmtree(project_root)
+
+
 def test_reference_audio_list_includes_current_user_samples_from_other_projects():
     client = TestClient(app)
     _bridge_user(client, sub=301, email="voice-owner@example.com", display_name="Voice Owner")
@@ -375,6 +414,52 @@ def test_reference_audio_list_includes_current_user_samples_from_other_projects(
         assert target is not None
         assert target["scope"] == "library"
         assert target["project_id"] == project_a
+    finally:
+        for root in created_roots:
+            if root.exists():
+                shutil.rmtree(root)
+
+
+def test_reference_audio_delete_can_remove_library_sample_from_origin_project():
+    client = TestClient(app)
+    _bridge_user(client, sub=302, email="voice-owner2@example.com", display_name="Voice Owner 2")
+
+    project_a = f"ui-a-{uuid.uuid4().hex[:6]}"
+    project_b = f"ui-b-{uuid.uuid4().hex[:6]}"
+    created_roots: list[Path] = []
+    sample_b64 = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw"
+
+    try:
+        created_a = client.post("/projects", json={"project_id": project_a})
+        created_b = client.post("/projects", json={"project_id": project_b})
+        assert created_a.status_code == 200
+        assert created_b.status_code == 200
+        created_roots.append(Path(created_a.json()["project_root"]))
+        created_roots.append(Path(created_b.json()["project_root"]))
+
+        uploaded = client.post(
+            f"/projects/{project_a}/reference-audio",
+            json={"filename": "voice-a.wav", "audio_b64": sample_b64},
+        )
+        assert uploaded.status_code == 200
+        uploaded_payload = uploaded.json()
+
+        listed_before = client.get(f"/projects/{project_b}/reference-audio")
+        assert listed_before.status_code == 200
+        assert any(row["audio_hash"] == uploaded_payload["audio_hash"] for row in listed_before.json()["samples"])
+
+        deleted = client.post(
+            f"/projects/{project_b}/reference-audio/delete",
+            json={"audio_hash": uploaded_payload["audio_hash"], "source_project_id": project_a},
+        )
+        assert deleted.status_code == 200
+        deleted_payload = deleted.json()
+        assert deleted_payload["deleted"] is True
+        assert deleted_payload["source_project_id"] == project_a
+
+        listed_after = client.get(f"/projects/{project_b}/reference-audio")
+        assert listed_after.status_code == 200
+        assert not any(row["audio_hash"] == uploaded_payload["audio_hash"] for row in listed_after.json()["samples"])
     finally:
         for root in created_roots:
             if root.exists():
