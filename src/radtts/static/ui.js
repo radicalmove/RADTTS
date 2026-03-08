@@ -30,6 +30,7 @@ const refreshSamplesBtn = document.getElementById("refresh-samples-btn");
 const savedSampleStatusNode = document.getElementById("saved-sample-status");
 const recordAudioBtn = document.getElementById("record-audio-btn");
 const recordStatusNode = document.getElementById("record-status");
+const referencePreviewLabelNode = document.getElementById("reference-preview-label");
 const recordPreviewNode = document.getElementById("record-preview");
 
 const scriptTextNode = document.getElementById("script-text");
@@ -132,7 +133,7 @@ const state = {
   mediaRecorder: null,
   recordingStream: null,
   recordingChunks: [],
-  recordingPreviewUrl: null,
+  referencePreviewObjectUrl: null,
   referenceSamples: [],
   expectedRemoteWorker: false,
   computeMode: "idle",
@@ -1301,7 +1302,7 @@ function applyActiveProject(projectRef, projectLabel = projectRef) {
   state.canManageActiveProject = false;
   state.selectedAudioHash = null;
   state.referenceSamples = [];
-  clearRecordingPreview();
+  clearReferencePreview();
   setSelectedAudioFile(null);
   if (savedSampleSelectNode) savedSampleSelectNode.innerHTML = '<option value="">Loading saved samples...</option>';
   setSavedSampleStatus("Loading saved samples...");
@@ -1339,12 +1340,14 @@ function setSelectedAudioFile(file) {
   if (!state.selectedAudioFile) {
     audioDropzoneTitleNode.textContent = "Drop audio here or click to choose";
     audioFileNameNode.textContent = "No file selected.";
+    clearReferencePreview();
     return;
   }
 
   audioDropzoneTitleNode.textContent = "Voice sample selected";
   const mb = (state.selectedAudioFile.size / (1024 * 1024)).toFixed(2);
   audioFileNameNode.textContent = `${state.selectedAudioFile.name} (${mb} MB)`;
+  showReferencePreviewFromFile(state.selectedAudioFile);
 }
 
 function findReferenceSampleByHash(audioHash) {
@@ -1382,6 +1385,7 @@ function applySavedSampleSelection(audioHash) {
   setSavedSampleStatus(
     `Using saved sample: ${sample.source_filename || sample.audio_hash.slice(0, 8)}${ownerHint}.`
   );
+  showReferencePreviewFromUrl(sample.artifact_url || "");
 }
 
 async function loadReferenceSamples(preferredHash = null) {
@@ -1457,16 +1461,48 @@ async function attachAudioFileToProject(file, originLabel = "Audio") {
   }
 }
 
-function clearRecordingPreview() {
+function clearReferencePreview() {
+  if (referencePreviewLabelNode) {
+    referencePreviewLabelNode.hidden = true;
+  }
   if (!recordPreviewNode) return;
   recordPreviewNode.hidden = true;
   recordPreviewNode.pause();
   recordPreviewNode.removeAttribute("src");
   recordPreviewNode.load();
-  if (state.recordingPreviewUrl) {
-    URL.revokeObjectURL(state.recordingPreviewUrl);
-    state.recordingPreviewUrl = null;
+  if (state.referencePreviewObjectUrl) {
+    URL.revokeObjectURL(state.referencePreviewObjectUrl);
+    state.referencePreviewObjectUrl = null;
   }
+}
+
+function showReferencePreviewFromUrl(url) {
+  if (referencePreviewLabelNode) {
+    referencePreviewLabelNode.hidden = false;
+  }
+  if (!recordPreviewNode) return;
+  clearReferencePreview();
+  if (!url) return;
+  if (referencePreviewLabelNode) {
+    referencePreviewLabelNode.hidden = false;
+  }
+  recordPreviewNode.src = url;
+  recordPreviewNode.hidden = false;
+}
+
+function showReferencePreviewFromFile(file) {
+  if (referencePreviewLabelNode) {
+    referencePreviewLabelNode.hidden = false;
+  }
+  if (!recordPreviewNode) return;
+  clearReferencePreview();
+  if (!file) return;
+  if (referencePreviewLabelNode) {
+    referencePreviewLabelNode.hidden = false;
+  }
+  state.referencePreviewObjectUrl = URL.createObjectURL(file);
+  recordPreviewNode.src = state.referencePreviewObjectUrl;
+  recordPreviewNode.hidden = false;
 }
 
 function stopRecordingStreamTracks() {
@@ -2040,7 +2076,7 @@ function bindProjectGateway() {
       setGenerateStatus("");
       resetProgressUi();
       setSelectedAudioFile(null);
-      clearRecordingPreview();
+      clearReferencePreview();
       resetWorkerStatusUi();
       resetScriptEditorState();
       if (savedSampleSelectNode) {
@@ -2214,6 +2250,7 @@ function bindAudioSelection() {
         if (audioFileNameNode) {
           audioFileNameNode.textContent = "No file selected.";
         }
+        clearReferencePreview();
       }
     });
   }
@@ -2312,13 +2349,6 @@ function bindRecording() {
         const extension = extensionForMimeType(recordedMimeType);
         const filename = `recorded-voice-${stamp}.${extension}`;
         const file = new File([blob], filename, { type: recordedMimeType });
-
-        clearRecordingPreview();
-        if (recordPreviewNode) {
-          state.recordingPreviewUrl = URL.createObjectURL(blob);
-          recordPreviewNode.src = state.recordingPreviewUrl;
-          recordPreviewNode.hidden = false;
-        }
 
         setSelectedAudioFile(file);
         await attachAudioFileToProject(file, "Recorded audio");

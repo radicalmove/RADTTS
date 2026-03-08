@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 
 import pytest
 
@@ -117,3 +118,68 @@ def test_worker_client_emits_progress_updates(tmp_path: Path, monkeypatch):
     assert result["stage_durations_seconds"]["generation"] >= 0
     assert result["stage_durations_seconds"]["stitching"] >= 0
     assert result["stage_durations_seconds"]["captioning"] >= 0
+
+
+def test_worker_client_times_out_generation_and_reports_failure(tmp_path: Path, monkeypatch):
+    client = WorkerClient(
+        server_url="http://example.test",
+        config_path=tmp_path / "worker.json",
+        worker_name="test-worker",
+        invite_token=None,
+        poll_seconds=5,
+    )
+    client.worker_id = "worker-1"
+    client.api_key = "api-key"
+    client.generation_timeout_seconds = 0.05
+
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    payload = WorkerSynthesisEnqueueRequest(
+        project_id="proj-worker",
+        text="One sentence.",
+        reference_audio_b64="QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw",
+        reference_audio_filename="reference.wav",
+        reference_text="hello",
+        model_id=SUPPORTED_BASE_MODELS[0],
+        max_new_tokens=400,
+        chunk_mode="single",
+        pause_config=PauseConfig(seed=1),
+        output_format=OutputFormat.WAV,
+        output_name="worker-timeout",
+        generate_transcript=False,
+        voice_clone_authorized=True,
+    ).model_dump(mode="json")
+
+    def fake_post_json(path: str, payload: dict[str, object], timeout: int = 120):
+        calls.append((path, payload))
+        if path == "/workers/pull":
+            return {
+                "job": {
+                    "job_id": "job-timeout",
+                    "project_id": "proj-worker",
+                    "payload": payload_data,
+                }
+            }
+        return {}
+
+    payload_data = payload
+    monkeypatch.setattr(client, "_post_json", fake_post_json)
+    monkeypatch.setattr(
+        client.tts_service,
+        "load_model_with_runtime",
+        lambda model_id: (object(), f"tts model={model_id} runtime device=mps:0 dtype=torch.float32"),
+    )
+
+    def slow_synthesize(req, output_dir, *, on_progress=None, cancel_check=None):
+        time.sleep(0.2)
+        output_path = output_dir / f"{req.output_name}.wav"
+        output_path.write_bytes(b"RIFF")
+        return output_path, [], "reference text"
+
+    monkeypatch.setattr(client.tts_service, "synthesize", slow_synthesize)
+
+    client.run(once=True)
+
+    fail_calls = [payload for path, payload in calls if path.endswith("/fail")]
+    assert len(fail_calls) == 1
+    assert "timed out" in str(fail_calls[0]["error"])

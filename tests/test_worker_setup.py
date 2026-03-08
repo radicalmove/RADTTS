@@ -4,7 +4,9 @@ from pathlib import Path
 
 from radtts.worker_setup import (
     build_worker_command_args,
+    default_worker_path,
     linux_service_unit_text,
+    macos_launch_agent_payload,
     normalize_platform,
     windows_task_command,
 )
@@ -55,3 +57,23 @@ def test_windows_task_command_references_worker_module_and_flags():
     assert "https://worker.example.com" in command
     assert "--config-path" in command
     assert "worker.json" in command
+
+
+def test_default_worker_path_includes_homebrew_and_system_paths():
+    value = default_worker_path()
+    assert "/opt/homebrew/bin" in value
+    assert "/usr/local/bin" in value
+    assert "/usr/bin" in value
+
+
+def test_macos_launch_agent_payload_sets_environment_path(tmp_path: Path):
+    payload = macos_launch_agent_payload(
+        label="com.radtts.worker",
+        python_exe=Path("/usr/local/bin/python3"),
+        server_url="https://example.com",
+        config_path=tmp_path / ".radtts" / "worker.json",
+        poll_seconds=5,
+    )
+    env = payload["EnvironmentVariables"]
+    assert isinstance(env, dict)
+    assert "/opt/homebrew/bin" in str(env["PATH"])

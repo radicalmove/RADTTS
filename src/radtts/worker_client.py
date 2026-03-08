@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import logging
+import os
 import re
 import socket
 import tempfile
@@ -26,8 +28,11 @@ from radtts.services.captions import CaptionService
 from radtts.services.quality import QualityService
 from radtts.services.tts import TTSService
 from radtts.utils.audio import probe_duration_seconds
+from radtts.utils.runtime import run_with_retry_timeout
 
 _GENERATION_CHUNK_RE = re.compile(r"^generation chunk (\d+)/(\d+)$", re.IGNORECASE)
+DEFAULT_WORKER_GENERATION_TIMEOUT_SECONDS = 300
+LOG = logging.getLogger("radtts.worker")
 
 
 class WorkerClient:
@@ -53,6 +58,10 @@ class WorkerClient:
         self.tts_service = TTSService()
         self.caption_service = CaptionService()
         self.quality_service = QualityService()
+        self.generation_timeout_seconds = max(
+            30,
+            int(os.environ.get("RADTTS_WORKER_GENERATION_TIMEOUT_SECONDS", DEFAULT_WORKER_GENERATION_TIMEOUT_SECONDS)),
+        )
 
     def _post_json(self, path: str, payload: dict[str, Any], timeout: int = 120) -> dict[str, Any]:
         url = f"{self.server_url}{path}"
@@ -83,6 +92,7 @@ class WorkerClient:
     def ensure_registered(self) -> None:
         self._load_config()
         if self.worker_id and self.api_key and not self.invite_token:
+            LOG.info("reusing worker credentials worker_id=%s", self.worker_id)
             return
 
         if not self.invite_token:
@@ -101,10 +111,19 @@ class WorkerClient:
         self.worker_id = response["worker_id"]
         self.api_key = response["api_key"]
         self._save_config()
+        LOG.info("registered worker worker_id=%s name=%s", self.worker_id, self.worker_name)
 
     def run(self, *, once: bool = False) -> None:
         self.ensure_registered()
         assert self.worker_id and self.api_key
+        LOG.info(
+            "worker loop starting worker_id=%s server=%s poll_seconds=%s generation_timeout_seconds=%s",
+            self.worker_id,
+            self.server_url,
+            self.poll_seconds,
+            self.generation_timeout_seconds,
+        )
+        idle_polls = 0
 
         while True:
             pull_response = self._post_json(
@@ -114,22 +133,46 @@ class WorkerClient:
             )
             job = pull_response.get("job")
             if not job:
+                idle_polls += 1
+                if idle_polls == 1 or idle_polls % 12 == 0:
+                    LOG.info("no job available; continuing to poll")
                 if once:
                     return
                 time.sleep(self.poll_seconds)
                 continue
 
+            idle_polls = 0
             job_id = job["job_id"]
+            payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+            LOG.info(
+                "claimed job job_id=%s project_id=%s model=%s max_new_tokens=%s chunk_mode=%s output_format=%s transcript=%s text_chars=%s has_reference_text=%s",
+                job_id,
+                job.get("project_id"),
+                payload.get("model_id"),
+                payload.get("max_new_tokens"),
+                payload.get("chunk_mode"),
+                payload.get("output_format"),
+                payload.get("generate_transcript"),
+                len(str(payload.get("text") or "")),
+                bool(str(payload.get("reference_text") or "").strip()),
+            )
             try:
-                complete_payload = self._process_synthesis_job(job_id, job["payload"])
+                complete_payload = self._process_synthesis_job(job_id, payload)
                 complete_payload.update({"worker_id": self.worker_id, "api_key": self.api_key})
                 self._post_json(
                     f"/workers/jobs/{job_id}/complete",
                     complete_payload,
                     timeout=1800,
                 )
+                LOG.info(
+                    "completed job job_id=%s duration_seconds=%s stage_durations=%s",
+                    job_id,
+                    complete_payload.get("duration_seconds"),
+                    complete_payload.get("stage_durations_seconds"),
+                )
             except Exception as exc:  # noqa: BLE001
                 error_text = str(exc).strip() or f"{exc.__class__.__name__}: {exc!r}"
+                LOG.exception("job failed job_id=%s error=%s", job_id, error_text)
                 self._post_json(
                     f"/workers/jobs/{job_id}/fail",
                     {
@@ -172,6 +215,17 @@ class WorkerClient:
             tmp_path = Path(tmp)
             reference_path = tmp_path / req.reference_audio_filename
             reference_path.write_bytes(base64.b64decode(req.reference_audio_b64.encode("utf-8")))
+            try:
+                reference_duration_seconds = round(probe_duration_seconds(reference_path), 3)
+            except Exception:
+                reference_duration_seconds = None
+            LOG.info(
+                "starting synthesis job_id=%s reference_audio=%s reference_seconds=%s reference_text_chars=%s",
+                job_id,
+                req.reference_audio_filename,
+                reference_duration_seconds,
+                len(str(req.reference_text or "")),
+            )
             stage_durations_seconds: dict[str, float] = {}
             progress_state = {
                 "progress": 0.18,
@@ -201,6 +255,7 @@ class WorkerClient:
                 model_load_started_at = time.monotonic()
                 _, runtime_summary = self.tts_service.load_model_with_runtime(req.model_id)
                 stage_durations_seconds["model_load"] = round(time.monotonic() - model_load_started_at, 3)
+                LOG.info("model loaded job_id=%s %s", job_id, runtime_summary)
                 emit_progress(0.30, stage="model_load", detail=runtime_summary)
                 synth_started_at = time.monotonic()
                 stitching_started_at: float | None = None
@@ -242,10 +297,16 @@ class WorkerClient:
                     output_name=req.output_name,
                     voice_clone_authorized=True,
                 )
-                output_path, pause_seconds, reference_text = self.tts_service.synthesize(
-                    synth_req,
-                    output_dir=tmp_path,
-                    on_progress=on_tts_progress,
+                output_path, pause_seconds, reference_text = run_with_retry_timeout(
+                    stage_name="worker_generation",
+                    fn=lambda: self.tts_service.synthesize(
+                        synth_req,
+                        output_dir=tmp_path,
+                        on_progress=on_tts_progress,
+                    ),
+                    timeout_seconds=self.generation_timeout_seconds,
+                    retries=0,
+                    on_log=lambda message: LOG.info("job_id=%s %s", job_id, message),
                 )
                 synth_finished_at = time.monotonic()
 
@@ -318,6 +379,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        force=True,
+    )
     args = build_parser().parse_args()
     client = WorkerClient(
         server_url=args.server_url,

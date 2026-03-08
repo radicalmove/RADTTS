@@ -501,6 +501,12 @@ body.modal-open {
   flex-wrap: wrap;
 }
 
+.preview-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #555;
+}
+
 .record-btn {
   min-width: 140px;
 }

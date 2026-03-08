@@ -16,6 +16,23 @@ from pathlib import Path
 import requests
 
 
+def default_worker_path() -> str:
+    preferred = [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+    ]
+    existing = [segment for segment in os.environ.get("PATH", "").split(":") if segment]
+    merged: list[str] = []
+    for segment in preferred + existing:
+        if segment not in merged:
+            merged.append(segment)
+    return ":".join(merged)
+
+
 def normalize_platform(value: str) -> str:
     raw = value.strip().lower()
     if raw == "auto":
@@ -102,6 +119,9 @@ def macos_launch_agent_payload(
             config_path=config_path,
             poll_seconds=poll_seconds,
         ),
+        "EnvironmentVariables": {
+            "PATH": default_worker_path(),
+        },
         "RunAtLoad": True,
         "KeepAlive": True,
         "StandardOutPath": str(stdout_path),
