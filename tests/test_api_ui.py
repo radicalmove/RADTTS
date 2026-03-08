@@ -549,3 +549,62 @@ def test_project_script_restore_and_deduplicates_identical_save():
     finally:
         if project_root.exists():
             shutil.rmtree(project_root)
+
+
+def test_project_script_delete_version_updates_current_selection():
+    client = TestClient(app)
+    project_id = f"ui-{uuid.uuid4().hex[:8]}"
+    project_root = Path("projects") / project_id
+
+    try:
+        created = client.post("/projects", json={"project_id": project_id})
+        assert created.status_code == 200
+
+        first = client.post(
+            f"/projects/{project_id}/script",
+            json={"text": "Version one text.", "source": "manual"},
+        )
+        assert first.status_code == 200
+        first_version_id = first.json()["current_version_id"]
+
+        second = client.post(
+            f"/projects/{project_id}/script",
+            json={"text": "Version two text.", "source": "manual"},
+        )
+        assert second.status_code == 200
+        second_payload = second.json()
+        second_version_id = second_payload["current_version_id"]
+
+        deleted = client.post(
+            f"/projects/{project_id}/script/delete",
+            json={"version_id": first_version_id},
+        )
+        assert deleted.status_code == 200
+        deleted_payload = deleted.json()
+        assert deleted_payload["deleted"] is True
+        assert deleted_payload["deleted_version_id"] == first_version_id
+        assert deleted_payload["current_version_id"] == second_version_id
+        assert deleted_payload["text"] == "Version two text."
+        assert [row["version_id"] for row in deleted_payload["versions"]] == [second_version_id]
+
+        deleted_current = client.post(
+            f"/projects/{project_id}/script/delete",
+            json={"version_id": second_version_id},
+        )
+        assert deleted_current.status_code == 200
+        deleted_current_payload = deleted_current.json()
+        assert deleted_current_payload["deleted"] is True
+        assert deleted_current_payload["deleted_version_id"] == second_version_id
+        assert deleted_current_payload["current_version_id"] == ""
+        assert deleted_current_payload["text"] == ""
+        assert deleted_current_payload["versions"] == []
+
+        loaded = client.get(f"/projects/{project_id}/script")
+        assert loaded.status_code == 200
+        loaded_payload = loaded.json()
+        assert loaded_payload["current_version_id"] == ""
+        assert loaded_payload["text"] == ""
+        assert loaded_payload["versions"] == []
+    finally:
+        if project_root.exists():
+            shutil.rmtree(project_root)

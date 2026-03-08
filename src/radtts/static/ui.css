@@ -489,7 +489,8 @@ body.modal-open {
   min-width: 92px;
 }
 
-#restore-script-version-btn {
+#restore-script-version-btn,
+#delete-script-version-btn {
   min-width: 180px;
 }
 
@@ -943,7 +944,8 @@ button.worker-mini-btn {
     max-height: calc(100vh - 20px);
   }
 
-  #restore-script-version-btn {
+  #restore-script-version-btn,
+  #delete-script-version-btn {
     min-width: 0;
   }
 

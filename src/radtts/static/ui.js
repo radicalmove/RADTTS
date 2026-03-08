@@ -60,6 +60,7 @@ const scriptFileInputNode = document.getElementById("script-file");
 const scriptFileStatusNode = document.getElementById("script-file-status");
 const scriptVersionSelectNode = document.getElementById("script-version-select");
 const restoreScriptVersionBtn = document.getElementById("restore-script-version-btn");
+const deleteScriptVersionBtn = document.getElementById("delete-script-version-btn");
 const scriptSaveStatusNode = document.getElementById("script-save-status");
 
 const qualityNode = document.getElementById("quality-level");
@@ -849,11 +850,16 @@ function currentScriptVersionMeta() {
 }
 
 function updateRestoreScriptButtonState() {
-  if (!restoreScriptVersionBtn || !scriptVersionSelectNode) return;
+  if (!scriptVersionSelectNode) return;
   const selectedVersion = String(scriptVersionSelectNode.value || "");
   const hasSelection = Boolean(selectedVersion);
   const selectedIsCurrent = selectedVersion === state.currentScriptVersionId;
-  restoreScriptVersionBtn.disabled = !hasSelection || selectedIsCurrent;
+  if (restoreScriptVersionBtn) {
+    restoreScriptVersionBtn.disabled = !hasSelection || selectedIsCurrent;
+  }
+  if (deleteScriptVersionBtn) {
+    deleteScriptVersionBtn.disabled = !hasSelection;
+  }
 }
 
 function refreshScriptVersionSelect() {
@@ -1032,6 +1038,38 @@ async function handleRestoreScriptVersion() {
     setScriptSaveStatus(when ? `Restored script from ${when}.` : "Restored selected script version.");
   } catch (err) {
     setScriptSaveStatus(`Could not restore script version: ${String(err)}`, true);
+  } finally {
+    updateRestoreScriptButtonState();
+  }
+}
+
+async function handleDeleteScriptVersion() {
+  if (!state.activeProjectRef || !scriptVersionSelectNode) return;
+
+  const versionId = String(scriptVersionSelectNode.value || "");
+  if (!versionId) return;
+
+  const version = state.scriptVersions.find((row) => String(row.version_id || "") === versionId) || null;
+  const versionLabel = formatScriptVersionLabel(version || { version_id: versionId });
+  const confirmed = window.confirm(`Delete this saved script version?\n\n${versionLabel}`);
+  if (!confirmed) return;
+
+  clearScriptSaveTimer();
+  state.pendingScriptSaveSource = null;
+  setScriptSaveStatus("Deleting selected version...");
+  if (restoreScriptVersionBtn) restoreScriptVersionBtn.disabled = true;
+  if (deleteScriptVersionBtn) deleteScriptVersionBtn.disabled = true;
+
+  try {
+    const data = await requestJSON(
+      `/projects/${encodeURIComponent(state.activeProjectRef)}/script/delete`,
+      "POST",
+      { version_id: versionId }
+    );
+    applyScriptPayload(data, { replaceText: true });
+    setScriptSaveStatus("Deleted selected script version.");
+  } catch (err) {
+    setScriptSaveStatus(`Could not delete script version: ${String(err)}`, true);
   } finally {
     updateRestoreScriptButtonState();
   }
@@ -2942,6 +2980,12 @@ function bindScriptPersistence() {
   if (restoreScriptVersionBtn) {
     restoreScriptVersionBtn.addEventListener("click", () => {
       void handleRestoreScriptVersion();
+    });
+  }
+
+  if (deleteScriptVersionBtn) {
+    deleteScriptVersionBtn.addEventListener("click", () => {
+      void handleDeleteScriptVersion();
     });
   }
 }

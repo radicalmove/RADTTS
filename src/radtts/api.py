@@ -25,6 +25,7 @@ from radtts.models import (
     ProjectAccessRevokeRequest,
     ProjectReferenceAudioUploadRequest,
     ProjectCreateRequest,
+    ProjectScriptDeleteRequest,
     ProjectScriptRestoreRequest,
     ProjectScriptSaveRequest,
     SimpleSynthesisRequest,
@@ -1274,6 +1275,42 @@ def restore_project_script(request: Request, project_id: str, req: ProjectScript
     return {
         "project_id": _display_project_id(scoped_project_id),
         "restored": True,
+        **payload,
+    }
+
+
+@app.post("/projects/{project_id}/script/delete")
+def delete_project_script_version(request: Request, project_id: str, req: ProjectScriptDeleteRequest):
+    _require_auth(request)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
+    paths = pipeline.project_manager.ensure_project(scoped_project_id)
+
+    script_versions = _load_script_versions(paths.manifests)
+    rows = script_versions.get("versions") if isinstance(script_versions.get("versions"), list) else []
+    version_id = req.version_id.strip()
+    remaining_rows = [
+        row
+        for row in rows
+        if str((row or {}).get("version_id") or "") != version_id
+    ]
+    if len(remaining_rows) == len(rows):
+        raise HTTPException(status_code=404, detail="script version not found")
+
+    current_version_id = str(script_versions.get("current_version_id") or "").strip()
+    if current_version_id == version_id:
+        current_version_id = str((remaining_rows[-1] or {}).get("version_id") or "") if remaining_rows else ""
+
+    updated_payload = {
+        "current_version_id": current_version_id,
+        "versions": remaining_rows,
+    }
+    _write_script_versions(paths.manifests, updated_payload)
+
+    payload = _script_payload_for_response(updated_payload)
+    return {
+        "project_id": _display_project_id(scoped_project_id),
+        "deleted": True,
+        "deleted_version_id": version_id,
         **payload,
     }
 

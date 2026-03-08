@@ -221,6 +221,10 @@ class ProjectScriptRestoreRequest(BaseModel):
     version_id: str = Field(min_length=4, max_length=64)
 
 
+class ProjectScriptDeleteRequest(BaseModel):
+    version_id: str = Field(min_length=4, max_length=64)
+
+
 class ProjectAccessGrantRequest(BaseModel):
     email: str = Field(min_length=3)
 
