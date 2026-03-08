@@ -100,7 +100,9 @@ def test_builtin_voices_endpoint_returns_voice_list():
     payload = response.json()
     assert payload["quality"] == "normal"
     assert payload["model_id"].endswith("CustomVoice")
-    assert any(voice["id"] == "Vivian" for voice in payload["voices"])
+    vivian = next((voice for voice in payload["voices"] if voice["id"] == "Vivian"), None)
+    assert vivian is not None
+    assert vivian["preview_url"] == "/static/builtin_voice_previews/Vivian.mp3"
 
 
 def test_builtin_voice_preview_returns_audio(monkeypatch):

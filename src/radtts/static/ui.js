@@ -1674,6 +1674,10 @@ function clearBuiltinVoicePreview() {
   }
 }
 
+function getSelectedBuiltInVoice() {
+  return state.builtinVoices.find((voice) => String(voice.id || "") === String(state.selectedBuiltInSpeaker || "")) || null;
+}
+
 async function loadBuiltinVoices() {
   if (!builtinVoiceSelectNode) return;
   builtinVoiceSelectNode.innerHTML = '<option value="">Loading built-in voices...</option>';
@@ -2706,6 +2710,19 @@ function bindVoiceSource() {
       void (async () => {
         if (!state.selectedBuiltInSpeaker) {
           setBuiltinVoiceStatus("Choose a built-in voice first.", true);
+          return;
+        }
+        const selectedVoice = getSelectedBuiltInVoice();
+        if (selectedVoice && selectedVoice.preview_url && builtinVoicePreviewNode) {
+          clearBuiltinVoicePreview();
+          builtinVoicePreviewNode.src = String(selectedVoice.preview_url);
+          builtinVoicePreviewNode.hidden = false;
+          try {
+            await builtinVoicePreviewNode.play();
+          } catch (err) {
+            void err;
+          }
+          setBuiltinVoiceStatus(`Preview ready for ${state.selectedBuiltInSpeaker}.`);
           return;
         }
         previewBuiltinVoiceBtn.disabled = true;

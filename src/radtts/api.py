@@ -530,6 +530,10 @@ def _builtin_voice_preview_cache_path(*, model_id: str, speaker: str, preview_te
     return BUILTIN_VOICE_PREVIEW_CACHE_DIR / f"{digest}.wav"
 
 
+def _builtin_voice_preview_url(speaker: str) -> str:
+    return f"/static/builtin_voice_previews/{speaker}.mp3"
+
+
 def _normalize_script_entry(raw: dict[str, object]) -> dict[str, object] | None:
     version_id = str(raw.get("version_id") or "").strip()
     if not version_id:
@@ -1790,7 +1794,13 @@ def list_builtin_voices(request: Request, quality: str = "normal"):
     return {
         "quality": quality,
         "model_id": model_id,
-        "voices": QWEN_CUSTOM_VOICE_SPEAKERS,
+        "voices": [
+            {
+                **voice,
+                "preview_url": _builtin_voice_preview_url(str(voice["id"])),
+            }
+            for voice in QWEN_CUSTOM_VOICE_SPEAKERS
+        ],
         "preview_text": BUILTIN_VOICE_PREVIEW_TEXT,
     }
 
