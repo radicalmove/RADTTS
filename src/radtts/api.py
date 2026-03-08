@@ -1563,28 +1563,26 @@ def synthesize_simple(request: Request, req: SimpleSynthesisRequest):
 
     if SIMPLE_SYNTH_DEFAULT_TO_WORKER:
         _cancel_existing_project_worker_jobs(scoped_project_id)
-        worker_req = WorkerSynthesisEnqueueRequest(
-            project_id=scoped_project_id,
-            text=scripted_text,
-            voice_source=req.voice_source,
-            reference_audio_b64=(
-                base64.b64encode(reference_path.read_bytes()).decode("utf-8")
-                if reference_path is not None
-                else None
-            ),
-            reference_audio_filename=(source_filename or reference_path.name) if reference_path is not None else None,
-            reference_text=reference_text,
-            model_id=model_id,
-            built_in_speaker=req.built_in_speaker,
-            built_in_instruct=req.built_in_instruct,
-            max_new_tokens=max_new_tokens,
-            chunk_mode="sentence",
-            pause_config=pause_config,
-            output_format=req.output_format,
-            output_name=output_name,
-            generate_transcript=req.generate_transcript,
-            voice_clone_authorized=True,
-        )
+        worker_payload: dict[str, object] = {
+            "project_id": scoped_project_id,
+            "text": scripted_text,
+            "voice_source": req.voice_source,
+            "reference_text": reference_text,
+            "model_id": model_id,
+            "built_in_speaker": req.built_in_speaker,
+            "built_in_instruct": req.built_in_instruct,
+            "max_new_tokens": max_new_tokens,
+            "chunk_mode": "sentence",
+            "pause_config": pause_config,
+            "output_format": req.output_format,
+            "output_name": output_name,
+            "generate_transcript": req.generate_transcript,
+            "voice_clone_authorized": True,
+        }
+        if req.voice_source == VoiceSource.REFERENCE and reference_path is not None:
+            worker_payload["reference_audio_b64"] = base64.b64encode(reference_path.read_bytes()).decode("utf-8")
+            worker_payload["reference_audio_filename"] = source_filename or reference_path.name
+        worker_req = WorkerSynthesisEnqueueRequest(**worker_payload)
         job_id = worker_manager.enqueue_synthesis_job(worker_req)
         worker_snapshot = _worker_availability_snapshot()
         if WORKER_FALLBACK_TO_LOCAL:

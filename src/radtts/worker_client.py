@@ -211,7 +211,13 @@ class WorkerClient:
             return
 
     def _process_synthesis_job(self, job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        req = WorkerSynthesisEnqueueRequest(**payload)
+        normalized_payload = dict(payload)
+        if str(normalized_payload.get("voice_source") or "").lower() == "builtin":
+            if normalized_payload.get("reference_audio_b64") is None:
+                normalized_payload.pop("reference_audio_b64", None)
+            if normalized_payload.get("reference_audio_filename") is None:
+                normalized_payload.pop("reference_audio_filename", None)
+        req = WorkerSynthesisEnqueueRequest(**normalized_payload)
 
         with tempfile.TemporaryDirectory(prefix="radtts_worker_") as tmp:
             tmp_path = Path(tmp)

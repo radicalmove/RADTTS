@@ -133,8 +133,8 @@ class WorkerSynthesisEnqueueRequest(BaseModel):
     project_id: str = Field(min_length=2)
     text: str = Field(min_length=1)
     voice_source: VoiceSource = VoiceSource.REFERENCE
-    reference_audio_b64: str | None = Field(default=None, min_length=32)
-    reference_audio_filename: str | None = Field(default=None, min_length=1)
+    reference_audio_b64: str | None = None
+    reference_audio_filename: str | None = None
     reference_text: str | None = None
     model_id: str = SUPPORTED_BASE_MODELS[1]
     built_in_speaker: str | None = None
@@ -172,8 +172,8 @@ class SimpleSynthesisRequest(BaseModel):
     project_id: str = Field(min_length=2)
     text: str = Field(min_length=1)
     voice_source: VoiceSource = VoiceSource.REFERENCE
-    reference_audio_b64: str | None = Field(default=None, min_length=32)
-    reference_audio_filename: str | None = Field(default=None, min_length=1)
+    reference_audio_b64: str | None = None
+    reference_audio_filename: str | None = None
     reference_audio_hash: str | None = Field(default=None, min_length=16)
     built_in_speaker: str | None = None
     built_in_instruct: str | None = None

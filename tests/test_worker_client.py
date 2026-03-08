@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from radtts.constants import SUPPORTED_BASE_MODELS
+from radtts.constants import SUPPORTED_BASE_MODELS, SUPPORTED_CUSTOM_MODELS
 from radtts.models import CaptionArtifacts, OutputFormat, PauseConfig, QualityReport, WorkerSynthesisEnqueueRequest
 from radtts.worker_client import WorkerClient
 
@@ -183,3 +183,63 @@ def test_worker_client_times_out_generation_and_reports_failure(tmp_path: Path, 
     fail_calls = [payload for path, payload in calls if path.endswith("/fail")]
     assert len(fail_calls) == 1
     assert "timed out" in str(fail_calls[0]["error"])
+
+
+def test_worker_client_accepts_builtin_payload_with_null_reference_fields(tmp_path: Path, monkeypatch):
+    client = WorkerClient(
+        server_url="http://example.test",
+        config_path=tmp_path / "worker.json",
+        worker_name="test-worker",
+        invite_token=None,
+        poll_seconds=5,
+    )
+    client.worker_id = "worker-1"
+    client.api_key = "api-key"
+
+    monkeypatch.setattr(client, "_post_json", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        client.tts_service,
+        "load_model_with_runtime",
+        lambda model_id: (object(), f"tts model={model_id} runtime device=mps:0 dtype=torch.float32"),
+    )
+    monkeypatch.setattr("radtts.worker_client.probe_duration_seconds", lambda path: 1.2)
+    monkeypatch.setattr(
+        client.quality_service,
+        "evaluate",
+        lambda **_: QualityReport(
+            speech_rate_wpm=120.0,
+            pause_stats={"min": 0.0, "max": 0.0, "mean": 0.0, "stddev": 0.0},
+            warnings=[],
+        ),
+    )
+
+    def fake_synthesize(req, output_dir, *, on_progress=None, cancel_check=None):
+        assert req.voice_source.value == "builtin"
+        assert req.built_in_speaker == "Vivian"
+        output_path = output_dir / f"{req.output_name}.wav"
+        output_path.write_bytes(b"RIFF")
+        return output_path, [], ""
+
+    monkeypatch.setattr(client.tts_service, "synthesize", fake_synthesize)
+
+    payload = {
+        "project_id": "proj-worker",
+        "text": "Hello built in voice.",
+        "voice_source": "builtin",
+        "reference_audio_b64": None,
+        "reference_audio_filename": None,
+        "model_id": SUPPORTED_CUSTOM_MODELS[0],
+        "built_in_speaker": "Vivian",
+        "max_new_tokens": 400,
+        "chunk_mode": "single",
+        "pause_config": PauseConfig(seed=1).model_dump(mode="json"),
+        "output_format": "wav",
+        "output_name": "worker-builtin",
+        "generate_transcript": False,
+        "voice_clone_authorized": True,
+    }
+
+    result = client._process_synthesis_job("job-builtin", payload)
+
+    assert result["output_format"] == "wav"
+    assert result["reference_text"] == ""
