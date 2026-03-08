@@ -109,6 +109,8 @@ WORKER_RUNNING_STALL_TIMEOUT_SECONDS = max(
 )
 SCRIPT_VERSION_HISTORY_LIMIT = max(10, _env_int("RADTTS_SCRIPT_VERSION_HISTORY_LIMIT", 60))
 SCOPED_PROJECT_RE = re.compile(r"^u[0-9a-f]{12}__.+$")
+BUILTIN_VOICE_PREVIEW_TEXT = "Hello, this is a quick built-in voice preview."
+BUILTIN_VOICE_PREVIEW_CACHE_DIR = PROJECTS_ROOT / ".builtin_voice_previews"
 
 
 def _infer_psychek_admin_url(login_url: str) -> str:
@@ -521,6 +523,11 @@ def _script_preview(text: str, *, max_chars: int = 120) -> str:
     if len(compact) <= max_chars:
         return compact
     return f"{compact[: max_chars - 1].rstrip()}…"
+
+
+def _builtin_voice_preview_cache_path(*, model_id: str, speaker: str, preview_text: str) -> Path:
+    digest = hashlib.sha1(f"{model_id}|{speaker}|{preview_text}".encode("utf-8")).hexdigest()
+    return BUILTIN_VOICE_PREVIEW_CACHE_DIR / f"{digest}.wav"
 
 
 def _normalize_script_entry(raw: dict[str, object]) -> dict[str, object] | None:
@@ -1784,7 +1791,7 @@ def list_builtin_voices(request: Request, quality: str = "normal"):
         "quality": quality,
         "model_id": model_id,
         "voices": QWEN_CUSTOM_VOICE_SPEAKERS,
-        "preview_text": "This is a preview of the selected built-in Qwen voice.",
+        "preview_text": BUILTIN_VOICE_PREVIEW_TEXT,
     }
 
 
@@ -1792,7 +1799,21 @@ def list_builtin_voices(request: Request, quality: str = "normal"):
 def preview_builtin_voice(request: Request, req: BuiltInVoicePreviewRequest):
     _require_auth(request)
     model_id = BUILTIN_MODEL_MODE_ALIASES["quality"] if req.quality == "high" else BUILTIN_MODEL_MODE_ALIASES["fast"]
-    preview_text = (req.text or "").strip() or "This is a preview of the selected built-in Qwen voice."
+    preview_text = (req.text or "").strip() or BUILTIN_VOICE_PREVIEW_TEXT
+    cache_path = _builtin_voice_preview_cache_path(
+        model_id=model_id,
+        speaker=req.speaker,
+        preview_text=preview_text,
+    )
+    if cache_path.exists():
+        return {
+            "speaker": req.speaker,
+            "model_id": model_id,
+            "preview_text": preview_text,
+            "audio_b64": base64.b64encode(cache_path.read_bytes()).decode("utf-8"),
+            "content_type": "audio/wav",
+            "cached": True,
+        }
 
     with tempfile.TemporaryDirectory(prefix="radtts_voice_preview_") as tmp:
         synth_req = SynthesisRequest(
@@ -1804,7 +1825,7 @@ def preview_builtin_voice(request: Request, req: BuiltInVoicePreviewRequest):
             model_id=model_id,
             built_in_speaker=req.speaker,
             built_in_instruct=None,
-            max_new_tokens=600 if req.quality == "normal" else 800,
+            max_new_tokens=180 if req.quality == "normal" else 260,
             chunk_mode="single",
             pause_config=PauseConfig(min_seconds=0.2, max_seconds=0.35, seed=1),
             output_format="wav",
@@ -1816,6 +1837,8 @@ def preview_builtin_voice(request: Request, req: BuiltInVoicePreviewRequest):
             synth_req,
             output_dir=Path(tmp),
         )
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_bytes(output_path.read_bytes())
 
         return {
             "speaker": req.speaker,
@@ -1823,6 +1846,7 @@ def preview_builtin_voice(request: Request, req: BuiltInVoicePreviewRequest):
             "preview_text": preview_text,
             "audio_b64": base64.b64encode(output_path.read_bytes()).decode("utf-8"),
             "content_type": "audio/wav",
+            "cached": False,
         }
 
 
