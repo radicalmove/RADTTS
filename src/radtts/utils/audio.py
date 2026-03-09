@@ -27,10 +27,13 @@ def probe_duration_seconds(path: Path) -> float:
     return float(info.frames) / float(info.samplerate)
 
 
-def convert_audio(input_path: Path, output_path: Path) -> Path:
+def convert_audio(input_path: Path, output_path: Path, *, audio_filters: str | None = None) -> Path:
     ffmpeg = get_ffmpeg_binary()
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [ffmpeg, "-y", "-i", str(input_path), str(output_path)]
+    cmd = [ffmpeg, "-y", "-i", str(input_path)]
+    if audio_filters and audio_filters.strip():
+        cmd.extend(["-af", audio_filters.strip()])
+    cmd.append(str(output_path))
     subprocess.run(cmd, check=True, capture_output=True)
     return output_path
 

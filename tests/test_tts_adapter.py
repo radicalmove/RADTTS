@@ -29,8 +29,8 @@ def test_build_clone_kwargs_supports_ref_audio_key():
 
 
 def test_build_builtin_kwargs_supports_speaker_and_instruct():
-    def fake_generate(text: str, speaker: str, instruct: str, max_new_tokens: int):  # noqa: ANN001
-        return text, speaker, instruct, max_new_tokens
+    def fake_generate(text: str, speaker: str, language: str, instruct: str, max_new_tokens: int):  # noqa: ANN001
+        return text, speaker, language, instruct, max_new_tokens
 
     kwargs = TTSService._build_builtin_kwargs(
         fn=fake_generate,
@@ -38,10 +38,12 @@ def test_build_builtin_kwargs_supports_speaker_and_instruct():
         speaker="vivian",
         instruct="Warm and clear",
         max_new_tokens=222,
+        language="English",
     )
 
     assert kwargs["text"] == "hello"
     assert kwargs["speaker"] == "vivian"
+    assert kwargs["language"] == "English"
     assert kwargs["instruct"] == "Warm and clear"
     assert kwargs["max_new_tokens"] == 222
 
@@ -81,10 +83,10 @@ def test_model_load_kwargs_respects_env_overrides(monkeypatch: pytest.MonkeyPatc
 
 def test_prepare_reference_audio_path_converts_non_wav(monkeypatch: pytest.MonkeyPatch):
     service = TTSService()
-    converted: list[tuple[Path, Path]] = []
+    converted: list[tuple[Path, Path, str | None]] = []
 
-    def fake_convert(input_path: Path, output_path: Path) -> Path:
-        converted.append((input_path, output_path))
+    def fake_convert(input_path: Path, output_path: Path, *, audio_filters: str | None = None) -> Path:
+        converted.append((input_path, output_path, audio_filters))
         output_path.write_bytes(b"RIFF")
         return output_path
 
@@ -96,7 +98,52 @@ def test_prepare_reference_audio_path_converts_non_wav(monkeypatch: pytest.Monke
         normalized = service._prepare_reference_audio_path(Path("/tmp/ref.webm"), stack=stack)
 
     assert normalized.suffix == ".wav"
-    assert converted == [(Path("/tmp/ref.webm"), normalized)]
+    assert converted == [(Path("/tmp/ref.webm"), normalized, service.reference_audio_filter)]
+
+
+def test_prepare_reference_audio_path_filters_wav_when_cleanup_enabled(monkeypatch: pytest.MonkeyPatch):
+    service = TTSService()
+    converted: list[tuple[Path, Path, str | None]] = []
+
+    def fake_convert(input_path: Path, output_path: Path, *, audio_filters: str | None = None) -> Path:
+        converted.append((input_path, output_path, audio_filters))
+        output_path.write_bytes(b"RIFF")
+        return output_path
+
+    monkeypatch.setattr("radtts.services.tts.convert_audio", fake_convert)
+
+    import contextlib
+
+    with contextlib.ExitStack() as stack:
+        normalized = service._prepare_reference_audio_path(Path("/tmp/ref.wav"), stack=stack)
+
+    assert normalized.suffix == ".wav"
+    assert normalized != Path("/tmp/ref.wav")
+    assert converted == [(Path("/tmp/ref.wav"), normalized, service.reference_audio_filter)]
+
+
+def test_prepare_reference_audio_path_returns_original_wav_when_cleanup_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    service = TTSService()
+    service.reference_audio_filter = ""
+    called = False
+
+    def fake_convert(input_path: Path, output_path: Path, *, audio_filters: str | None = None) -> Path:
+        nonlocal called
+        called = True
+        return output_path
+
+    monkeypatch.setattr("radtts.services.tts.convert_audio", fake_convert)
+
+    import contextlib
+
+    original = Path("/tmp/ref.wav")
+    with contextlib.ExitStack() as stack:
+        normalized = service._prepare_reference_audio_path(original, stack=stack)
+
+    assert normalized == original
+    assert called is False
 
 
 def test_auto_reference_text_rejects_too_short_audio(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):

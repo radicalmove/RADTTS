@@ -70,3 +70,15 @@ DEFAULT_STAGE_RETRIES = {
     "stitching": 1,
     "captioning": 1,
 }
+
+DEFAULT_REFERENCE_AUDIO_FILTER = (
+    "highpass=f=80,"
+    "agate=threshold=0.015:ratio=1.15:attack=8:release=180:range=0.6:knee=3,"
+    "equalizer=f=6200:t=q:w=1.2:g=-1.0"
+)
+
+DEFAULT_TTS_OUTPUT_FILTER = (
+    "highpass=f=60,"
+    "equalizer=f=6400:t=q:w=1.2:g=-1.2,"
+    "deesser=i=0.08:m=0.35:f=0.5:s=o"
+)

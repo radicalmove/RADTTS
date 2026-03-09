@@ -12,7 +12,13 @@ from typing import Any, Callable
 
 import numpy as np
 
-from radtts.constants import SUPPORTED_BASE_MODELS, SUPPORTED_CUSTOM_MODELS, SUPPORTED_TTS_MODELS
+from radtts.constants import (
+    DEFAULT_REFERENCE_AUDIO_FILTER,
+    DEFAULT_TTS_OUTPUT_FILTER,
+    SUPPORTED_BASE_MODELS,
+    SUPPORTED_CUSTOM_MODELS,
+    SUPPORTED_TTS_MODELS,
+)
 from radtts.exceptions import DependencyMissingError, ValidationError
 from radtts.models import ChunkMode, PauseConfig, SynthesisRequest, VoiceSource
 from radtts.services.asr import ASRService
@@ -47,6 +53,12 @@ class TTSService:
         self._model_cache: dict[str, Any] = {}
         self._pause_planner = PausePlanner()
         self._asr_service = ASRService(model_size=auto_reference_asr_model)
+        self.reference_audio_filter = str(
+            os.environ.get("RADTTS_REFERENCE_AUDIO_FILTER", DEFAULT_REFERENCE_AUDIO_FILTER)
+        ).strip()
+        self.output_audio_filter = str(
+            os.environ.get("RADTTS_OUTPUT_AUDIO_FILTER", DEFAULT_TTS_OUTPUT_FILTER)
+        ).strip()
 
     def ensure_supported_model(self, model_id: str) -> None:
         if model_id not in SUPPORTED_TTS_MODELS:
@@ -107,16 +119,22 @@ class TTSService:
             stitched = concat_with_silence(chunk_audio, pauses, sample_rate)
 
             base_name = req.output_name
-            wav_path = output_dir / f"{base_name}.wav"
-            write_wav(wav_path, stitched, sample_rate)
+            raw_output_dir = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="radtts_output_")))
+            raw_wav_path = raw_output_dir / f"{base_name}.wav"
+            write_wav(raw_wav_path, stitched, sample_rate)
 
             if req.output_format.value == "wav":
+                wav_path = output_dir / f"{base_name}.wav"
+                if self.output_audio_filter:
+                    convert_audio(raw_wav_path, wav_path, audio_filters=self.output_audio_filter)
+                else:
+                    wav_path.write_bytes(raw_wav_path.read_bytes())
                 return wav_path, pauses, reference_text or ""
 
             if on_progress:
                 on_progress("stitching encoding mp3")
             mp3_path = output_dir / f"{base_name}.mp3"
-            convert_audio(wav_path, mp3_path)
+            convert_audio(raw_wav_path, mp3_path, audio_filters=self.output_audio_filter)
             return mp3_path, pauses, reference_text or ""
 
     def list_builtin_speakers(self, model_id: str) -> list[str]:
@@ -162,19 +180,19 @@ class TTSService:
 
         return transcript
 
-    @staticmethod
     def _prepare_reference_audio_path(
+        self,
         reference_audio_path: Path,
         *,
         stack: contextlib.ExitStack,
     ) -> Path:
         path = Path(reference_audio_path)
-        if path.suffix.lower() == ".wav":
+        if path.suffix.lower() == ".wav" and not self.reference_audio_filter:
             return path
 
         temp_dir = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="radtts_ref_audio_")))
         normalized_path = temp_dir / f"{path.stem or 'reference'}.wav"
-        convert_audio(path, normalized_path)
+        convert_audio(path, normalized_path, audio_filters=self.reference_audio_filter)
         return normalized_path
 
     @staticmethod
