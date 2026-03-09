@@ -153,9 +153,11 @@ Key worker endpoints:
  - Audio cleanup defaults:
    - reference audio is lightly cleaned before cloning with `RADTTS_REFERENCE_AUDIO_FILTER`
    - final output is lightly de-essed with `RADTTS_OUTPUT_AUDIO_FILTER`
+   - current tuning label defaults to `Version 4` via `RADTTS_AUDIO_TUNING_LABEL`
    - defaults:
      - `RADTTS_REFERENCE_AUDIO_FILTER=highpass=f=80,agate=threshold=0.015:ratio=1.15:attack=8:release=180:range=0.6:knee=3,equalizer=f=6200:t=q:w=1.2:g=-1.0`
      - `RADTTS_OUTPUT_AUDIO_FILTER=highpass=f=60,equalizer=f=6400:t=q:w=1.2:g=-1.2,deesser=i=0.08:m=0.35:f=0.5:s=o`
+     - `RADTTS_AUDIO_TUNING_LABEL=Version 4`
 
 ## Linux deployment
 - Deployment guide: [`docs/MAC_MINI_LINUX_DEPLOYMENT.md`](docs/MAC_MINI_LINUX_DEPLOYMENT.md)

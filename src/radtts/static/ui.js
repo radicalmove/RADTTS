@@ -2055,6 +2055,7 @@ function renderOutputs(outputs) {
     const actions = [];
     const outputId = `output-${index}`;
     const audioPlayUrl = String(item.audio_play_url || item.audio_download_url || "");
+    const tuningLabel = String(item.audio_tuning_label || "").trim();
     if (item.audio_download_url) {
       if (audioPlayUrl) {
         actions.push(
@@ -2073,7 +2074,10 @@ function renderOutputs(outputs) {
     return `
       <li class="output-item">
         <div class="output-meta">
-          <span class="output-name">${escapeHtml(item.output_name || "audio output")}</span>
+          <div class="output-meta-main">
+            <span class="output-name">${escapeHtml(item.output_name || "audio output")}</span>
+            ${tuningLabel ? `<span class="output-tuning-label">${escapeHtml(tuningLabel)}</span>` : ""}
+          </div>
           <span class="output-date">${escapeHtml(formatIso(item.created_at))}</span>
         </div>
         <div class="output-actions">${actions.join(" ")}</div>

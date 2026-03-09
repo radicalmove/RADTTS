@@ -171,6 +171,7 @@ class PipelineOrchestrator:
                 output_file=output_path,
                 duration_seconds=output_duration,
                 model=req.model_id,
+                audio_tuning_label=self.tts_service.audio_tuning_label,
                 reference_audio=req.reference_audio_path,
                 reference_text=reference_text,
                 voice_source=req.voice_source,

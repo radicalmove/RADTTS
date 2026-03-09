@@ -1791,6 +1791,7 @@ def list_project_outputs(request: Request, project_id: str):
                 "job_id": item.get("job_id"),
                 "created_at": item.get("created_at"),
                 "output_name": Path(audio_path).stem if audio_path else None,
+                "audio_tuning_label": item.get("audio_tuning_label"),
                 "audio_path": audio_path,
                 "folder_path": folder_path,
                 "audio_download_url": audio_download_url,

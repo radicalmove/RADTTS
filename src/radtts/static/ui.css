@@ -887,8 +887,27 @@ button.worker-mini-btn {
   margin-bottom: 8px;
 }
 
+.output-meta-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .output-name {
   font-weight: 700;
+}
+
+.output-tuning-label {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #fdecea;
+  color: #8e2f24;
+  font-size: 0.78rem;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .output-date {

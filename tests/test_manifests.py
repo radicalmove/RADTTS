@@ -17,6 +17,7 @@ def test_manifest_store_writes_jobs_and_outputs(tmp_path: Path):
         output_file=tmp_path / "out.mp3",
         duration_seconds=6.2,
         model=SUPPORTED_BASE_MODELS[0],
+        audio_tuning_label="Version 4",
         reference_audio=tmp_path / "ref.mp3",
         reference_text="ref",
         input_text="text",
@@ -36,3 +37,4 @@ def test_manifest_store_writes_jobs_and_outputs(tmp_path: Path):
     outputs = store._read(store.outputs_file)  # noqa: SLF001
     assert len(outputs) == 1
     assert outputs[0]["job_id"] == "job_1"
+    assert outputs[0]["audio_tuning_label"] == "Version 4"

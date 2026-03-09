@@ -82,3 +82,5 @@ DEFAULT_TTS_OUTPUT_FILTER = (
     "equalizer=f=6400:t=q:w=1.2:g=-1.2,"
     "deesser=i=0.08:m=0.35:f=0.5:s=o"
 )
+
+DEFAULT_AUDIO_TUNING_LABEL = "Version 4"

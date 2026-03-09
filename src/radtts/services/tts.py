@@ -13,6 +13,7 @@ from typing import Any, Callable
 import numpy as np
 
 from radtts.constants import (
+    DEFAULT_AUDIO_TUNING_LABEL,
     DEFAULT_REFERENCE_AUDIO_FILTER,
     DEFAULT_TTS_OUTPUT_FILTER,
     SUPPORTED_BASE_MODELS,
@@ -44,6 +45,11 @@ class PausePlanner:
         return pauses
 
 
+def current_audio_tuning_label() -> str:
+    raw = str(os.environ.get("RADTTS_AUDIO_TUNING_LABEL", DEFAULT_AUDIO_TUNING_LABEL)).strip()
+    return raw or DEFAULT_AUDIO_TUNING_LABEL
+
+
 class TTSService:
     MIN_REFERENCE_DURATION_SECONDS = 2.5
     MIN_REFERENCE_WORDS = 2
@@ -59,6 +65,7 @@ class TTSService:
         self.output_audio_filter = str(
             os.environ.get("RADTTS_OUTPUT_AUDIO_FILTER", DEFAULT_TTS_OUTPUT_FILTER)
         ).strip()
+        self.audio_tuning_label = current_audio_tuning_label()
 
     def ensure_supported_model(self, model_id: str) -> None:
         if model_id not in SUPPORTED_TTS_MODELS:

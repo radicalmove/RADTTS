@@ -33,6 +33,7 @@ from radtts.models import (
     WorkerSynthesisEnqueueRequest,
 )
 from radtts.project import ProjectManager
+from radtts.services.tts import current_audio_tuning_label
 
 
 def _now_iso() -> str:
@@ -381,6 +382,7 @@ class WorkerManager:
             output_file=output_path,
             duration_seconds=req.duration_seconds,
             model=payload.model_id,
+            audio_tuning_label=current_audio_tuning_label(),
             reference_audio=reference_path,
             reference_text=req.reference_text,
             voice_source=payload.voice_source,

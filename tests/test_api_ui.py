@@ -8,6 +8,8 @@ from fastapi.testclient import TestClient
 from itsdangerous import URLSafeTimedSerializer
 
 from radtts.api import app
+from radtts.manifests import ManifestStore
+from radtts.models import ChunkMode, OutputFormat, OutputMetadata
 
 
 def _bridge_user(client: TestClient, *, sub: int, email: str, display_name: str) -> None:
@@ -48,6 +50,45 @@ def test_project_outputs_endpoint_returns_empty_list_for_new_project():
         payload = outputs.json()
         assert payload["project_id"] == project_id
         assert payload["outputs"] == []
+    finally:
+        if project_root.exists():
+            shutil.rmtree(project_root)
+
+
+def test_project_outputs_endpoint_includes_audio_tuning_label():
+    client = TestClient(app)
+    project_id = f"ui-{uuid.uuid4().hex[:8]}"
+    project_root = Path("projects") / project_id
+
+    try:
+        created = client.post("/projects", json={"project_id": project_id})
+        assert created.status_code == 200
+
+        manifests = project_root / "manifests"
+        store = ManifestStore(manifests)
+        output_path = project_root / "assets" / "generated_audio" / "sample.mp3"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"fake-mp3")
+        metadata = OutputMetadata(
+            output_file=output_path,
+            duration_seconds=4.2,
+            model="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+            audio_tuning_label="Version 4",
+            input_text="Hello world",
+            chunk_mode=ChunkMode.SINGLE,
+            pause_seconds=[],
+            max_new_tokens=400,
+            output_format=OutputFormat.MP3,
+            project_id=project_id,
+            job_id="job_test",
+        )
+        store.append_output(metadata)
+
+        outputs = client.get(f"/projects/{project_id}/outputs")
+        assert outputs.status_code == 200
+        payload = outputs.json()
+        assert len(payload["outputs"]) == 1
+        assert payload["outputs"][0]["audio_tuning_label"] == "Version 4"
     finally:
         if project_root.exists():
             shutil.rmtree(project_root)

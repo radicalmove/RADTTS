@@ -298,6 +298,7 @@ class OutputMetadata(BaseModel):
     output_file: Path
     duration_seconds: float
     model: str
+    audio_tuning_label: str | None = None
     reference_audio: Path | None = None
     reference_text: str | None = None
     voice_source: VoiceSource = VoiceSource.REFERENCE
