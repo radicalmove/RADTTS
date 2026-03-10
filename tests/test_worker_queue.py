@@ -3,15 +3,30 @@ from __future__ import annotations
 import base64
 import shutil
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
-from radtts.api import app, worker_manager
+from radtts.api import _maybe_trigger_worker_fallback, app, worker_manager
+from radtts.manifests import ManifestStore
+from radtts.models import JobRecord
 
 
 def _b64_blob(byte: int, length: int = 64) -> str:
     return base64.b64encode(bytes([byte]) * length).decode("utf-8")
+
+
+@pytest.fixture(autouse=True)
+def _isolated_worker_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    jobs_path = tmp_path / "worker-jobs.json"
+    workers_path = tmp_path / "workers.json"
+    jobs_path.write_text("[]", encoding="utf-8")
+    workers_path.write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(worker_manager, "jobs_path", jobs_path)
+    monkeypatch.setattr(worker_manager, "workers_path", workers_path)
 
 
 def test_worker_queue_round_trip_completes_job():
@@ -87,6 +102,7 @@ def test_worker_queue_round_trip_completes_job():
         assert running_payload["status"] == "running"
         assert running_payload["stage"] == "generation"
         assert running_payload["progress"] == 0.58
+        first_activity_at = running_payload["activity_at"]
         assert any("generation chunk 2/4" in line for line in running_payload["logs"])
 
         stale_progress = client.post(
@@ -94,8 +110,9 @@ def test_worker_queue_round_trip_completes_job():
             json={
                 "worker_id": worker_id,
                 "api_key": api_key,
-                "progress": 0.41,
-                "detail": "stale progress sample",
+                "progress": 0.58,
+                "stage": "generation",
+                "detail": "heartbeat: stage=generation",
             },
         )
         assert stale_progress.status_code == 200
@@ -103,6 +120,7 @@ def test_worker_queue_round_trip_completes_job():
         job_after_stale = client.get(f"/jobs/{job_id}?project_id={project_id}")
         assert job_after_stale.status_code == 200
         assert job_after_stale.json()["progress"] == 0.58
+        assert job_after_stale.json()["activity_at"] == first_activity_at
 
         complete = client.post(
             f"/workers/jobs/{job_id}/complete",
@@ -312,6 +330,102 @@ def test_queue_fallback_does_not_claim_job_after_worker_accepts():
         payload = job.json()
         assert payload["status"] == "running"
         assert payload["stage"] == "model_load"
+    finally:
+        if project_root.exists():
+            shutil.rmtree(project_root)
+
+
+def test_worker_fallback_uses_activity_timestamp_not_heartbeat(monkeypatch):
+    client = TestClient(app)
+    project_id = f"worker-stall-{uuid.uuid4().hex[:8]}"
+    project_root = Path("projects") / project_id
+
+    try:
+        create = client.post(
+            "/projects",
+            json={"project_id": project_id, "course": "C1", "module": "M1", "lesson": "L1"},
+        )
+        assert create.status_code == 200
+
+        invite = client.post("/workers/invite", json={"capabilities": ["synthesize"]})
+        invite_token = invite.json()["invite_token"]
+        register = client.post(
+            "/workers/register",
+            json={
+                "invite_token": invite_token,
+                "worker_name": "test-worker",
+                "capabilities": ["synthesize"],
+            },
+        )
+        worker_id = register.json()["worker_id"]
+        api_key = register.json()["api_key"]
+
+        enqueue = client.post(
+            "/synthesize/worker",
+            json={
+                "project_id": project_id,
+                "text": "Hello from worker queue.",
+                "reference_audio_b64": _b64_blob(6),
+                "reference_audio_filename": "reference.wav",
+                "reference_text": "hello",
+                "model_id": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+                "max_new_tokens": 300,
+                "chunk_mode": "single",
+                "pause_config": {"min_seconds": 0.2, "max_seconds": 0.4, "seed": 1},
+                "output_format": "wav",
+                "output_name": "worker_stall_output",
+                "voice_clone_authorized": True,
+            },
+        )
+        job_id = enqueue.json()["job_id"]
+
+        pull = client.post("/workers/pull", json={"worker_id": worker_id, "api_key": api_key})
+        assert pull.status_code == 200
+
+        progress = client.post(
+            f"/workers/jobs/{job_id}/progress",
+            json={
+                "worker_id": worker_id,
+                "api_key": api_key,
+                "progress": 0.30,
+                "stage": "model_load",
+                "detail": "tts model=Qwen/Qwen3-TTS-12Hz-0.6B-Base runtime device=mps:0 dtype=torch.float32",
+            },
+        )
+        assert progress.status_code == 200
+
+        store = ManifestStore(project_root / "manifests")
+        payload = store.get_job(job_id)
+        assert payload is not None
+        stale_at = datetime.now(timezone.utc) - timedelta(seconds=400)
+        payload["activity_at"] = stale_at.isoformat()
+        payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+        store.upsert_job(JobRecord(**payload))
+
+        claimed: dict[str, object] = {}
+
+        def fake_claim_and_launch_local_fallback(**kwargs):  # noqa: ANN001
+            claimed.update(kwargs)
+            return True
+
+        monkeypatch.setattr("radtts.api._claim_and_launch_local_fallback", fake_claim_and_launch_local_fallback)
+        request = Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": f"/jobs/{job_id}",
+                "headers": [],
+                "session": {},
+            }
+        )
+
+        assert _maybe_trigger_worker_fallback(
+            request,
+            scoped_project_id=project_id,
+            job_payload=payload,
+        )
+        assert claimed["job_id"] == job_id
+        assert "stopped reporting progress" in str(claimed["reason"])
     finally:
         if project_root.exists():
             shutil.rmtree(project_root)

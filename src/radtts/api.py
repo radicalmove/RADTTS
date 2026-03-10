@@ -1019,8 +1019,10 @@ def _maybe_trigger_worker_fallback(
 
     running_worker_stages = {"worker_running", "model_load", "generation", "stitching", "captioning"}
     if status == "running" and stage in running_worker_stages:
-        updated_age_seconds = _iso_age_seconds(str(job_payload.get("updated_at") or ""))
-        if updated_age_seconds is None or updated_age_seconds < WORKER_RUNNING_STALL_TIMEOUT_SECONDS:
+        activity_age_seconds = _iso_age_seconds(
+            str(job_payload.get("activity_at") or job_payload.get("updated_at") or "")
+        )
+        if activity_age_seconds is None or activity_age_seconds < WORKER_RUNNING_STALL_TIMEOUT_SECONDS:
             return False
         reason = (
             f"Helper device stopped reporting progress for over {WORKER_RUNNING_STALL_TIMEOUT_SECONDS}s. "
@@ -1962,6 +1964,11 @@ def worker_invite(request: Request, req: WorkerInviteRequest):
     _require_auth(request)
     token = worker_manager.issue_invite_token(req.capabilities)
     base_url = str(request.base_url).rstrip("/")
+    macos_python_selector = (
+        'if command -v python3.12 >/dev/null 2>&1; then RADTTS_PYTHON="$(command -v python3.12)"; '
+        'elif command -v python3.11 >/dev/null 2>&1; then RADTTS_PYTHON="$(command -v python3.11)"; '
+        'else RADTTS_PYTHON="$(command -v python3)"; fi'
+    )
     install_command = f"radtts-worker-install --server-url {base_url} --invite-token {token}"
     install_command_windows = (
         "py -m pip install --upgrade pip; "
@@ -1970,9 +1977,13 @@ def worker_invite(request: Request, req: WorkerInviteRequest):
         f"py -m radtts.worker_setup --server-url {base_url} --invite-token {token} --platform windows"
     )
     install_command_macos = (
-        "python3 -m pip install --upgrade pip && "
-        'python3 -m pip install "radtts[asr,tts] @ git+https://github.com/radicalmove/RADTTS.git" && '
-        f"python3 -m radtts.worker_setup --server-url {base_url} --invite-token {token} --platform macos"
+        f"{macos_python_selector} && "
+        'RADTTS_VENV="$HOME/.radtts/venv" && '
+        'mkdir -p "$HOME/.radtts" && '
+        '"$RADTTS_PYTHON" -m venv "$RADTTS_VENV" && '
+        '"$RADTTS_VENV/bin/python" -m pip install --upgrade pip && '
+        '"$RADTTS_VENV/bin/python" -m pip install "radtts[asr,tts] @ git+https://github.com/radicalmove/RADTTS.git" && '
+        f'"$RADTTS_VENV/bin/python" -m radtts.worker_setup --server-url {base_url} --invite-token {token} --platform macos --python-exe "$RADTTS_VENV/bin/python"'
     )
     install_command_linux = (
         "python3 -m pip install --upgrade pip && "
@@ -2068,9 +2079,15 @@ def worker_bootstrap_macos_command(
         "#!/bin/bash\n"
         "set -euo pipefail\n"
         "echo \"Installing RADTTS worker on this Mac...\"\n"
-        "python3 -m pip install --upgrade pip\n"
-        "python3 -m pip install \"radtts[asr,tts] @ git+https://github.com/radicalmove/RADTTS.git\"\n"
-        f"python3 -m radtts.worker_setup --server-url {base_url} --invite-token {safe_token} --platform macos\n"
+        "if command -v python3.12 >/dev/null 2>&1; then RADTTS_PYTHON=\"$(command -v python3.12)\";\n"
+        "elif command -v python3.11 >/dev/null 2>&1; then RADTTS_PYTHON=\"$(command -v python3.11)\";\n"
+        "else RADTTS_PYTHON=\"$(command -v python3)\"; fi\n"
+        "RADTTS_VENV=\"$HOME/.radtts/venv\"\n"
+        "mkdir -p \"$HOME/.radtts\"\n"
+        "\"$RADTTS_PYTHON\" -m venv \"$RADTTS_VENV\"\n"
+        "\"$RADTTS_VENV/bin/python\" -m pip install --upgrade pip\n"
+        "\"$RADTTS_VENV/bin/python\" -m pip install \"radtts[asr,tts] @ git+https://github.com/radicalmove/RADTTS.git\"\n"
+        f"\"$RADTTS_VENV/bin/python\" -m radtts.worker_setup --server-url {base_url} --invite-token {safe_token} --platform macos --python-exe \"$RADTTS_VENV/bin/python\"\n"
         "echo \"\"\n"
         "echo \"Worker is installed and will start automatically in the background at login.\"\n"
         "echo \"You can close this window.\"\n"

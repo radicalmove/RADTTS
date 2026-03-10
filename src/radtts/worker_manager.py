@@ -519,10 +519,23 @@ class WorkerManager:
                 progress=progress,
             )
 
+        previous_stage = job.stage
+        previous_progress = job.progress
+        previous_activity_at = job.activity_at or job.updated_at or job.created_at
+        now = datetime.now(timezone.utc)
+        next_progress = max(job.progress, progress) if status == JobStatus.RUNNING else progress
+
         job.status = status
         job.stage = stage
-        job.progress = max(job.progress, progress) if status == JobStatus.RUNNING else progress
-        job.updated_at = datetime.now(timezone.utc)
+        job.progress = next_progress
+        job.updated_at = now
+        if status == JobStatus.RUNNING:
+            if stage != previous_stage or next_progress > previous_progress:
+                job.activity_at = now
+            else:
+                job.activity_at = previous_activity_at
+        else:
+            job.activity_at = now
         if error is not None:
             job.error = error
         if outputs is not None:

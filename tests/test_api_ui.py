@@ -110,7 +110,9 @@ def test_worker_invite_includes_cross_platform_setup_commands():
     assert token in payload["install_command_windows"]
 
     assert "install_command_macos" in payload
-    assert "python3 -m radtts.worker_setup" in payload["install_command_macos"]
+    assert 'RADTTS_VENV="$HOME/.radtts/venv"' in payload["install_command_macos"]
+    assert "--python-exe \"$RADTTS_VENV/bin/python\"" in payload["install_command_macos"]
+    assert "radtts.worker_setup" in payload["install_command_macos"]
     assert token in payload["install_command_macos"]
 
     assert "install_command_linux" in payload
@@ -188,6 +190,8 @@ def test_macos_worker_bootstrap_command_download():
     download = client.get(f"/workers/bootstrap/macos.command?invite_token={token}")
     assert download.status_code == 200
     assert "radtts.worker_setup" in download.text
+    assert 'RADTTS_VENV="$HOME/.radtts/venv"' in download.text
+    assert "--python-exe \"$RADTTS_VENV/bin/python\"" in download.text
     assert token in download.text
     disposition = download.headers.get("content-disposition", "")
     assert "radtts-worker-setup.command" in disposition

@@ -325,6 +325,7 @@ class JobRecord(BaseModel):
     progress: float = Field(default=0.0, ge=0.0, le=1.0)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    activity_at: datetime | None = None
     error: str | None = None
     logs: list[str] = Field(default_factory=list)
     outputs: dict[str, Any] = Field(default_factory=dict)
