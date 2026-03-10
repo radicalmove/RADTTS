@@ -88,7 +88,72 @@ def test_project_outputs_endpoint_includes_audio_tuning_label():
         assert outputs.status_code == 200
         payload = outputs.json()
         assert len(payload["outputs"]) == 1
+        assert payload["outputs"][0]["version_number"] == 1
+        assert payload["outputs"][0]["duration_seconds"] == 4.2
         assert payload["outputs"][0]["audio_tuning_label"] == "Version 4"
+        assert payload["outputs"][0]["stage_durations_seconds"] == {}
+    finally:
+        if project_root.exists():
+            shutil.rmtree(project_root)
+
+
+def test_project_outputs_endpoint_assigns_version_numbers_newest_first():
+    client = TestClient(app)
+    project_id = f"ui-{uuid.uuid4().hex[:8]}"
+    project_root = Path("projects") / project_id
+
+    try:
+        created = client.post("/projects", json={"project_id": project_id})
+        assert created.status_code == 200
+
+        manifests = project_root / "manifests"
+        store = ManifestStore(manifests)
+        generated_dir = project_root / "assets" / "generated_audio"
+        generated_dir.mkdir(parents=True, exist_ok=True)
+
+        first_output = generated_dir / "first.mp3"
+        second_output = generated_dir / "second.mp3"
+        first_output.write_bytes(b"first")
+        second_output.write_bytes(b"second")
+
+        store.append_output(
+            OutputMetadata(
+                output_file=first_output,
+                duration_seconds=3.1,
+                model="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+                input_text="First version",
+                chunk_mode=ChunkMode.SINGLE,
+                pause_seconds=[],
+                max_new_tokens=400,
+                output_format=OutputFormat.MP3,
+                project_id=project_id,
+                job_id="job_first",
+            )
+        )
+        store.append_output(
+            OutputMetadata(
+                output_file=second_output,
+                duration_seconds=5.4,
+                model="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+                input_text="Second version",
+                chunk_mode=ChunkMode.SINGLE,
+                pause_seconds=[],
+                max_new_tokens=400,
+                output_format=OutputFormat.MP3,
+                project_id=project_id,
+                job_id="job_second",
+                stage_durations_seconds={"generation": 41.2, "stitching": 7.5},
+            )
+        )
+
+        outputs = client.get(f"/projects/{project_id}/outputs")
+        assert outputs.status_code == 200
+        payload = outputs.json()
+
+        assert [row["output_name"] for row in payload["outputs"]] == ["second", "first"]
+        assert [row["version_number"] for row in payload["outputs"]] == [2, 1]
+        assert payload["outputs"][0]["duration_seconds"] == 5.4
+        assert payload["outputs"][0]["stage_durations_seconds"] == {"generation": 41.2, "stitching": 7.5}
     finally:
         if project_root.exists():
             shutil.rmtree(project_root)

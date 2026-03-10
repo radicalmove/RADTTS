@@ -881,8 +881,9 @@ button.worker-mini-btn {
 
 .output-meta {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
   gap: 8px;
   margin-bottom: 8px;
 }
@@ -898,21 +899,23 @@ button.worker-mini-btn {
   font-weight: 700;
 }
 
-.output-tuning-label {
+.output-version-badge {
   display: inline-flex;
   align-items: center;
   padding: 2px 8px;
   border-radius: 999px;
-  background: #fdecea;
-  color: #8e2f24;
+  background: #eef3ff;
+  color: #204a93;
   font-size: 0.78rem;
   font-weight: 700;
   white-space: nowrap;
 }
 
-.output-date {
+.output-summary {
   font-size: 0.82rem;
   color: #666;
+  line-height: 1.4;
+  word-break: break-word;
 }
 
 .folder-line {

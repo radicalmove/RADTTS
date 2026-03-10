@@ -1779,10 +1779,17 @@ def list_project_outputs(request: Request, project_id: str):
         raise HTTPException(status_code=404, detail="project not found") from exc
 
     outputs: list[dict[str, object]] = []
-    for item in reversed(rows):
+    total_outputs = len(rows)
+    for reverse_index, item in enumerate(reversed(rows)):
         audio_path = str(item.get("output_file") or "")
         captions_raw = item.get("captions") if isinstance(item.get("captions"), dict) else {}
         captions = {key: str(value) for key, value in (captions_raw or {}).items()}
+        stage_durations_raw = item.get("stage_durations_seconds") if isinstance(item.get("stage_durations_seconds"), dict) else {}
+        stage_durations = {
+            str(key): float(value)
+            for key, value in stage_durations_raw.items()
+            if isinstance(key, str) and isinstance(value, int | float)
+        }
         folder_path = str(Path(audio_path).parent) if audio_path else ""
 
         audio_encoded_path = quote(audio_path, safe="") if audio_path else ""
@@ -1800,9 +1807,12 @@ def list_project_outputs(request: Request, project_id: str):
         outputs.append(
             {
                 "job_id": item.get("job_id"),
+                "version_number": total_outputs - reverse_index,
                 "created_at": item.get("created_at"),
                 "output_name": Path(audio_path).stem if audio_path else None,
+                "duration_seconds": item.get("duration_seconds"),
                 "audio_tuning_label": item.get("audio_tuning_label"),
+                "stage_durations_seconds": stage_durations,
                 "audio_path": audio_path,
                 "folder_path": folder_path,
                 "audio_download_url": audio_download_url,

@@ -199,6 +199,8 @@ const state = {
   workerSetupWindowsUrl: "",
   workerSetupMacosUrl: "",
   currentJobLogs: [],
+  completedOutputs: [],
+  currentRunProfile: null,
 };
 
 function cleanOptional(value) {
@@ -382,6 +384,7 @@ function clearJobTracking() {
   stopProgressAnimator();
   state.activeJobId = null;
   state.currentStatus = "idle";
+  state.currentRunProfile = null;
 }
 
 function resetProgressUi() {
@@ -410,6 +413,7 @@ function resetProgressUi() {
   state.generateTranscriptRequested = false;
   state.outputFormatRequested = "mp3";
   state.stageProgressSamples = [];
+  state.currentRunProfile = null;
 
   if (progressWrapNode) progressWrapNode.hidden = true;
   if (progressFillNode) progressFillNode.style.width = "0%";
@@ -477,7 +481,7 @@ function currentRunEtaOrder(stage) {
 
 function expectedStageSecondsForCurrentMode(stage) {
   const key = String(stage || "");
-  const base = stageExpectedSeconds[key];
+  const base = estimatedStageSeconds(key);
   if (!Number.isFinite(base) || base <= 0) {
     return 90;
   }
@@ -492,16 +496,16 @@ function expectedStageSecondsForCurrentMode(stage) {
 
   if (state.computeMode === "server") {
     if (["model_load", "generation", "captioning"].includes(key)) {
-      return Math.round(base * 1.08);
+      return Math.round(base * 1.04);
     }
-    return Math.round(base * 1.04);
+    return Math.round(base * 1.02);
   }
 
   if (state.computeMode === "worker") {
-    return Math.round(base * 0.9);
+    return Math.round(base * 0.92);
   }
 
-  return base;
+  return Math.round(base);
 }
 
 function expectedFutureStageSeconds(stage) {
@@ -550,13 +554,11 @@ function estimateEtaSeconds(progressPercent, stage) {
   if (state.currentStatus !== "running") return null;
   const nowMs = Date.now();
   const clamped = Math.max(0, Math.min(100, progressPercent));
-  if (isEarlyGenerationWithoutChunkProgress(state.currentJobLogs, stage)) {
-    return null;
-  }
-  const observedBased = estimateEtaFromObservedVelocity(clamped, stage);
+  const waitingForFirstChunk = isEarlyGenerationWithoutChunkProgress(state.currentJobLogs, stage);
+  const observedBased = waitingForFirstChunk ? null : estimateEtaFromObservedVelocity(clamped, stage);
 
   let progressBased = null;
-  if (state.jobStartedAtMs && clamped > 1 && clamped < 100) {
+  if (state.jobStartedAtMs && clamped > 1 && clamped < 100 && !waitingForFirstChunk) {
     const elapsedSec = (nowMs - state.jobStartedAtMs) / 1000;
     const candidate = elapsedSec * ((100 - clamped) / clamped);
     if (Number.isFinite(candidate) && candidate >= 0) {
@@ -610,40 +612,22 @@ function smoothEtaDisplay(etaSeconds, stage) {
 
   const nowMs = Date.now();
   if (state.etaSeconds === null || state.etaUpdatedAtMs === null) {
-    state.etaSeconds = etaSeconds;
+    state.etaSeconds = Math.max(1, etaSeconds);
     state.etaUpdatedAtMs = nowMs;
     state.etaStage = stage;
     return state.etaSeconds;
   }
 
   const elapsedSec = Math.max(0, (nowMs - state.etaUpdatedAtMs) / 1000);
-  const decayed = Math.max(0, state.etaSeconds - elapsedSec);
-  const diff = Math.abs(etaSeconds - decayed);
-  const isWaitingStage = stage === "queued_remote" || state.computeMode === "waiting_worker";
+  const decayed = Math.max(1, state.etaSeconds - elapsedSec);
   const stageChanged = state.etaStage !== null && state.etaStage !== stage;
+  let nextEta = decayed;
 
-  let nextEta;
-  if (diff <= 4) {
-    nextEta = decayed;
-  } else {
-    nextEta = (decayed * 0.75) + (etaSeconds * 0.25);
+  if (stageChanged || etaSeconds < decayed - 0.75) {
+    nextEta = Math.max(1, etaSeconds);
   }
 
-  // Keep ETA mostly decreasing while a stage is in progress.
-  // Allow a bigger one-off correction on stage transitions and queue waits.
-  let maxStepUp;
-  if (stageChanged) {
-    maxStepUp = isWaitingStage ? 14 : 8;
-  } else if (isWaitingStage) {
-    maxStepUp = Math.max(1.2, elapsedSec * 2.0);
-  } else {
-    maxStepUp = Math.max(0.2, elapsedSec * 0.35);
-  }
-  if (nextEta > decayed + maxStepUp) {
-    nextEta = decayed + maxStepUp;
-  }
-
-  state.etaSeconds = Math.max(0, nextEta);
+  state.etaSeconds = Math.min(decayed, nextEta);
   state.etaUpdatedAtMs = nowMs;
   state.etaStage = stage;
   return state.etaSeconds;
@@ -837,11 +821,184 @@ function formatIso(isoValue) {
   return date.toLocaleString();
 }
 
+function parseIsoDate(isoValue) {
+  if (!isoValue) return null;
+  const date = new Date(isoValue);
+  if (Number.isNaN(date.getTime())) return null;
+  return date;
+}
+
+function formatOutputDate(isoValue) {
+  const date = parseIsoDate(isoValue);
+  if (!date) return "";
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  }).format(date);
+}
+
+function formatOutputTime(isoValue) {
+  const date = parseIsoDate(isoValue);
+  if (!date) return "";
+  return new Intl.DateTimeFormat("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }).format(date).replace(/\s+/g, "").toLowerCase();
+}
+
 function formatDurationSeconds(seconds) {
   const totalSeconds = Math.max(0, Math.round(Number(seconds || 0)));
   const mins = Math.floor(totalSeconds / 60);
   const secs = totalSeconds % 60;
   return `${mins}:${String(secs).padStart(2, "0")}`;
+}
+
+function toFiniteNumber(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+function median(values) {
+  const numbers = values.filter((value) => Number.isFinite(value)).sort((a, b) => a - b);
+  if (!numbers.length) return null;
+  const mid = Math.floor(numbers.length / 2);
+  if (numbers.length % 2 === 1) return numbers[mid];
+  return (numbers[mid - 1] + numbers[mid]) / 2;
+}
+
+function estimateSentenceCount(text) {
+  const normalized = String(text || "").replace(/\r/g, "").trim();
+  if (!normalized) return 0;
+  const chunks = normalized
+    .split(/(?:[.!?]+[\s]+|[.!?]+$|\n+)/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return Math.max(1, chunks.length);
+}
+
+function buildRunTimingProfile({ text, averageGapSeconds, addFillers, voiceSource }) {
+  const normalized = String(text || "").trim();
+  const wordCount = normalized ? normalized.split(/\s+/).length : 0;
+  const sentenceCount = estimateSentenceCount(text);
+  const gapSeconds = Math.max(0.15, Number(averageGapSeconds || 0.8));
+  const fillerFactor = addFillers ? 1.04 : 1.0;
+  const speechSeconds = wordCount > 0 ? (wordCount / 2.45) * fillerFactor : 0;
+  const pauseSeconds = Math.max(0, sentenceCount - 1) * gapSeconds;
+  return {
+    wordCount,
+    sentenceCount,
+    estimatedClipSeconds: Math.max(6, speechSeconds + pauseSeconds),
+    gapSeconds,
+    addFillers: Boolean(addFillers),
+    voiceSource: String(voiceSource || "reference"),
+  };
+}
+
+function normalizeOutputHistoryRow(item) {
+  const stageDurationsRaw = item && typeof item.stage_durations_seconds === "object"
+    ? item.stage_durations_seconds
+    : {};
+  const stageDurations = {};
+  for (const [stage, value] of Object.entries(stageDurationsRaw || {})) {
+    const seconds = toFiniteNumber(value);
+    if (seconds !== null && seconds > 0) {
+      stageDurations[stage] = seconds;
+    }
+  }
+  return {
+    ...item,
+    duration_seconds: toFiniteNumber(item?.duration_seconds),
+    version_number: toFiniteNumber(item?.version_number),
+    stage_durations_seconds: stageDurations,
+  };
+}
+
+function historicalStageSeconds(stage, profile) {
+  const outputs = Array.isArray(state.completedOutputs) ? state.completedOutputs : [];
+  if (!outputs.length) return null;
+
+  if (stage === "model_load") {
+    return median(outputs.map((item) => toFiniteNumber(item?.stage_durations_seconds?.model_load)).filter((value) => value && value > 0));
+  }
+
+  if (!profile || !Number.isFinite(profile.estimatedClipSeconds) || profile.estimatedClipSeconds <= 0) {
+    return null;
+  }
+
+  const ratios = outputs
+    .map((item) => {
+      const durationSeconds = toFiniteNumber(item?.duration_seconds);
+      const stageSeconds = toFiniteNumber(item?.stage_durations_seconds?.[stage]);
+      if (durationSeconds === null || stageSeconds === null || durationSeconds <= 0 || stageSeconds <= 0) {
+        return null;
+      }
+      return stageSeconds / durationSeconds;
+    })
+    .filter((value) => value !== null && value > 0);
+  const ratio = median(ratios);
+  return ratio === null ? null : profile.estimatedClipSeconds * ratio;
+}
+
+function heuristicStageSeconds(stage, profile) {
+  const key = String(stage || "");
+  if (!profile) {
+    return stageExpectedSeconds[key];
+  }
+
+  const clipSeconds = Math.max(6, Number(profile.estimatedClipSeconds || 0));
+  const sentenceCount = Math.max(1, Number(profile.sentenceCount || 1));
+  switch (key) {
+    case "model_load":
+      return profile.voiceSource === "builtin" ? 18 : 24;
+    case "generation":
+      return 18 + (clipSeconds * 2.55) + (sentenceCount * 1.5);
+    case "stitching":
+      return state.outputFormatRequested === "wav"
+        ? Math.max(6, 3 + (clipSeconds * 0.05))
+        : Math.max(8, 5 + (clipSeconds * 0.12));
+    case "captioning":
+      return 10 + (clipSeconds * 0.72);
+    default:
+      return stageExpectedSeconds[key];
+  }
+}
+
+function estimatedStageSeconds(stage) {
+  const key = String(stage || "");
+  const historical = historicalStageSeconds(key, state.currentRunProfile);
+  let base = historical;
+  if (!Number.isFinite(base) || base <= 0) {
+    base = heuristicStageSeconds(key, state.currentRunProfile);
+  }
+  if (!Number.isFinite(base) || base <= 0) {
+    base = stageExpectedSeconds[key];
+  }
+  if (!Number.isFinite(base) || base <= 0) {
+    return 90;
+  }
+  return base;
+}
+
+function formatOutputSummary(item, tuningLabel) {
+  const parts = [];
+  const durationSeconds = toFiniteNumber(item?.duration_seconds);
+  if (durationSeconds !== null && durationSeconds > 0) {
+    parts.push(formatDurationSeconds(durationSeconds));
+  }
+  const dateText = formatOutputDate(item?.created_at);
+  if (dateText) {
+    parts.push(dateText);
+  }
+  const timeText = formatOutputTime(item?.created_at);
+  if (timeText) {
+    parts.push(timeText);
+  }
+  if (tuningLabel) {
+    parts.push(tuningLabel);
+  }
+  return parts.join(" | ");
 }
 
 function formatSampleOptionLabel(sample) {
@@ -1224,7 +1381,7 @@ function detailFromLogLine(line, currentStage) {
 
 function formatEta(seconds) {
   if (!Number.isFinite(seconds) || seconds <= 0) return "--:--";
-  const total = Math.max(0, Math.round(seconds));
+  const total = Math.max(0, Math.ceil(seconds));
   const hours = Math.floor(total / 3600);
   const mins = Math.floor((total % 3600) / 60);
   const secs = total % 60;
@@ -1538,6 +1695,7 @@ function applyActiveProject(projectRef, projectLabel = projectRef) {
   state.activeProjectRef = projectRef;
   state.activeProjectLabel = projectLabel;
   state.canManageActiveProject = false;
+  state.completedOutputs = [];
   state.voiceSource = "reference";
   state.selectedAudioHash = null;
   state.referenceSamples = [];
@@ -2092,6 +2250,8 @@ function renderOutputs(outputs) {
     const outputId = `output-${index}`;
     const audioPlayUrl = String(item.audio_play_url || item.audio_download_url || "");
     const tuningLabel = String(item.audio_tuning_label || "").trim();
+    const versionNumber = toFiniteNumber(item.version_number);
+    const summaryLabel = formatOutputSummary(item, tuningLabel);
     if (item.audio_download_url) {
       if (audioPlayUrl) {
         actions.push(
@@ -2112,9 +2272,9 @@ function renderOutputs(outputs) {
         <div class="output-meta">
           <div class="output-meta-main">
             <span class="output-name">${escapeHtml(item.output_name || "audio output")}</span>
-            ${tuningLabel ? `<span class="output-tuning-label">${escapeHtml(tuningLabel)}</span>` : ""}
+            ${versionNumber !== null && versionNumber > 0 ? `<span class="output-version-badge">Version ${escapeHtml(versionNumber)}</span>` : ""}
           </div>
-          <span class="output-date">${escapeHtml(formatIso(item.created_at))}</span>
+          ${summaryLabel ? `<span class="output-summary">${escapeHtml(summaryLabel)}</span>` : ""}
         </div>
         <div class="output-actions">${actions.join(" ")}</div>
         ${
@@ -2139,8 +2299,10 @@ async function loadOutputs() {
   try {
     const data = await requestJSON(`/projects/${encodeURIComponent(projectId)}/outputs`, "GET");
     const outputs = Array.isArray(data.outputs) ? data.outputs : [];
+    state.completedOutputs = outputs.map((item) => normalizeOutputHistoryRow(item));
     renderOutputs(outputs);
   } catch (err) {
+    state.completedOutputs = [];
     renderOutputs([]);
     setGenerateStatus(`Could not load output history: ${String(err)}`, true);
   }
@@ -2367,6 +2529,7 @@ function startPolling(jobId, options = {}) {
   state.generateTranscriptRequested = Boolean(options.generateTranscript);
   state.outputFormatRequested = String(options.outputFormat || "mp3").toLowerCase();
   state.stageProgressSamples = [{ progress: 0, atMs: state.stageStartedAtMs }];
+  state.currentRunProfile = options.runProfile || null;
 
   updateProgressVisuals(0, initialStage);
   updateRunningStatusMessage();
@@ -2379,6 +2542,10 @@ async function handleGenerate() {
   try {
     const projectId = requireActiveProject();
     const scriptText = cleanOptional(scriptTextNode?.value || "");
+    const averageGapSeconds = Number(gapSliderNode?.value || 0.8);
+    const addUms = Boolean(umsToggleNode?.checked);
+    const addAhs = Boolean(ahsToggleNode?.checked);
+    const addFillers = addUms || addAhs;
 
     if (state.voiceSource === "reference" && !state.selectedAudioFile && !state.selectedAudioHash) {
       throw new Error("Please select, record, or choose a saved audio sample.");
@@ -2402,13 +2569,19 @@ async function handleGenerate() {
       text: scriptText,
       voice_source: state.voiceSource,
       quality: qualityNode?.value || "normal",
-      add_ums: Boolean(umsToggleNode?.checked),
-      add_ahs: Boolean(ahsToggleNode?.checked),
-      average_gap_seconds: Number(gapSliderNode?.value || 0.8),
+      add_ums: addUms,
+      add_ahs: addAhs,
+      average_gap_seconds: averageGapSeconds,
       output_format: outputFormatNode?.value || "mp3",
       voice_clone_authorized: true,
       generate_transcript: Boolean(transcriptToggleNode?.checked),
     };
+    const runProfile = buildRunTimingProfile({
+      text: scriptText,
+      averageGapSeconds,
+      addFillers,
+      voiceSource: state.voiceSource,
+    });
 
     if (state.voiceSource === "builtin") {
       payload.built_in_speaker = state.selectedBuiltInSpeaker;
@@ -2480,6 +2653,7 @@ async function handleGenerate() {
       fallbackTimeoutSeconds: workerMode && fallbackEnabled ? fallbackTimeout : 0,
       generateTranscript: payload.generate_transcript,
       outputFormat: payload.output_format,
+      runProfile,
     });
   } catch (err) {
     setGenerateEnabled(true);
