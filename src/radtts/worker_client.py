@@ -31,7 +31,7 @@ from radtts.utils.audio import probe_duration_seconds
 from radtts.utils.runtime import run_with_retry_timeout
 
 _GENERATION_CHUNK_RE = re.compile(r"^generation chunk (\d+)/(\d+)$", re.IGNORECASE)
-DEFAULT_WORKER_GENERATION_TIMEOUT_SECONDS = 300
+DEFAULT_WORKER_GENERATION_TIMEOUT_SECONDS = 600
 LOG = logging.getLogger("radtts.worker")
 
 
@@ -278,6 +278,14 @@ class WorkerClient:
                     cleaned = str(message or "").strip()
                     lower = cleaned.lower()
                     chunk_match = _GENERATION_CHUNK_RE.match(cleaned)
+
+                    if lower == "reference transcription started":
+                        emit_progress(0.33, stage="generation", detail=cleaned)
+                        return
+
+                    if lower == "reference transcription complete":
+                        emit_progress(0.36, stage="generation", detail=cleaned)
+                        return
 
                     if chunk_match:
                         progress = generation_progress_for_chunk(

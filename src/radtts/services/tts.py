@@ -89,7 +89,14 @@ class TTSService:
                 if req.reference_audio_path is None:
                     raise ValidationError("Reference audio is required for reference voice synthesis.")
                 reference_audio_path = self._prepare_reference_audio_path(req.reference_audio_path, stack=stack)
-                reference_text = req.reference_text or self._auto_reference_text(reference_audio_path)
+                if req.reference_text:
+                    reference_text = req.reference_text
+                else:
+                    if on_progress:
+                        on_progress("reference transcription started")
+                    reference_text = self._auto_reference_text(reference_audio_path)
+                    if on_progress:
+                        on_progress("reference transcription complete")
 
             chunks = self._build_chunks(req.text, req.chunk_mode)
             pauses = self._pause_planner.build(chunks, req.pause_config) if req.chunk_mode == ChunkMode.SENTENCE else []

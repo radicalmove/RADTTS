@@ -1187,6 +1187,14 @@ function detailFromLogLine(line, currentStage) {
     return "Combining generated chunks.";
   }
 
+  if (lower === "reference transcription started") {
+    return "Analyzing reference sample.";
+  }
+
+  if (lower === "reference transcription complete") {
+    return "Reference sample analysis complete.";
+  }
+
   if (lower === "stitching encoding mp3") {
     return "Encoding MP3 output.";
   }
