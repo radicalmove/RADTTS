@@ -264,6 +264,7 @@ class WorkerClient:
             heartbeat_thread = threading.Thread(target=heartbeat_worker, name="radtts-worker-heartbeat", daemon=True)
             heartbeat_thread.start()
             try:
+                emit_progress(0.28, stage="model_load", detail="Loading voice model...")
                 model_load_started_at = time.monotonic()
                 _, runtime_summary = self.tts_service.load_model_with_runtime(req.model_id)
                 stage_durations_seconds["model_load"] = round(time.monotonic() - model_load_started_at, 3)

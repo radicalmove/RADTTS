@@ -99,8 +99,8 @@ WORKER_FALLBACK_TO_LOCAL = _env_bool("RADTTS_WORKER_FALLBACK_TO_LOCAL", True)
 WORKER_FALLBACK_TIMEOUT_SECONDS = max(5, _env_int("RADTTS_WORKER_FALLBACK_TIMEOUT_SECONDS", 40))
 WORKER_ONLINE_WINDOW_SECONDS = max(10, _env_int("RADTTS_WORKER_ONLINE_WINDOW_SECONDS", 30))
 LOCAL_FALLBACK_GENERATION_TIMEOUT_SECONDS = max(
-    120,
-    _env_int("RADTTS_LOCAL_FALLBACK_GENERATION_TIMEOUT_SECONDS", 300),
+    300,
+    _env_int("RADTTS_LOCAL_FALLBACK_GENERATION_TIMEOUT_SECONDS", 600),
 )
 LOCAL_FALLBACK_MAX_NEW_TOKENS = max(
     128,
@@ -109,6 +109,10 @@ LOCAL_FALLBACK_MAX_NEW_TOKENS = max(
 WORKER_RUNNING_STALL_TIMEOUT_SECONDS = max(
     WORKER_FALLBACK_TIMEOUT_SECONDS + 60,
     _env_int("RADTTS_WORKER_RUNNING_STALL_TIMEOUT_SECONDS", 180),
+)
+WORKER_MODEL_LOAD_STALL_TIMEOUT_SECONDS = max(
+    WORKER_RUNNING_STALL_TIMEOUT_SECONDS,
+    _env_int("RADTTS_WORKER_MODEL_LOAD_STALL_TIMEOUT_SECONDS", 600),
 )
 SCRIPT_VERSION_HISTORY_LIMIT = max(10, _env_int("RADTTS_SCRIPT_VERSION_HISTORY_LIMIT", 60))
 SCOPED_PROJECT_RE = re.compile(r"^u[0-9a-f]{12}__.+$")
@@ -1022,10 +1026,15 @@ def _maybe_trigger_worker_fallback(
         activity_age_seconds = _iso_age_seconds(
             str(job_payload.get("activity_at") or job_payload.get("updated_at") or "")
         )
-        if activity_age_seconds is None or activity_age_seconds < WORKER_RUNNING_STALL_TIMEOUT_SECONDS:
+        stage_timeout_seconds = (
+            WORKER_MODEL_LOAD_STALL_TIMEOUT_SECONDS
+            if stage == "model_load"
+            else WORKER_RUNNING_STALL_TIMEOUT_SECONDS
+        )
+        if activity_age_seconds is None or activity_age_seconds < stage_timeout_seconds:
             return False
         reason = (
-            f"Helper device stopped reporting progress for over {WORKER_RUNNING_STALL_TIMEOUT_SECONDS}s. "
+            f"Helper device stopped reporting progress for over {stage_timeout_seconds}s. "
             "Switching to local server fallback."
         )
         return _claim_and_launch_local_fallback(

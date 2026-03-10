@@ -91,6 +91,7 @@ def test_worker_client_emits_progress_updates(tmp_path: Path, monkeypatch):
 
     assert [stage for _, _, stage, _ in progress_calls] == [
         "model_load",
+        "model_load",
         "generation",
         "generation",
         "stitching",
@@ -100,6 +101,7 @@ def test_worker_client_emits_progress_updates(tmp_path: Path, monkeypatch):
         "captioning",
     ]
     assert [detail for _, _, _, detail in progress_calls] == [
+        "Loading voice model...",
         f"tts model={SUPPORTED_BASE_MODELS[0]} runtime device=mps:0 dtype=torch.float16",
         "generation chunk 1/2",
         "generation chunk 2/2",
@@ -110,7 +112,7 @@ def test_worker_client_emits_progress_updates(tmp_path: Path, monkeypatch):
         "uploading completed audio",
     ]
     assert [progress for _, progress, _, _ in progress_calls] == pytest.approx(
-        [0.30, 0.535, 0.72, 0.78, 0.84, 0.85, 0.95, 0.97],
+        [0.28, 0.30, 0.535, 0.72, 0.78, 0.84, 0.85, 0.95, 0.97],
         rel=0,
         abs=1e-4,
     )

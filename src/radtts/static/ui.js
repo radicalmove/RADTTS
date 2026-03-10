@@ -116,7 +116,7 @@ const stageProgressFloors = {
 const stageProgressCaps = {
   queued: 8,
   queued_remote: 18,
-  worker_running: 82,
+  worker_running: 28,
   fallback_local: 34,
   model_load: 34,
   generation: 79,
@@ -130,7 +130,7 @@ const stageProgressCaps = {
 const stageExpectedSeconds = {
   queued: 4,
   queued_remote: 40,
-  worker_running: 90,
+  worker_running: 18,
   fallback_local: 24,
   model_load: 26,
   generation: 210,
@@ -725,6 +725,27 @@ function workerAvailabilitySummary() {
   return parts.join(", ");
 }
 
+function latestWorkerFallbackReason() {
+  const logs = Array.isArray(state.currentJobLogs) ? state.currentJobLogs : [];
+  for (let idx = logs.length - 1; idx >= 0; idx -= 1) {
+    const cleaned = stripLogTimestamp(logs[idx]).trim();
+    const lower = cleaned.toLowerCase();
+    if (lower.includes("stopped reporting progress")) {
+      return "Helper device stopped reporting progress, so this job is running on the RADTTS server (Mac mini).";
+    }
+    if (lower.includes("no worker accepted this job after")) {
+      return cleaned.replace(
+        /No worker accepted this job after \d+s\./i,
+        `No live helper pulled this job within ${Math.round(state.workerFallbackTimeoutSeconds || 0)}s.`
+      );
+    }
+    if (lower.includes("switching to local server fallback")) {
+      return "Switching to the RADTTS server (Mac mini) after helper fallback.";
+    }
+  }
+  return "";
+}
+
 function fallbackWaitRemainingSeconds() {
   if (
     !state.expectedRemoteWorker ||
@@ -751,8 +772,11 @@ function updateRunningStatusMessage() {
   if (state.computeMode === "server") {
     if (state.lastRunningStatusKey !== "server") {
       if (state.expectedRemoteWorker) {
+        const fallbackReason = latestWorkerFallbackReason();
         const availability = workerAvailabilitySummary();
-        if (Number(state.workerLiveCount || 0) <= 0) {
+        if (fallbackReason) {
+          setGenerateStatus(fallbackReason);
+        } else if (Number(state.workerLiveCount || 0) <= 0) {
           setGenerateStatus("No active helper was connected, so this job is running on the RADTTS server (Mac mini).");
         } else if (availability) {
           setGenerateStatus(
@@ -1149,6 +1173,10 @@ function detailFromLogLine(line, currentStage) {
 
   if (lower.includes("switching to local server fallback")) {
     return "No helper accepted in time. Starting on RADTTS server.";
+  }
+
+  if (lower.includes("stopped reporting progress")) {
+    return "Helper device stalled. Switching to the RADTTS server.";
   }
 
   if (chunkMatch) {
