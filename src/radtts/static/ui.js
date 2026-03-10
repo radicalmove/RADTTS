@@ -981,7 +981,7 @@ function estimatedStageSeconds(stage) {
   return base;
 }
 
-function formatOutputSummary(item, tuningLabel) {
+function formatOutputSummary(item) {
   const parts = [];
   const durationSeconds = toFiniteNumber(item?.duration_seconds);
   if (durationSeconds !== null && durationSeconds > 0) {
@@ -994,9 +994,6 @@ function formatOutputSummary(item, tuningLabel) {
   const timeText = formatOutputTime(item?.created_at);
   if (timeText) {
     parts.push(timeText);
-  }
-  if (tuningLabel) {
-    parts.push(tuningLabel);
   }
   return parts.join(" | ");
 }
@@ -2249,9 +2246,8 @@ function renderOutputs(outputs) {
     const actions = [];
     const outputId = `output-${index}`;
     const audioPlayUrl = String(item.audio_play_url || item.audio_download_url || "");
-    const tuningLabel = String(item.audio_tuning_label || "").trim();
     const versionNumber = toFiniteNumber(item.version_number);
-    const summaryLabel = formatOutputSummary(item, tuningLabel);
+    const summaryLabel = formatOutputSummary(item);
     if (item.audio_download_url) {
       if (audioPlayUrl) {
         actions.push(
