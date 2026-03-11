@@ -64,6 +64,32 @@ def test_recommended_generation_timeout_scales_for_longer_scripts():
     assert long_timeout > short_timeout
 
 
+def test_recommended_generation_timeout_penalizes_dense_sentence_chunks():
+    spread_out_text = " ".join(
+        " ".join([f"Word{idx}_{part}" for part in range(6)]) + "."
+        for idx in range(10)
+    )
+    dense_text = " ".join(
+        " ".join([f"Word{idx}_{part}" for part in range(20)]) + "."
+        for idx in range(3)
+    )
+
+    spread_timeout = recommended_generation_timeout_seconds(
+        spread_out_text,
+        chunk_mode="sentence",
+        max_new_tokens=1000,
+        minimum_seconds=600,
+    )
+    dense_timeout = recommended_generation_timeout_seconds(
+        dense_text,
+        chunk_mode="sentence",
+        max_new_tokens=1000,
+        minimum_seconds=600,
+    )
+
+    assert dense_timeout > spread_timeout
+
+
 def test_model_id_validation_rejects_unsupported():
     with pytest.raises(ValidationError):
         SynthesisRequest(

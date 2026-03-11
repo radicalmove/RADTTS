@@ -1346,9 +1346,21 @@ def save_project_script(request: Request, project_id: str, req: ProjectScriptSav
             **payload,
         }
 
+    saved_at = datetime.now(timezone.utc).isoformat()
+    version_id = f"script_{uuid.uuid4().hex[:12]}"
+    if source == "autosave" and current_entry is not None and str(current_entry.get("source") or "") == "autosave":
+        existing_version_id = str(current_entry.get("version_id") or "").strip()
+        if existing_version_id:
+            version_id = existing_version_id
+            rows = [
+                row
+                for row in rows
+                if str((row or {}).get("version_id") or "").strip() != existing_version_id
+            ]
+
     version = {
-        "version_id": f"script_{uuid.uuid4().hex[:12]}",
-        "saved_at": datetime.now(timezone.utc).isoformat(),
+        "version_id": version_id,
+        "saved_at": saved_at,
         "source": source,
         "text": text,
         "word_count": len(re.findall(r"\S+", text)),

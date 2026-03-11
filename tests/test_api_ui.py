@@ -749,6 +749,56 @@ def test_project_script_restore_and_deduplicates_identical_save():
             shutil.rmtree(project_root)
 
 
+def test_project_script_autosave_updates_existing_draft_version():
+    client = TestClient(app)
+    project_id = f"ui-{uuid.uuid4().hex[:8]}"
+    project_root = Path("projects") / project_id
+
+    try:
+        created = client.post("/projects", json={"project_id": project_id})
+        assert created.status_code == 200
+
+        first = client.post(
+            f"/projects/{project_id}/script",
+            json={"text": "Version one text.", "source": "manual"},
+        )
+        assert first.status_code == 200
+        first_payload = first.json()
+        first_version_id = first_payload["current_version_id"]
+
+        autosave_first = client.post(
+            f"/projects/{project_id}/script",
+            json={"text": "Version one text with a small edit.", "source": "autosave"},
+        )
+        assert autosave_first.status_code == 200
+        autosave_first_payload = autosave_first.json()
+        autosave_version_id = autosave_first_payload["current_version_id"]
+        assert autosave_first_payload["saved"] is True
+        assert autosave_version_id != first_version_id
+        assert len(autosave_first_payload["versions"]) == 2
+
+        autosave_second = client.post(
+            f"/projects/{project_id}/script",
+            json={"text": "Version one text with another small edit.", "source": "autosave"},
+        )
+        assert autosave_second.status_code == 200
+        autosave_second_payload = autosave_second.json()
+        assert autosave_second_payload["saved"] is True
+        assert autosave_second_payload["current_version_id"] == autosave_version_id
+        assert autosave_second_payload["text"] == "Version one text with another small edit."
+        assert len(autosave_second_payload["versions"]) == 2
+
+        loaded = client.get(f"/projects/{project_id}/script")
+        assert loaded.status_code == 200
+        loaded_payload = loaded.json()
+        assert loaded_payload["current_version_id"] == autosave_version_id
+        assert loaded_payload["text"] == "Version one text with another small edit."
+        assert len(loaded_payload["versions"]) == 2
+    finally:
+        if project_root.exists():
+            shutil.rmtree(project_root)
+
+
 def test_project_script_delete_version_updates_current_selection():
     client = TestClient(app)
     project_id = f"ui-{uuid.uuid4().hex[:8]}"

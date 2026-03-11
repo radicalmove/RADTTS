@@ -51,13 +51,29 @@ def recommended_generation_timeout_seconds(
     if not cleaned:
         return minimum
 
-    chunks = max(1, estimated_chunk_count(cleaned, chunk_mode))
-    words = word_count(cleaned)
+    if str(chunk_mode).strip().lower() == "single":
+        chunk_texts = [cleaned]
+    else:
+        chunk_texts = split_sentences(cleaned) or [cleaned]
+
+    chunks = max(1, len(chunk_texts))
+    chunk_words = [max(1, word_count(chunk)) for chunk in chunk_texts]
+    words = sum(chunk_words)
+    max_chunk_words = max(chunk_words)
     token_budget = max(0, int(max_new_tokens))
 
-    # Larger scripts scale mostly with sentence chunk count, with extra headroom
-    # for longer token budgets on the model call.
-    estimate = 180 + (chunks * 22) + (words * 1.35) + (token_budget * 0.22)
+    # Larger scripts scale mostly with chunk count, but denser chunk layouts
+    # need more headroom because the helper is doing fewer, heavier model calls.
+    dense_chunk_words = max(0, words - (chunks * 10))
+    longest_chunk_penalty = max(0, max_chunk_words - 24)
+    estimate = (
+        180
+        + (chunks * 22)
+        + (words * 1.35)
+        + (token_budget * 0.22)
+        + (dense_chunk_words * 6.0)
+        + (longest_chunk_penalty * 6.0)
+    )
     bounded = max(float(minimum), min(float(maximum), estimate))
     return int(round(bounded))
 
