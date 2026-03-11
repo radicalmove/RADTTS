@@ -195,10 +195,13 @@ def test_workers_status_endpoint_returns_counts():
     assert "worker_total_count" in payload
     assert "worker_online_count" in payload
     assert "worker_live_count" in payload
+    assert "worker_recent_count" in payload
     assert "worker_registered_count" in payload
     assert "worker_stale_count" in payload
     assert "worker_last_live_seen_at" in payload
+    assert "worker_last_recent_seen_at" in payload
     assert "worker_online_window_seconds" in payload
+    assert "worker_recent_window_seconds" in payload
 
 
 def test_builtin_voices_endpoint_returns_voice_list():

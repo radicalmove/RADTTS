@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import shutil
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -10,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
-from radtts.api import _maybe_trigger_worker_fallback, app, worker_manager
+from radtts.api import WORKER_ONLINE_WINDOW_SECONDS, WORKER_RECENT_QUEUE_GRACE_SECONDS, _maybe_trigger_worker_fallback, app, worker_manager
 from radtts.manifests import ManifestStore
 from radtts.models import JobRecord
 
@@ -330,6 +331,108 @@ def test_queue_fallback_does_not_claim_job_after_worker_accepts():
         payload = job.json()
         assert payload["status"] == "running"
         assert payload["stage"] == "model_load"
+    finally:
+        if project_root.exists():
+            shutil.rmtree(project_root)
+
+
+def test_recent_helper_extends_queue_fallback_timeout(monkeypatch):
+    client = TestClient(app)
+    project_id = f"worker-recent-{uuid.uuid4().hex[:8]}"
+    project_root = Path("projects") / project_id
+
+    try:
+        create = client.post(
+            "/projects",
+            json={"project_id": project_id, "course": "C1", "module": "M1", "lesson": "L1"},
+        )
+        assert create.status_code == 200
+
+        invite = client.post("/workers/invite", json={"capabilities": ["synthesize"]})
+        assert invite.status_code == 200
+        invite_token = invite.json()["invite_token"]
+
+        register = client.post(
+            "/workers/register",
+            json={
+                "invite_token": invite_token,
+                "worker_name": "recent-worker",
+                "capabilities": ["synthesize"],
+            },
+        )
+        assert register.status_code == 200
+
+        workers = json.loads(worker_manager.workers_path.read_text(encoding="utf-8"))
+        assert workers
+        recent_age_seconds = min(
+            WORKER_RECENT_QUEUE_GRACE_SECONDS - 5,
+            max(WORKER_ONLINE_WINDOW_SECONDS + 5, 75),
+        )
+        workers[0]["last_seen_at"] = (datetime.now(timezone.utc) - timedelta(seconds=recent_age_seconds)).isoformat()
+        worker_manager.workers_path.write_text(json.dumps(workers), encoding="utf-8")
+
+        enqueue = client.post(
+            "/synthesize/worker",
+            json={
+                "project_id": project_id,
+                "text": "Hello from worker queue.",
+                "reference_audio_b64": _b64_blob(8),
+                "reference_audio_filename": "reference.wav",
+                "reference_text": "hello",
+                "model_id": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+                "max_new_tokens": 300,
+                "chunk_mode": "single",
+                "pause_config": {"min_seconds": 0.2, "max_seconds": 0.4, "seed": 1},
+                "output_format": "wav",
+                "output_name": "worker_recent_output",
+                "voice_clone_authorized": True,
+            },
+        )
+        assert enqueue.status_code == 200
+        assert enqueue.json()["fallback_timeout_seconds"] == WORKER_RECENT_QUEUE_GRACE_SECONDS
+        job_id = enqueue.json()["job_id"]
+
+        store = ManifestStore(project_root / "manifests")
+        payload = store.get_job(job_id)
+        assert payload is not None
+        assert payload["queue_fallback_timeout_seconds"] == WORKER_RECENT_QUEUE_GRACE_SECONDS
+
+        claimed: dict[str, object] = {}
+
+        def fake_claim_and_launch_local_fallback(**kwargs):  # noqa: ANN001
+            claimed.update(kwargs)
+            return True
+
+        monkeypatch.setattr("radtts.api._claim_and_launch_local_fallback", fake_claim_and_launch_local_fallback)
+        request = Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": f"/jobs/{job_id}",
+                "headers": [],
+                "session": {},
+            }
+        )
+
+        payload["created_at"] = (
+            datetime.now(timezone.utc) - timedelta(seconds=WORKER_RECENT_QUEUE_GRACE_SECONDS - 5)
+        ).isoformat()
+        assert not _maybe_trigger_worker_fallback(
+            request,
+            scoped_project_id=project_id,
+            job_payload=payload,
+        )
+
+        payload["created_at"] = (
+            datetime.now(timezone.utc) - timedelta(seconds=WORKER_RECENT_QUEUE_GRACE_SECONDS + 5)
+        ).isoformat()
+        assert _maybe_trigger_worker_fallback(
+            request,
+            scoped_project_id=project_id,
+            job_payload=payload,
+        )
+        assert claimed["job_id"] == job_id
+        assert f"after {WORKER_RECENT_QUEUE_GRACE_SECONDS}s" in str(claimed["reason"])
     finally:
         if project_root.exists():
             shutil.rmtree(project_root)

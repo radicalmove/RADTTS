@@ -326,6 +326,7 @@ class JobRecord(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     activity_at: datetime | None = None
+    queue_fallback_timeout_seconds: int | None = None
     error: str | None = None
     logs: list[str] = Field(default_factory=list)
     outputs: dict[str, Any] = Field(default_factory=dict)

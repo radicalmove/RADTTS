@@ -115,6 +115,14 @@ WORKER_MODEL_LOAD_STALL_TIMEOUT_SECONDS = max(
     WORKER_RUNNING_STALL_TIMEOUT_SECONDS,
     _env_int("RADTTS_WORKER_MODEL_LOAD_STALL_TIMEOUT_SECONDS", 600),
 )
+WORKER_RECENT_WINDOW_SECONDS = max(
+    WORKER_ONLINE_WINDOW_SECONDS,
+    min(WORKER_MODEL_LOAD_STALL_TIMEOUT_SECONDS, 180),
+)
+WORKER_RECENT_QUEUE_GRACE_SECONDS = max(
+    WORKER_FALLBACK_TIMEOUT_SECONDS,
+    WORKER_RECENT_WINDOW_SECONDS,
+)
 SCRIPT_VERSION_HISTORY_LIMIT = max(10, _env_int("RADTTS_SCRIPT_VERSION_HISTORY_LIMIT", 60))
 SCOPED_PROJECT_RE = re.compile(r"^u[0-9a-f]{12}__.+$")
 BUILTIN_VOICE_PREVIEW_TEXT = "Hello, this is a quick built-in voice preview."
@@ -240,22 +248,34 @@ def _display_project_id(project_id: str) -> str:
 
 
 def _worker_availability_snapshot() -> dict[str, int | str | None]:
-    now = datetime.now(timezone.utc)
-    workers = worker_manager.list_workers()
-    online = 0
-    latest_live_seen_at: datetime | None = None
-
-    for worker in workers:
-        raw_seen = worker.last_seen_at
+    def _parse_seen_at(value: str | None) -> datetime | None:
+        raw_seen = str(value or "").strip()
         if not raw_seen:
-            continue
+            return None
         try:
             last_seen = datetime.fromisoformat(raw_seen)
         except ValueError:
-            continue
+            return None
         if last_seen.tzinfo is None:
             last_seen = last_seen.replace(tzinfo=timezone.utc)
+        return last_seen
+
+    now = datetime.now(timezone.utc)
+    workers = worker_manager.list_workers()
+    online = 0
+    recent = 0
+    latest_live_seen_at: datetime | None = None
+    latest_recent_seen_at: datetime | None = None
+
+    for worker in workers:
+        last_seen = _parse_seen_at(worker.last_seen_at)
+        if last_seen is None:
+            continue
         age_seconds = (now - last_seen).total_seconds()
+        if age_seconds <= WORKER_RECENT_WINDOW_SECONDS:
+            recent += 1
+            if latest_recent_seen_at is None or last_seen > latest_recent_seen_at:
+                latest_recent_seen_at = last_seen
         if age_seconds <= WORKER_ONLINE_WINDOW_SECONDS:
             online += 1
             if latest_live_seen_at is None or last_seen > latest_live_seen_at:
@@ -267,11 +287,22 @@ def _worker_availability_snapshot() -> dict[str, int | str | None]:
         "worker_total_count": len(workers),
         "worker_online_count": online,
         "worker_live_count": online,
+        "worker_recent_count": recent,
         "worker_registered_count": len(workers),
         "worker_stale_count": stale,
         "worker_online_window_seconds": WORKER_ONLINE_WINDOW_SECONDS,
+        "worker_recent_window_seconds": WORKER_RECENT_WINDOW_SECONDS,
         "worker_last_live_seen_at": latest_live_seen_at.isoformat() if latest_live_seen_at else None,
+        "worker_last_recent_seen_at": latest_recent_seen_at.isoformat() if latest_recent_seen_at else None,
     }
+
+
+def _worker_queue_fallback_timeout_seconds(worker_snapshot: dict[str, int | str | None] | None = None) -> int:
+    snapshot = worker_snapshot or _worker_availability_snapshot()
+    recent = max(0, int(snapshot.get("worker_recent_count") or 0))
+    if recent > 0:
+        return WORKER_RECENT_QUEUE_GRACE_SECONDS
+    return WORKER_FALLBACK_TIMEOUT_SECONDS
 
 
 def _inferred_owner_key_from_project_id(scoped_project_id: str) -> str:
@@ -961,17 +992,22 @@ def _schedule_worker_fallback_watch(
     job_id: str,
     owner_key: str = "",
     owner_label: str = "",
+    fallback_timeout_seconds: int | None = None,
 ) -> None:
     if not WORKER_FALLBACK_TO_LOCAL:
         return
 
-    reason = (
-        f"No worker accepted this job after {WORKER_FALLBACK_TIMEOUT_SECONDS}s. "
-        "Switching to local server fallback."
+    timeout_seconds = max(
+        WORKER_FALLBACK_TIMEOUT_SECONDS,
+        int(fallback_timeout_seconds or WORKER_FALLBACK_TIMEOUT_SECONDS),
     )
 
     def _watcher() -> None:
-        time.sleep(WORKER_FALLBACK_TIMEOUT_SECONDS)
+        time.sleep(timeout_seconds)
+        reason = (
+            f"No worker accepted this job after {timeout_seconds}s. "
+            "Switching to local server fallback."
+        )
         _claim_and_launch_local_fallback(
             job_id=job_id,
             reason=reason,
@@ -1014,10 +1050,17 @@ def _maybe_trigger_worker_fallback(
     owner_key, owner_label = _current_user_key_and_label(request)
 
     if status == "queued" and stage == "queued_remote":
-        if age_seconds is None or age_seconds < WORKER_FALLBACK_TIMEOUT_SECONDS:
+        try:
+            queue_timeout_seconds = max(
+                WORKER_FALLBACK_TIMEOUT_SECONDS,
+                int(job_payload.get("queue_fallback_timeout_seconds") or WORKER_FALLBACK_TIMEOUT_SECONDS),
+            )
+        except (TypeError, ValueError):
+            queue_timeout_seconds = WORKER_FALLBACK_TIMEOUT_SECONDS
+        if age_seconds is None or age_seconds < queue_timeout_seconds:
             return False
         reason = (
-            f"No worker accepted this job after {WORKER_FALLBACK_TIMEOUT_SECONDS}s. "
+            f"No worker accepted this job after {queue_timeout_seconds}s. "
             "Switching to local server fallback."
         )
         return _claim_and_launch_local_fallback(
@@ -1708,13 +1751,18 @@ def synthesize_simple(request: Request, req: SimpleSynthesisRequest):
             worker_payload["reference_audio_b64"] = base64.b64encode(reference_path.read_bytes()).decode("utf-8")
             worker_payload["reference_audio_filename"] = source_filename or reference_path.name
         worker_req = WorkerSynthesisEnqueueRequest(**worker_payload)
-        job_id = worker_manager.enqueue_synthesis_job(worker_req)
         worker_snapshot = _worker_availability_snapshot()
+        queue_fallback_timeout_seconds = _worker_queue_fallback_timeout_seconds(worker_snapshot)
+        job_id = worker_manager.enqueue_synthesis_job(
+            worker_req,
+            queue_fallback_timeout_seconds=queue_fallback_timeout_seconds,
+        )
         if WORKER_FALLBACK_TO_LOCAL:
             _schedule_worker_fallback_watch(
                 job_id=job_id,
                 owner_key=owner_key or "",
                 owner_label=owner_label or "",
+                fallback_timeout_seconds=queue_fallback_timeout_seconds,
             )
         return {
             "job_id": job_id,
@@ -1725,7 +1773,7 @@ def synthesize_simple(request: Request, req: SimpleSynthesisRequest):
             "output_name": output_name,
             "worker_mode": True,
             "fallback_enabled": WORKER_FALLBACK_TO_LOCAL,
-            "fallback_timeout_seconds": WORKER_FALLBACK_TIMEOUT_SECONDS,
+            "fallback_timeout_seconds": queue_fallback_timeout_seconds,
             **worker_snapshot,
         }
 
@@ -1751,20 +1799,27 @@ def synthesize_worker(request: Request, req: WorkerSynthesisEnqueueRequest):
     _require_auth(request)
     scoped_req = req.model_copy(update={"project_id": _resolve_project_id_for_request(request, req.project_id)})
     _cancel_existing_project_worker_jobs(scoped_req.project_id)
-    job_id = worker_manager.enqueue_synthesis_job(scoped_req)
     worker_snapshot = _worker_availability_snapshot()
+    queue_fallback_timeout_seconds = _worker_queue_fallback_timeout_seconds(worker_snapshot)
+    job_id = worker_manager.enqueue_synthesis_job(
+        scoped_req,
+        queue_fallback_timeout_seconds=queue_fallback_timeout_seconds,
+    )
     owner_key, owner_label = _current_user_key_and_label(request)
     if WORKER_FALLBACK_TO_LOCAL:
         _schedule_worker_fallback_watch(
             job_id=job_id,
             owner_key=owner_key or "",
             owner_label=owner_label or "",
+            fallback_timeout_seconds=queue_fallback_timeout_seconds,
         )
     return {
         "job_id": job_id,
         "status": "queued",
         "stage": "queued_remote",
         "worker_mode": True,
+        "fallback_enabled": WORKER_FALLBACK_TO_LOCAL,
+        "fallback_timeout_seconds": queue_fallback_timeout_seconds,
         **worker_snapshot,
     }
 

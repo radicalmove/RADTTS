@@ -163,7 +163,12 @@ class WorkerManager:
             )
         return result
 
-    def enqueue_synthesis_job(self, req: WorkerSynthesisEnqueueRequest) -> str:
+    def enqueue_synthesis_job(
+        self,
+        req: WorkerSynthesisEnqueueRequest,
+        *,
+        queue_fallback_timeout_seconds: int | None = None,
+    ) -> str:
         paths = self.project_manager.ensure_project(req.project_id)
         store = ManifestStore(paths.manifests)
 
@@ -176,6 +181,7 @@ class WorkerManager:
             status=JobStatus.QUEUED,
             stage="queued_remote",
             progress=0.0,
+            queue_fallback_timeout_seconds=queue_fallback_timeout_seconds,
             logs=[f"{now} queued for worker execution"],
         )
         store.upsert_job(job_record)
