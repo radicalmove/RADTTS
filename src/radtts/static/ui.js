@@ -573,7 +573,7 @@ function estimateEtaSeconds(progressPercent, stage) {
     let remainingStage = stageExpected - elapsedStageSec;
     if (remainingStage < 0) {
       // Keep ETA moving even if a stage runs longer than expected.
-      remainingStage = Math.min(300, 20 + Math.abs(remainingStage) * 0.5);
+      remainingStage = Math.min(900, 45 + Math.abs(remainingStage) * 0.85);
     }
 
     const remainingFuture = expectedFutureStageSeconds(stage);
@@ -621,13 +621,20 @@ function smoothEtaDisplay(etaSeconds, stage) {
   const elapsedSec = Math.max(0, (nowMs - state.etaUpdatedAtMs) / 1000);
   const decayed = Math.max(1, state.etaSeconds - elapsedSec);
   const stageChanged = state.etaStage !== null && state.etaStage !== stage;
+  const severeUnderestimate = (
+    (decayed <= 10 && etaSeconds >= 30)
+    || (etaSeconds - decayed >= 60 && etaSeconds >= decayed * 2.5)
+  );
   let nextEta = decayed;
 
-  if (stageChanged || etaSeconds < decayed - 0.75) {
+  // Recover from obvious underestimates so long jobs do not get stuck at 00:01.
+  if (severeUnderestimate) {
+    nextEta = Math.max(1, etaSeconds);
+  } else if (stageChanged || etaSeconds < decayed - 0.75) {
     nextEta = Math.max(1, etaSeconds);
   }
 
-  state.etaSeconds = Math.min(decayed, nextEta);
+  state.etaSeconds = Math.max(1, nextEta);
   state.etaUpdatedAtMs = nowMs;
   state.etaStage = stage;
   return state.etaSeconds;

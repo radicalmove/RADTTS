@@ -15,7 +15,7 @@ from radtts.models import (
     SynthesisRequest,
 )
 from radtts.services.tts import PausePlanner
-from radtts.utils.text import split_sentences
+from radtts.utils.text import estimated_chunk_count, recommended_generation_timeout_seconds, split_sentences
 
 
 def test_sentence_splitter_preserves_sentences():
@@ -39,6 +39,29 @@ def test_pause_generation_bounds_and_seed_determinism():
     assert pauses_a == pauses_b
     assert len(pauses_a) == 2
     assert all(config.min_seconds <= value <= config.max_seconds for value in pauses_a)
+
+
+def test_estimated_chunk_count_respects_chunk_mode():
+    text = "One sentence. Two sentence. Three sentence."
+    assert estimated_chunk_count(text, "sentence") == 3
+    assert estimated_chunk_count(text, "single") == 1
+
+
+def test_recommended_generation_timeout_scales_for_longer_scripts():
+    short_timeout = recommended_generation_timeout_seconds(
+        "Short example.",
+        chunk_mode="sentence",
+        max_new_tokens=400,
+        minimum_seconds=600,
+    )
+    long_timeout = recommended_generation_timeout_seconds(
+        " ".join([f"Sentence {idx}." for idx in range(1, 41)]),
+        chunk_mode="sentence",
+        max_new_tokens=1400,
+        minimum_seconds=600,
+    )
+    assert short_timeout == 600
+    assert long_timeout > short_timeout
 
 
 def test_model_id_validation_rejects_unsupported():

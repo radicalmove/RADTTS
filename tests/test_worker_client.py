@@ -187,6 +187,71 @@ def test_worker_client_times_out_generation_and_reports_failure(tmp_path: Path, 
     assert "timed out" in str(fail_calls[0]["error"])
 
 
+def test_worker_client_extends_generation_timeout_for_long_scripts(tmp_path: Path, monkeypatch):
+    client = WorkerClient(
+        server_url="http://example.test",
+        config_path=tmp_path / "worker.json",
+        worker_name="test-worker",
+        invite_token=None,
+        poll_seconds=5,
+    )
+    client.worker_id = "worker-1"
+    client.api_key = "api-key"
+    client.generation_timeout_seconds = 600
+
+    captured_timeout: dict[str, float] = {}
+
+    monkeypatch.setattr(client, "_post_json", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        client.tts_service,
+        "load_model_with_runtime",
+        lambda model_id: (object(), f"tts model={model_id} runtime device=mps:0 dtype=torch.float32"),
+    )
+    monkeypatch.setattr("radtts.worker_client.probe_duration_seconds", lambda path: 8.4)
+    monkeypatch.setattr(
+        client.quality_service,
+        "evaluate",
+        lambda **_: QualityReport(
+            speech_rate_wpm=120.0,
+            pause_stats={"min": 0.2, "max": 0.6, "mean": 0.4, "stddev": 0.1},
+            warnings=[],
+        ),
+    )
+
+    def fake_synthesize(req, output_dir, *, on_progress=None, cancel_check=None):
+        output_path = output_dir / f"{req.output_name}.wav"
+        output_path.write_bytes(b"RIFF")
+        return output_path, [], "reference text"
+
+    monkeypatch.setattr(client.tts_service, "synthesize", fake_synthesize)
+
+    def fake_run_with_retry_timeout(*, stage_name, fn, timeout_seconds, retries, on_log):
+        captured_timeout["value"] = float(timeout_seconds)
+        return fn()
+
+    monkeypatch.setattr("radtts.worker_client.run_with_retry_timeout", fake_run_with_retry_timeout)
+
+    payload = WorkerSynthesisEnqueueRequest(
+        project_id="proj-worker",
+        text=" ".join([f"Sentence {idx}." for idx in range(1, 41)]),
+        reference_audio_b64="QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw",
+        reference_audio_filename="reference.wav",
+        reference_text="hello",
+        model_id=SUPPORTED_BASE_MODELS[0],
+        max_new_tokens=1400,
+        chunk_mode="sentence",
+        pause_config=PauseConfig(seed=1),
+        output_format=OutputFormat.WAV,
+        output_name="worker-long-timeout",
+        generate_transcript=False,
+        voice_clone_authorized=True,
+    ).model_dump(mode="json")
+
+    client._process_synthesis_job("job-worker-long", payload)
+
+    assert captured_timeout["value"] > 600
+
+
 def test_worker_client_accepts_builtin_payload_with_null_reference_fields(tmp_path: Path, monkeypatch):
     client = WorkerClient(
         server_url="http://example.test",

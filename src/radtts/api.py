@@ -54,6 +54,7 @@ from radtts.constants import (
 )
 from radtts.worker_manager import WorkerManager
 from radtts.utils.audio import probe_duration_seconds
+from radtts.utils.text import recommended_generation_timeout_seconds
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 try:
@@ -894,11 +895,17 @@ def _run_local_synthesis_from_worker_payload(
         generate_transcript=worker_payload.generate_transcript,
         voice_clone_authorized=True,
     )
+    fallback_generation_timeout_seconds = recommended_generation_timeout_seconds(
+        worker_payload.text,
+        chunk_mode=worker_payload.chunk_mode,
+        max_new_tokens=fallback_max_new_tokens,
+        minimum_seconds=LOCAL_FALLBACK_GENERATION_TIMEOUT_SECONDS,
+    )
 
     try:
         fallback_orchestrator = PipelineOrchestrator(
             projects_root=pipeline.project_manager.projects_root,
-            stage_timeouts={"generation": LOCAL_FALLBACK_GENERATION_TIMEOUT_SECONDS},
+            stage_timeouts={"generation": fallback_generation_timeout_seconds},
             stage_retries={"generation": 0},
         )
         fallback_orchestrator._cancelled = pipeline.orchestrator._cancelled

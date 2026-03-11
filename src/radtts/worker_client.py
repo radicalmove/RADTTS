@@ -29,6 +29,7 @@ from radtts.services.quality import QualityService
 from radtts.services.tts import TTSService
 from radtts.utils.audio import probe_duration_seconds
 from radtts.utils.runtime import run_with_retry_timeout
+from radtts.utils.text import estimated_chunk_count, recommended_generation_timeout_seconds
 
 _GENERATION_CHUNK_RE = re.compile(r"^generation chunk (\d+)/(\d+)$", re.IGNORECASE)
 DEFAULT_WORKER_GENERATION_TIMEOUT_SECONDS = 600
@@ -61,6 +62,19 @@ class WorkerClient:
         self.generation_timeout_seconds = max(
             30,
             int(os.environ.get("RADTTS_WORKER_GENERATION_TIMEOUT_SECONDS", DEFAULT_WORKER_GENERATION_TIMEOUT_SECONDS)),
+        )
+
+    def _generation_timeout_for_request(self, req: WorkerSynthesisEnqueueRequest) -> float:
+        if self.generation_timeout_seconds < 1:
+            return self.generation_timeout_seconds
+        return max(
+            self.generation_timeout_seconds,
+            recommended_generation_timeout_seconds(
+                req.text,
+                chunk_mode=req.chunk_mode,
+                max_new_tokens=req.max_new_tokens,
+                minimum_seconds=self.generation_timeout_seconds,
+            ),
         )
 
     def _post_json(self, path: str, payload: dict[str, Any], timeout: int = 120) -> dict[str, Any]:
@@ -218,6 +232,8 @@ class WorkerClient:
             if normalized_payload.get("reference_audio_filename") is None:
                 normalized_payload.pop("reference_audio_filename", None)
         req = WorkerSynthesisEnqueueRequest(**normalized_payload)
+        generation_timeout_seconds = self._generation_timeout_for_request(req)
+        estimated_chunks = estimated_chunk_count(req.text, req.chunk_mode)
 
         with tempfile.TemporaryDirectory(prefix="radtts_worker_") as tmp:
             tmp_path = Path(tmp)
@@ -231,12 +247,14 @@ class WorkerClient:
                 except Exception:
                     reference_duration_seconds = None
             LOG.info(
-                "starting synthesis job_id=%s reference_audio=%s reference_seconds=%s reference_text_chars=%s built_in_speaker=%s",
+                "starting synthesis job_id=%s reference_audio=%s reference_seconds=%s reference_text_chars=%s built_in_speaker=%s estimated_chunks=%s generation_timeout_seconds=%s",
                 job_id,
                 req.reference_audio_filename,
                 reference_duration_seconds,
                 len(str(req.reference_text or "")),
                 req.built_in_speaker,
+                estimated_chunks,
+                generation_timeout_seconds,
             )
             stage_durations_seconds: dict[str, float] = {}
             progress_state = {
@@ -328,7 +346,7 @@ class WorkerClient:
                         output_dir=tmp_path,
                         on_progress=on_tts_progress,
                     ),
-                    timeout_seconds=self.generation_timeout_seconds,
+                    timeout_seconds=generation_timeout_seconds,
                     retries=0,
                     on_log=lambda message: LOG.info("job_id=%s %s", job_id, message),
                 )
