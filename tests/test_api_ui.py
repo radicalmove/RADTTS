@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import uuid
 from pathlib import Path
@@ -34,6 +35,46 @@ def test_ui_homepage_renders():
     assert response.status_code == 200
     assert "RADTTS Studio" in response.text
     assert "Create Project" in response.text
+    assert "Recent projects" in response.text
+
+
+def test_projects_endpoint_returns_recent_activity_first():
+    client = TestClient(app)
+    older_project_id = f"ui-old-{uuid.uuid4().hex[:8]}"
+    newer_project_id = f"ui-new-{uuid.uuid4().hex[:8]}"
+    created_roots: list[Path] = []
+
+    try:
+        older_created = client.post("/projects", json={"project_id": older_project_id})
+        newer_created = client.post("/projects", json={"project_id": newer_project_id})
+        assert older_created.status_code == 200
+        assert newer_created.status_code == 200
+
+        older_root = Path(older_created.json()["project_root"])
+        newer_root = Path(newer_created.json()["project_root"])
+        created_roots.extend([older_root, newer_root])
+
+        older_ts = 1_700_000_000
+        newer_ts = 1_800_000_000
+        for path in older_root.joinpath("manifests").glob("*.json"):
+            os.utime(path, (older_ts, older_ts))
+        os.utime(older_root, (older_ts, older_ts))
+
+        for path in newer_root.joinpath("manifests").glob("*.json"):
+            os.utime(path, (newer_ts, newer_ts))
+        os.utime(newer_root, (newer_ts, newer_ts))
+
+        listed = client.get("/projects")
+        assert listed.status_code == 200
+        rows = listed.json()["projects"]
+        older_index = next(idx for idx, row in enumerate(rows) if row["project_id"] == older_project_id)
+        newer_index = next(idx for idx, row in enumerate(rows) if row["project_id"] == newer_project_id)
+        assert newer_index < older_index
+        assert rows[newer_index]["updated_at"]
+    finally:
+        for root in created_roots:
+            if root.exists():
+                shutil.rmtree(root)
 
 
 def test_project_outputs_endpoint_returns_empty_list_for_new_project():

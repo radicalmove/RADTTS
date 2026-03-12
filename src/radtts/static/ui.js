@@ -18,6 +18,7 @@ const workerSetupCloseBtn = document.getElementById("worker-setup-close-btn");
 const workerSetupModalStatusNode = document.getElementById("worker-setup-modal-status");
 
 const existingProjectSelectNode = document.getElementById("existing-project-select");
+const recentProjectListNode = document.getElementById("recent-project-list");
 const refreshProjectsBtn = document.getElementById("refresh-projects-btn");
 const projectGatewayStatusNode = document.getElementById("project-gateway-status");
 
@@ -2238,11 +2239,15 @@ function extensionForMimeType(mimeType) {
 async function loadProjects(preselectProjectId = null) {
   if (!existingProjectSelectNode) return;
   existingProjectSelectNode.innerHTML = '<option value="">Loading projects...</option>';
+  if (recentProjectListNode) {
+    recentProjectListNode.innerHTML = '<p class="recent-project-empty">Loading recent projects...</p>';
+  }
 
   try {
     const data = await requestJSON("/projects", "GET");
     const projects = Array.isArray(data.projects) ? data.projects : [];
     existingProjectSelectNode.innerHTML = "";
+    renderRecentProjects(projects);
 
     if (!projects.length) {
       existingProjectSelectNode.innerHTML = '<option value="">No projects yet</option>';
@@ -2275,7 +2280,69 @@ async function loadProjects(preselectProjectId = null) {
     setGatewayStatus("");
   } catch (err) {
     existingProjectSelectNode.innerHTML = '<option value="">Unable to load projects</option>';
+    if (recentProjectListNode) {
+      recentProjectListNode.innerHTML = '<p class="recent-project-empty">Could not load recent projects.</p>';
+    }
     setGatewayStatus(`Could not load projects: ${String(err)}`, true);
+  }
+}
+
+function openProject(projectRef, projectLabel = projectRef) {
+  if (!projectRef) return;
+  if (existingProjectSelectNode) {
+    existingProjectSelectNode.value = projectRef;
+  }
+  applyActiveProject(projectRef, projectLabel);
+  setGatewayStatus("");
+}
+
+function renderRecentProjects(projects) {
+  if (!recentProjectListNode) return;
+  const items = Array.isArray(projects) ? projects.slice(0, 5) : [];
+
+  if (!items.length) {
+    recentProjectListNode.innerHTML = '<p class="recent-project-empty">No recent projects yet.</p>';
+    return;
+  }
+
+  recentProjectListNode.innerHTML = "";
+
+  for (const project of items) {
+    const projectRef = String(project.project_ref || project.project_id || "");
+    const projectLabel = String(project.project_id || projectRef);
+    const shared = Boolean(project.shared);
+    const ownerLabel = String(project.owner_label || "").trim();
+    const updatedAt = String(project.updated_at || "").trim();
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "recent-project-btn";
+    button.dataset.projectRef = projectRef;
+    button.dataset.projectLabel = projectLabel;
+
+    const title = document.createElement("span");
+    title.className = "recent-project-title";
+    title.textContent = projectLabel;
+    button.appendChild(title);
+
+    const metaParts = [];
+    if (shared) {
+      metaParts.push(`shared${ownerLabel ? ` from ${ownerLabel}` : ""}`);
+    }
+    if (updatedAt) {
+      metaParts.push(`updated ${formatIso(updatedAt)}`);
+    }
+    if (metaParts.length) {
+      const meta = document.createElement("span");
+      meta.className = "recent-project-meta";
+      meta.textContent = metaParts.join(" | ");
+      button.appendChild(meta);
+    }
+
+    button.addEventListener("click", () => {
+      openProject(projectRef, projectLabel);
+    });
+    recentProjectListNode.appendChild(button);
   }
 }
 
@@ -2773,8 +2840,7 @@ function bindProjectGateway() {
       }
       const selectedOption = existingProjectSelectNode.selectedOptions[0];
       const projectLabel = selectedOption?.dataset?.projectLabel || projectRef;
-      applyActiveProject(projectRef, projectLabel);
-      setGatewayStatus("");
+      openProject(projectRef, projectLabel);
     });
   }
 

@@ -305,6 +305,31 @@ def _worker_queue_fallback_timeout_seconds(worker_snapshot: dict[str, int | str 
     return WORKER_FALLBACK_TIMEOUT_SECONDS
 
 
+def _path_mtime(path: Path) -> datetime | None:
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+    except FileNotFoundError:
+        return None
+
+
+def _project_last_activity_at(scoped_project_id: str) -> datetime:
+    paths = pipeline.project_manager.get_paths(scoped_project_id)
+    timestamps: list[datetime] = []
+
+    root_mtime = _path_mtime(paths.root)
+    if root_mtime is not None:
+        timestamps.append(root_mtime)
+
+    for manifest_path in paths.manifests.glob("*.json"):
+        manifest_mtime = _path_mtime(manifest_path)
+        if manifest_mtime is not None:
+            timestamps.append(manifest_mtime)
+
+    if not timestamps:
+        return datetime.fromtimestamp(0, tz=timezone.utc)
+    return max(timestamps)
+
+
 def _inferred_owner_key_from_project_id(scoped_project_id: str) -> str:
     if "__" not in scoped_project_id:
         return ""
@@ -1160,7 +1185,7 @@ def create_project(request: Request, req: ProjectCreateRequest):
 @app.get("/projects")
 def list_projects(request: Request):
     _require_auth(request)
-    projects: list[dict[str, object]] = []
+    projects: list[tuple[datetime, dict[str, object]]] = []
     for scoped_project_id in pipeline.list_projects():
         access = _resolve_access_for_user(request, scoped_project_id)
         if not bool(access.get("can_access")):
@@ -1169,16 +1194,22 @@ def list_projects(request: Request):
         visible_project_id = _display_project_id(scoped_project_id)
         owner = access.get("owner") if isinstance(access.get("owner"), dict) else {}
         owner_label = str(owner.get("display_name") or owner.get("email") or owner.get("user_key") or "")
+        last_activity_at = _project_last_activity_at(scoped_project_id)
         projects.append(
-            {
-                "project_id": visible_project_id,
-                "project_ref": scoped_project_id,
-                "shared": not bool(access.get("is_owner")),
-                "owner_label": owner_label,
-            }
+            (
+                last_activity_at,
+                {
+                    "project_id": visible_project_id,
+                    "project_ref": scoped_project_id,
+                    "shared": not bool(access.get("is_owner")),
+                    "owner_label": owner_label,
+                    "updated_at": last_activity_at.isoformat(),
+                },
+            )
         )
 
-    return {"projects": projects}
+    projects.sort(key=lambda item: (item[0], str(item[1].get("project_id") or "")), reverse=True)
+    return {"projects": [payload for _, payload in projects]}
 
 
 @app.post("/projects/{project_id}/reference-audio")
