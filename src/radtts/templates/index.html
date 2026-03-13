@@ -30,10 +30,27 @@
         {% if current_user %}
         <div class="topbar-app-links topbar-app-links-center">
         {% if psychek_app_url %}
-        <a class="topbar-btn topbar-btn-app topbar-btn-app-radcite" href="{{ psychek_app_url }}">RADcite</a>
+        <a class="topbar-btn topbar-btn-app topbar-btn-app-radcite" href="{{ psychek_app_url }}">
+          <svg class="topbar-app-icon" viewBox="0 0 64 64" aria-hidden="true">
+            <path d="M18 12H36L46 22V52H18V12Z" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M36 12V22H46" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M24 30H36" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>
+            <path d="M24 40H40" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>
+            <circle cx="48" cy="47" r="7" fill="currentColor"/>
+          </svg>
+          <span>RADcite</span>
+        </a>
         {% endif %}
         {% if radcast_app_url %}
-        <a class="topbar-btn topbar-btn-app topbar-btn-app-radcast" href="{{ radcast_app_url }}">RADcast</a>
+        <a class="topbar-btn topbar-btn-app topbar-btn-app-radcast" href="{{ radcast_app_url }}">
+          <svg class="topbar-app-icon" viewBox="0 0 64 64" aria-hidden="true">
+            <circle cx="18" cy="32" r="4.5" fill="none" stroke="currentColor" stroke-width="4"/>
+            <path d="M27 22C35 22 41 26.5 41 32C41 37.5 35 42 27 42" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M37 15C48 15 55 22.5 55 32C55 41.5 48 49 37 49" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="48" cy="47" r="7" fill="currentColor"/>
+          </svg>
+          <span>RADcast</span>
+        </a>
         {% endif %}
         </div>
         {% endif %}
