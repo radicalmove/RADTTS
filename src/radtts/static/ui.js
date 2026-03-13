@@ -52,6 +52,13 @@ const referenceTrimSelectionSummaryNode = document.getElementById("reference-tri
 const referenceTrimPlayBtn = document.getElementById("reference-trim-play-btn");
 const referenceTrimApplyBtn = document.getElementById("reference-trim-apply-btn");
 const referenceTrimSkipBtn = document.getElementById("reference-trim-skip-btn");
+const shareProjectModalNode = document.getElementById("share-project-modal");
+const shareProjectCloseBtn = document.getElementById("share-project-close-btn");
+const shareProjectUserSelectNode = document.getElementById("share-project-user-select");
+const shareProjectGrantBtn = document.getElementById("share-project-grant-btn");
+const shareProjectStatusNode = document.getElementById("share-project-status");
+const shareProjectOwnerNode = document.getElementById("share-project-owner");
+const shareProjectMembersNode = document.getElementById("share-project-members");
 const builtinVoiceSelectNode = document.getElementById("builtin-voice-select");
 const builtinVoiceStatusNode = document.getElementById("builtin-voice-status");
 const previewBuiltinVoiceBtn = document.getElementById("preview-builtin-voice-btn");
@@ -205,6 +212,9 @@ const state = {
   currentJobLogs: [],
   completedOutputs: [],
   currentRunProfile: null,
+  shareProjectUsers: [],
+  shareProjectCollaborators: [],
+  shareProjectOwner: null,
 };
 
 function cleanOptional(value) {
@@ -279,17 +289,194 @@ function hideWorkerSetupLinks() {
   }
 }
 
+function syncModalOpenState() {
+  const anyModalOpen = [workerSetupModalNode, referenceTrimModalNode, shareProjectModalNode]
+    .some((node) => node && !node.hidden);
+  document.body.classList.toggle("modal-open", anyModalOpen);
+}
+
 function openWorkerSetupModal() {
   if (!workerSetupModalNode) return;
   workerSetupModalNode.hidden = false;
-  document.body.classList.add("modal-open");
+  syncModalOpenState();
   setWorkerSetupModalStatus("Preparing setup options...");
 }
 
 function closeWorkerSetupModal() {
   if (!workerSetupModalNode) return;
   workerSetupModalNode.hidden = true;
-  document.body.classList.remove("modal-open");
+  syncModalOpenState();
+}
+
+function setShareProjectStatus(message, isError = false) {
+  if (!shareProjectStatusNode) return;
+  shareProjectStatusNode.textContent = message || "";
+  shareProjectStatusNode.style.color = isError ? "#a73527" : "#555";
+}
+
+function formatShareProjectUserLabel(user) {
+  const email = cleanOptional(user?.email) || "";
+  const displayName = cleanOptional(user?.display_name) || email || "User";
+  const username = cleanOptional(user?.username);
+  const details = [];
+  if (username) details.push(`@${username}`);
+  if (email && displayName.toLowerCase() !== email.toLowerCase()) details.push(email);
+  return details.length ? `${displayName} (${details.join(" · ")})` : displayName;
+}
+
+function renderShareProjectOwner(owner) {
+  if (!shareProjectOwnerNode) return;
+  const label = formatShareProjectUserLabel(owner || {});
+  shareProjectOwnerNode.textContent = label === "User" ? "Unknown owner" : label;
+}
+
+function renderShareableUserOptions(users, collaborators) {
+  if (!shareProjectUserSelectNode) return;
+  const collaboratorEmails = new Set(
+    (Array.isArray(collaborators) ? collaborators : [])
+      .map((row) => cleanOptional(row?.email)?.toLowerCase())
+      .filter(Boolean)
+  );
+  const availableUsers = (Array.isArray(users) ? users : []).filter((candidate) => {
+    const email = cleanOptional(candidate?.email)?.toLowerCase();
+    return Boolean(email) && !collaboratorEmails.has(email);
+  });
+
+  state.shareProjectUsers = availableUsers;
+  shareProjectUserSelectNode.innerHTML = "";
+
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = availableUsers.length ? "Select a user..." : "No additional users available";
+  placeholder.disabled = true;
+  placeholder.selected = true;
+  shareProjectUserSelectNode.appendChild(placeholder);
+
+  for (const candidate of availableUsers) {
+    const option = document.createElement("option");
+    option.value = String(candidate.email || "");
+    option.textContent = formatShareProjectUserLabel(candidate);
+    shareProjectUserSelectNode.appendChild(option);
+  }
+
+  shareProjectUserSelectNode.disabled = !availableUsers.length;
+  if (shareProjectGrantBtn) {
+    shareProjectGrantBtn.disabled = !availableUsers.length;
+  }
+}
+
+function renderShareProjectMembers(collaborators) {
+  if (!shareProjectMembersNode) return;
+  const rows = Array.isArray(collaborators) ? collaborators : [];
+  state.shareProjectCollaborators = rows;
+
+  if (!rows.length) {
+    shareProjectMembersNode.innerHTML = '<p class="share-project-empty">No collaborators yet.</p>';
+    return;
+  }
+
+  shareProjectMembersNode.innerHTML = rows
+    .map((row) => {
+      const email = cleanOptional(row?.email) || "";
+      const grantedAt = cleanOptional(row?.granted_at);
+      const grantedBy = cleanOptional(row?.granted_by);
+      const details = [];
+      if (grantedAt) details.push(`Granted ${new Date(grantedAt).toLocaleString()}`);
+      if (grantedBy) details.push(`by ${grantedBy}`);
+      return `
+        <div class="share-project-member-row">
+          <div class="share-project-member-meta">
+            <div class="share-project-member-name">${escapeHtml(email)}</div>
+            <div class="share-project-member-detail">${escapeHtml(details.join(" · ") || "Collaborator")}</div>
+          </div>
+          <button type="button" class="worker-mini-btn share-project-remove-btn" data-email="${escapeHtml(email)}">Remove</button>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+async function refreshShareProjectModal({ successMessage = "" } = {}) {
+  if (!state.activeProjectRef) return;
+  setShareProjectStatus("Loading sharing options...");
+  if (shareProjectGrantBtn) shareProjectGrantBtn.disabled = true;
+  if (shareProjectUserSelectNode) shareProjectUserSelectNode.disabled = true;
+
+  try {
+    const [accessData, usersData] = await Promise.all([
+      requestJSON(`/projects/${encodeURIComponent(state.activeProjectRef)}/access`, "GET"),
+      requestJSON(`/projects/${encodeURIComponent(state.activeProjectRef)}/shareable-users`, "GET"),
+    ]);
+    state.canManageActiveProject = Boolean(accessData.can_manage);
+    if (shareProjectBtn) shareProjectBtn.hidden = !state.canManageActiveProject;
+    state.shareProjectOwner = accessData.owner && typeof accessData.owner === "object" ? accessData.owner : {};
+    renderShareProjectOwner(state.shareProjectOwner);
+    renderShareProjectMembers(accessData.collaborators);
+    renderShareableUserOptions(usersData.users, accessData.collaborators);
+    setShareProjectStatus(successMessage);
+  } catch (err) {
+    if (shareProjectBtn) shareProjectBtn.hidden = true;
+    renderShareProjectOwner({});
+    renderShareProjectMembers([]);
+    renderShareableUserOptions([], []);
+    setShareProjectStatus(`Could not load sharing options: ${String(err)}`, true);
+  }
+}
+
+function openShareProjectModal() {
+  if (!shareProjectModalNode) return;
+  shareProjectModalNode.hidden = false;
+  syncModalOpenState();
+  void refreshShareProjectModal();
+}
+
+function closeShareProjectModal() {
+  if (!shareProjectModalNode) return;
+  shareProjectModalNode.hidden = true;
+  syncModalOpenState();
+}
+
+async function handleShareProjectGrant() {
+  if (!state.activeProjectRef || !shareProjectUserSelectNode) return;
+  const email = cleanOptional(shareProjectUserSelectNode.value)?.toLowerCase();
+  if (!email) {
+    setShareProjectStatus("Select a user to share with.", true);
+    return;
+  }
+
+  if (shareProjectGrantBtn) shareProjectGrantBtn.disabled = true;
+  try {
+    await requestJSON(
+      `/projects/${encodeURIComponent(state.activeProjectRef)}/access/grant`,
+      "POST",
+      { email }
+    );
+    const message = `Access granted to ${email}.`;
+    setGenerateStatus(message);
+    await refreshShareProjectModal({ successMessage: message });
+  } catch (err) {
+    setShareProjectStatus(`Share failed: ${String(err)}`, true);
+  } finally {
+    if (shareProjectGrantBtn && state.shareProjectUsers.length) {
+      shareProjectGrantBtn.disabled = false;
+    }
+  }
+}
+
+async function handleShareProjectRemove(email) {
+  if (!state.activeProjectRef || !email) return;
+  try {
+    await requestJSON(
+      `/projects/${encodeURIComponent(state.activeProjectRef)}/access/revoke`,
+      "POST",
+      { email }
+    );
+    const message = `Access removed for ${email}.`;
+    setGenerateStatus(message);
+    await refreshShareProjectModal({ successMessage: message });
+  } catch (err) {
+    setShareProjectStatus(`Remove failed: ${String(err)}`, true);
+  }
 }
 
 function clearWorkerSetupLinks() {
@@ -330,7 +517,10 @@ function setWorkspaceVisible(visible) {
   if (workspaceNode) workspaceNode.classList.toggle("workspace-hidden", !visible);
   if (switchProjectBtn) switchProjectBtn.hidden = !visible;
   if (activeProjectChip) activeProjectChip.hidden = !visible;
-  if (!visible) closeWorkerSetupModal();
+  if (!visible) {
+    closeWorkerSetupModal();
+    closeShareProjectModal();
+  }
 }
 
 function setVoiceSourceUi(source) {
@@ -1728,9 +1918,11 @@ async function refreshProjectAccessInfo() {
     );
     state.canManageActiveProject = Boolean(data.can_manage);
     shareProjectBtn.hidden = !state.canManageActiveProject;
+    if (!state.canManageActiveProject) closeShareProjectModal();
   } catch {
     state.canManageActiveProject = false;
     shareProjectBtn.hidden = true;
+    closeShareProjectModal();
   }
 }
 
@@ -1748,6 +1940,7 @@ function applyActiveProject(projectRef, projectLabel = projectRef) {
   setVoiceSourceUi("reference");
   clearReferencePreview();
   setSelectedAudioFile(null);
+  if (shareProjectBtn) shareProjectBtn.hidden = true;
   if (savedSampleSelectNode) savedSampleSelectNode.innerHTML = '<option value="">Loading saved samples...</option>';
   setSavedSampleStatus("Loading saved samples...");
   if (activeProjectLabelNode) activeProjectLabelNode.textContent = projectLabel;
@@ -2108,7 +2301,7 @@ function closeReferenceTrimModal() {
   if (referenceTrimModalNode) {
     referenceTrimModalNode.hidden = true;
   }
-  document.body.classList.remove("modal-open");
+  syncModalOpenState();
 }
 
 function updateReferenceTrimSelectionUi() {
@@ -2178,7 +2371,7 @@ function openReferenceTrimModal(file, durationSeconds, originLabel) {
   if (referenceTrimModalNode) {
     referenceTrimModalNode.hidden = false;
   }
-  document.body.classList.add("modal-open");
+  syncModalOpenState();
 }
 
 async function handleSelectedReferenceFile(file, originLabel) {
@@ -2889,32 +3082,48 @@ function bindProjectGateway() {
 }
 
 function bindProjectSharing() {
-  if (!shareProjectBtn) return;
+  if (shareProjectBtn) {
+    shareProjectBtn.addEventListener("click", () => {
+      if (!state.activeProjectRef) return;
+      if (!state.canManageActiveProject) {
+        setGenerateStatus("Only project owners can share this project.", true);
+        return;
+      }
+      openShareProjectModal();
+    });
+  }
 
-  shareProjectBtn.addEventListener("click", async () => {
-    if (!state.activeProjectRef) return;
-    if (!state.canManageActiveProject) {
-      setGenerateStatus("Only project owners can share this project.", true);
-      return;
-    }
+  if (shareProjectCloseBtn) {
+    shareProjectCloseBtn.addEventListener("click", () => {
+      closeShareProjectModal();
+    });
+  }
 
-    const emailInput = window.prompt("Share project with user email:");
-    const email = String(emailInput || "").trim().toLowerCase();
-    if (!email) return;
+  if (shareProjectModalNode) {
+    shareProjectModalNode.addEventListener("click", (event) => {
+      if (event.target === shareProjectModalNode) {
+        closeShareProjectModal();
+      }
+    });
+  }
 
-    try {
-      const result = await requestJSON(
-        `/projects/${encodeURIComponent(state.activeProjectRef)}/access/grant`,
-        "POST",
-        { email }
-      );
-      const count = Array.isArray(result.collaborators) ? result.collaborators.length : 0;
-      setGenerateStatus(`Access granted to ${email}. Collaborators: ${count}.`);
-      await loadProjects(state.activeProjectRef);
-    } catch (err) {
-      setGenerateStatus(`Share failed: ${String(err)}`, true);
-    }
-  });
+  if (shareProjectGrantBtn) {
+    shareProjectGrantBtn.addEventListener("click", () => {
+      void handleShareProjectGrant();
+    });
+  }
+
+  if (shareProjectMembersNode) {
+    shareProjectMembersNode.addEventListener("click", (event) => {
+      const removeButton = event.target instanceof Element
+        ? event.target.closest(".share-project-remove-btn")
+        : null;
+      if (!(removeButton instanceof HTMLButtonElement)) return;
+      const email = cleanOptional(removeButton.dataset.email)?.toLowerCase();
+      if (!email) return;
+      void handleShareProjectRemove(email);
+    });
+  }
 }
 
 function bindWorkerStatus() {

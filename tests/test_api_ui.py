@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import uuid
@@ -8,9 +9,11 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from itsdangerous import URLSafeTimedSerializer
 
-from radtts.api import app
+import radtts.api as radtts_api
 from radtts.manifests import ManifestStore
 from radtts.models import ChunkMode, OutputFormat, OutputMetadata
+
+app = radtts_api.app
 
 
 def _bridge_user(client: TestClient, *, sub: int, email: str, display_name: str) -> None:
@@ -663,6 +666,74 @@ def test_reference_audio_library_does_not_leak_other_users_samples():
         hashes = {row["audio_hash"] for row in listed.json()["samples"]}
         assert owner_hash in hashes
         assert other_hash not in hashes
+    finally:
+        for root in created_roots:
+            if root.exists():
+                shutil.rmtree(root)
+
+
+def test_project_shareable_users_proxy_uses_integration_endpoint(monkeypatch):
+    client = TestClient(app)
+    _bridge_user(client, sub=501, email="owner@example.com", display_name="Owner")
+    project_id = f"ui-share-{uuid.uuid4().hex[:8]}"
+    created_roots: list[Path] = []
+    captured: dict[str, object] = {}
+
+    class _FakeResponse:
+        def __init__(self, payload: dict[str, object]) -> None:
+            self.payload = payload
+
+        def read(self) -> bytes:
+            return json.dumps(self.payload).encode("utf-8")
+
+        def __enter__(self) -> "_FakeResponse":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+    def fake_urlopen(request, timeout=0):
+        captured["url"] = request.full_url
+        captured["authorization"] = request.headers.get("Authorization")
+        captured["timeout"] = timeout
+        return _FakeResponse(
+            {
+                "success": True,
+                "users": [
+                    {
+                        "id": 33,
+                        "username": "collab",
+                        "display_name": "Collaborator User",
+                        "email": "collab@example.com",
+                    }
+                ],
+            }
+        )
+
+    monkeypatch.setattr(radtts_api, "PSYCHEK_SHAREABLE_USERS_URL", "https://psychek.example/api/v1/integrations/shareable-users")
+    monkeypatch.setattr(radtts_api, "PSYCHEK_INTEGRATION_API_KEY", "share-secret")
+    monkeypatch.setattr(radtts_api, "urlopen", fake_urlopen)
+
+    try:
+        created = client.post("/projects", json={"project_id": project_id})
+        assert created.status_code == 200
+        created_roots.append(Path(created.json()["project_root"]))
+
+        response = client.get(f"/projects/{project_id}/shareable-users")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["project_id"] == project_id
+        assert payload["users"] == [
+            {
+                "id": 33,
+                "username": "collab",
+                "display_name": "Collaborator User",
+                "email": "collab@example.com",
+            }
+        ]
+        assert captured["authorization"] == "Bearer share-secret"
+        assert "exclude_email=owner%40example.com" in str(captured["url"])
+        assert captured["timeout"] == 8
     finally:
         for root in created_roots:
             if root.exists():
