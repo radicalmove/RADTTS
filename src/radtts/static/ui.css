@@ -641,7 +641,7 @@ body.modal-open {
 
 .input-grid {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(420px, 3fr);
+  grid-template-columns: minmax(300px, 1.12fr) minmax(420px, 2.18fr);
   gap: 14px;
 }
 
