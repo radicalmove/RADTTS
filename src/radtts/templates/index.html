@@ -381,19 +381,20 @@
 
     <div id="help-modal" class="modal-overlay" hidden>
       <section class="modal-card help-modal-card" role="dialog" aria-modal="true" aria-labelledby="help-modal-title">
-        <header class="modal-header">
+        <header class="modal-header help-modal-header">
           <h2 id="help-modal-title">Help &amp; Guide</h2>
           <button id="help-close-btn" type="button" class="modal-close help-modal-close" data-close-help-modal aria-label="Close help">&times;</button>
         </header>
-        <p class="modal-copy">Quick reference for generating speech, choosing a voice source, and recovering from common RADTTS issues.</p>
-        <div class="help-modal-tabs" role="tablist" aria-label="RADTTS help topics">
-          <button id="help-tab-overview" class="help-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="help-panel-overview" tabindex="0" data-help-tab="overview">Overview</button>
-          <button id="help-tab-generate-audio" class="help-tab" type="button" role="tab" aria-selected="false" aria-controls="help-panel-generate-audio" tabindex="-1" data-help-tab="generate-audio">Generate audio</button>
-          <button id="help-tab-use-custom-voice" class="help-tab" type="button" role="tab" aria-selected="false" aria-controls="help-panel-use-custom-voice" tabindex="-1" data-help-tab="use-custom-voice">Built-in or cloned voice</button>
-          <button id="help-tab-prepare-reference-audio" class="help-tab" type="button" role="tab" aria-selected="false" aria-controls="help-panel-prepare-reference-audio" tabindex="-1" data-help-tab="prepare-reference-audio">Prepare reference audio</button>
-          <button id="help-tab-manage-versions-and-outputs" class="help-tab" type="button" role="tab" aria-selected="false" aria-controls="help-panel-manage-versions-and-outputs" tabindex="-1" data-help-tab="manage-versions-and-outputs">Manage versions and outputs</button>
-          <button id="help-tab-use-helper-processing" class="help-tab" type="button" role="tab" aria-selected="false" aria-controls="help-panel-use-helper-processing" tabindex="-1" data-help-tab="use-helper-processing">Use helper processing</button>
-          <button id="help-tab-troubleshooting" class="help-tab" type="button" role="tab" aria-selected="false" aria-controls="help-panel-troubleshooting" tabindex="-1" data-help-tab="troubleshooting">Troubleshooting</button>
+        <div class="help-tab-rail">
+          <div class="help-modal-tabs" role="tablist" aria-label="RADTTS help topics">
+            <button id="help-tab-overview" class="help-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="help-panel-overview" tabindex="0" data-help-tab="overview">Overview</button>
+            <button id="help-tab-generate-audio" class="help-tab" type="button" role="tab" aria-selected="false" aria-controls="help-panel-generate-audio" tabindex="-1" data-help-tab="generate-audio">Generate audio</button>
+            <button id="help-tab-use-custom-voice" class="help-tab" type="button" role="tab" aria-selected="false" aria-controls="help-panel-use-custom-voice" tabindex="-1" data-help-tab="use-custom-voice">Built-in or cloned voice</button>
+            <button id="help-tab-prepare-reference-audio" class="help-tab" type="button" role="tab" aria-selected="false" aria-controls="help-panel-prepare-reference-audio" tabindex="-1" data-help-tab="prepare-reference-audio">Prepare reference audio</button>
+            <button id="help-tab-manage-versions-and-outputs" class="help-tab" type="button" role="tab" aria-selected="false" aria-controls="help-panel-manage-versions-and-outputs" tabindex="-1" data-help-tab="manage-versions-and-outputs">Manage versions and outputs</button>
+            <button id="help-tab-use-helper-processing" class="help-tab" type="button" role="tab" aria-selected="false" aria-controls="help-panel-use-helper-processing" tabindex="-1" data-help-tab="use-helper-processing">Use helper processing</button>
+            <button id="help-tab-troubleshooting" class="help-tab" type="button" role="tab" aria-selected="false" aria-controls="help-panel-troubleshooting" tabindex="-1" data-help-tab="troubleshooting">Troubleshooting</button>
+          </div>
         </div>
         <div class="help-modal-body">
           <section id="help-panel-overview" class="help-panel is-active" role="tabpanel" aria-labelledby="help-tab-overview" data-help-panel="overview">
