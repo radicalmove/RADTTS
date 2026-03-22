@@ -35,6 +35,14 @@ pip install -r requirements-dev.txt
 pip install -e .
 ```
 
+Optional frontend Help modal verification:
+
+```bash
+npm run test:help-modal
+```
+
+This runs the standalone Node behavior check for the RADTTS Help modal keyboard and focus flow. It expects a Node runtime that satisfies the `engines.node` requirement in `package.json`.
+
 ## CLI quick start
 
 ```bash
