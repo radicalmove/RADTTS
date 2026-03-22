@@ -49,6 +49,11 @@ def test_ui_homepage_renders_help_button_and_modal_shell():
     text = response.text
     assert 'id="help-btn"' in text
     assert 'id="help-modal"' in text
+    assert "RADTTS turns script text into project-based voice outputs using either a reference sample or a built-in voice." in text
+    assert "Create or open the project you want to work in." in text
+    assert "Use a custom voice only when you already have a prepared voice folder or path that RADTTS can read." in text
+    assert "If no helper is live, the job stays on the main RADTTS machine." in text
+    assert "Placeholder guidance" not in text
 
 
 def test_projects_endpoint_returns_recent_activity_first():
