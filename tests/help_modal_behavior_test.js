@@ -471,10 +471,12 @@ assert.equal(documentStub.body.classList.contains("modal-open"), false);
 
 const helpBtn = documentStub.getElementById("help-btn");
 const helpModal = documentStub.getElementById("help-modal");
+const helpCloseBtn = documentStub.getElementById("help-close-btn");
 const tabsNode = helpModal.querySelector(".help-modal-tabs");
 const overviewTab = helpModal.querySelector('[data-help-tab="overview"]');
 const helperTab = helpModal.querySelector('[data-help-tab="use-helper-processing"]');
 const troubleshootingTab = helpModal.querySelector('[data-help-tab="troubleshooting"]');
+helpModal.appendChild(helpCloseBtn);
 
 helpBtn.focus();
 context.openHelpModal();
@@ -496,6 +498,24 @@ assert.equal(documentStub.activeElement, helpBtn);
 
 helpBtn.focus();
 context.openHelpModal();
+assert.equal(documentStub.activeElement, helperTab);
+
+helperTab.focus();
+helpModal.dispatchEvent({
+  type: "keydown",
+  key: "Tab",
+  shiftKey: true,
+  target: helperTab,
+});
+assert.equal(documentStub.activeElement, helpCloseBtn);
+
+helpCloseBtn.focus();
+helpModal.dispatchEvent({
+  type: "keydown",
+  key: "Tab",
+  shiftKey: false,
+  target: helpCloseBtn,
+});
 assert.equal(documentStub.activeElement, helperTab);
 
 tabsNode.dispatchEvent({
