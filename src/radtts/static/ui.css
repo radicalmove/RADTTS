@@ -542,6 +542,33 @@ body.modal-open {
   box-shadow: 0 26px 80px rgba(0, 0, 0, 0.28);
 }
 
+.help-modal-card .modal-header {
+  padding: 24px;
+  border-bottom: 1px solid var(--border-color);
+  background: #111;
+  color: var(--uc-white);
+}
+
+.help-modal-card .modal-header h2 {
+  margin: 0;
+  color: var(--uc-white);
+  font-size: 1.25rem;
+}
+
+.help-modal-close {
+  background: none;
+  border: none;
+  font-size: 28px;
+  cursor: pointer;
+  color: var(--uc-white);
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
 .help-modal-tabs {
   position: sticky;
   top: 0;
@@ -771,6 +798,11 @@ body.modal-open {
 
 .help-callout-trouble {
   background: linear-gradient(180deg, rgba(255, 247, 239, 0.98) 0%, rgba(251, 240, 223, 0.98) 100%);
+}
+
+[data-theme="dark"] .help-modal-card .modal-header {
+  background: #090909;
+  border-bottom-color: rgba(255, 255, 255, 0.08);
 }
 
 .worker-setup-links-modal {
