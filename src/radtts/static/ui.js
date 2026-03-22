@@ -2,6 +2,7 @@ const projectGatewayNode = document.getElementById("project-gateway");
 const workspaceNode = document.getElementById("workspace");
 const switchProjectBtn = document.getElementById("switch-project-btn");
 const shareProjectBtn = document.getElementById("share-project-btn");
+const helpBtn = document.getElementById("help-btn");
 const activeProjectChip = document.getElementById("active-project-chip");
 const activeProjectLabelNode = document.getElementById("active-project-label");
 const workerStatusPillNode = document.getElementById("worker-status-pill");
@@ -59,6 +60,9 @@ const shareProjectGrantBtn = document.getElementById("share-project-grant-btn");
 const shareProjectStatusNode = document.getElementById("share-project-status");
 const shareProjectOwnerNode = document.getElementById("share-project-owner");
 const shareProjectMembersNode = document.getElementById("share-project-members");
+const helpModalNode = document.getElementById("help-modal");
+const helpModalCloseBtn = document.getElementById("help-close-btn");
+const helpModalTabsNode = helpModalNode ? helpModalNode.querySelector(".help-modal-tabs") : null;
 const builtinVoiceSelectNode = document.getElementById("builtin-voice-select");
 const builtinVoiceStatusNode = document.getElementById("builtin-voice-status");
 const previewBuiltinVoiceBtn = document.getElementById("preview-builtin-voice-btn");
@@ -217,6 +221,20 @@ const state = {
   shareProjectOwner: null,
 };
 
+const HELP_STORAGE_KEY = "radtts-help-last-tab";
+const HELP_TAB_ORDER = [
+  "overview",
+  "generate-audio",
+  "use-custom-voice",
+  "prepare-reference-audio",
+  "manage-versions-and-outputs",
+  "use-helper-processing",
+  "troubleshooting",
+];
+const HELP_FIRST_TAB_KEY = HELP_TAB_ORDER[0];
+
+let helpModalReturnFocusNode = null;
+
 function cleanOptional(value) {
   const trimmed = (value ?? "").trim();
   return trimmed.length ? trimmed : null;
@@ -290,9 +308,216 @@ function hideWorkerSetupLinks() {
 }
 
 function syncModalOpenState() {
-  const anyModalOpen = [workerSetupModalNode, referenceTrimModalNode, shareProjectModalNode]
+  const anyModalOpen = [workerSetupModalNode, referenceTrimModalNode, shareProjectModalNode, helpModalNode]
     .some((node) => node && !node.hidden);
   document.body.classList.toggle("modal-open", anyModalOpen);
+}
+
+function getHelpTabButtonNodes() {
+  if (!helpModalNode) return [];
+  return Array.from(helpModalNode.querySelectorAll("[data-help-tab]")).filter((node) => node instanceof HTMLButtonElement);
+}
+
+function getHelpPanelNodes() {
+  if (!helpModalNode) return [];
+  return Array.from(helpModalNode.querySelectorAll("[data-help-panel]")).filter((node) => node instanceof HTMLElement);
+}
+
+function normalizeHelpTabKey(tabKey) {
+  const normalized = String(tabKey || "").trim();
+  return HELP_TAB_ORDER.includes(normalized) ? normalized : HELP_FIRST_TAB_KEY;
+}
+
+function readHelpTabFromStorage() {
+  try {
+    return normalizeHelpTabKey(localStorage.getItem(HELP_STORAGE_KEY));
+  } catch {
+    return HELP_FIRST_TAB_KEY;
+  }
+}
+
+function persistHelpTab(tabKey) {
+  try {
+    localStorage.setItem(HELP_STORAGE_KEY, normalizeHelpTabKey(tabKey));
+  } catch {
+    // localStorage is optional in the Node behavior harness.
+  }
+}
+
+function getHelpTabButton(tabKey) {
+  return helpModalNode ? helpModalNode.querySelector(`[data-help-tab="${tabKey}"]`) : null;
+}
+
+function getHelpPanel(tabKey) {
+  return helpModalNode ? helpModalNode.querySelector(`[data-help-panel="${tabKey}"]`) : null;
+}
+
+function selectHelpTab(tabKey, { focusTab = false, persist = true } = {}) {
+  if (!helpModalNode) return;
+
+  const activeTabKey = normalizeHelpTabKey(tabKey);
+  const tabButtons = getHelpTabButtonNodes();
+  const panels = getHelpPanelNodes();
+
+  for (const tabButton of tabButtons) {
+    const buttonKey = normalizeHelpTabKey(tabButton.dataset.helpTab);
+    const isActive = buttonKey === activeTabKey;
+    tabButton.classList.toggle("is-active", isActive);
+    tabButton.setAttribute("aria-selected", isActive ? "true" : "false");
+    tabButton.tabIndex = isActive ? 0 : -1;
+  }
+
+  for (const panel of panels) {
+    const panelKey = normalizeHelpTabKey(panel.dataset.helpPanel);
+    const isActive = panelKey === activeTabKey;
+    panel.classList.toggle("is-active", isActive);
+    panel.hidden = !isActive;
+    if (isActive) {
+      panel.scrollTop = 0;
+    }
+  }
+
+  if (persist) {
+    persistHelpTab(activeTabKey);
+  }
+
+  if (focusTab) {
+    const activeButton = getHelpTabButton(activeTabKey);
+    if (activeButton instanceof HTMLElement) {
+      activeButton.focus();
+    }
+  }
+}
+
+function restoreHelpTab(options = {}) {
+  selectHelpTab(readHelpTabFromStorage(), options);
+}
+
+function focusHelpReturnTarget() {
+  if (helpModalReturnFocusNode instanceof HTMLElement && typeof helpModalReturnFocusNode.focus === "function") {
+    helpModalReturnFocusNode.focus();
+    return;
+  }
+  if (helpBtn instanceof HTMLElement && typeof helpBtn.focus === "function") {
+    helpBtn.focus();
+  }
+}
+
+function openHelpModal() {
+  if (!helpModalNode) return;
+  helpModalReturnFocusNode = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  helpModalNode.hidden = false;
+  syncModalOpenState();
+  restoreHelpTab({ focusTab: true });
+}
+
+function closeHelpModal() {
+  if (!helpModalNode) return;
+  helpModalNode.hidden = true;
+  syncModalOpenState();
+  focusHelpReturnTarget();
+  helpModalReturnFocusNode = null;
+}
+
+function moveHelpTabFocus(currentKey, direction) {
+  const currentIndex = HELP_TAB_ORDER.indexOf(normalizeHelpTabKey(currentKey));
+  if (currentIndex < 0) return;
+  const nextIndex = (currentIndex + direction + HELP_TAB_ORDER.length) % HELP_TAB_ORDER.length;
+  selectHelpTab(HELP_TAB_ORDER[nextIndex], { focusTab: true });
+}
+
+function handleHelpTabKeydown(event) {
+  if (!(event.target instanceof HTMLElement)) return;
+  const tabButton = event.target.closest("[data-help-tab]");
+  if (!(tabButton instanceof HTMLButtonElement)) return;
+
+  const currentTabKey = normalizeHelpTabKey(tabButton.dataset.helpTab);
+  if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+    event.preventDefault();
+    moveHelpTabFocus(currentTabKey, 1);
+    return;
+  }
+
+  if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+    event.preventDefault();
+    moveHelpTabFocus(currentTabKey, -1);
+    return;
+  }
+
+  if (event.key === "Home") {
+    event.preventDefault();
+    selectHelpTab(HELP_FIRST_TAB_KEY, { focusTab: true });
+    return;
+  }
+
+  if (event.key === "End") {
+    event.preventDefault();
+    selectHelpTab(HELP_TAB_ORDER[HELP_TAB_ORDER.length - 1], { focusTab: true });
+    return;
+  }
+
+  if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    selectHelpTab(currentTabKey, { focusTab: true });
+  }
+}
+
+function helpModalElementHidden(node) {
+  let currentNode = node;
+  while (currentNode instanceof HTMLElement && currentNode !== helpModalNode) {
+    if (currentNode.hidden) return true;
+    if (typeof currentNode.getAttribute === "function" && currentNode.getAttribute("aria-hidden") === "true") return true;
+    currentNode = currentNode.parentNode;
+  }
+  return false;
+}
+
+function isHelpModalFocusable(node) {
+  if (!(node instanceof HTMLElement)) return false;
+  if (helpModalElementHidden(node)) return false;
+  if ("disabled" in node && node.disabled) return false;
+  if (node.tabIndex < 0) return false;
+  const tagName = String(node.tagName || "").toLowerCase();
+  if (tagName === "button" || tagName === "input" || tagName === "select" || tagName === "textarea" || tagName === "summary") {
+    return true;
+  }
+  if (tagName === "a") {
+    return typeof node.getAttribute === "function" && node.getAttribute("href") !== null;
+  }
+  return typeof node.getAttribute === "function" && node.getAttribute("tabindex") !== null;
+}
+
+function getHelpModalFocusableNodes() {
+  if (!(helpModalNode instanceof HTMLElement)) return [];
+  const focusableNodes = [];
+  const stack = Array.from(helpModalNode.children || []);
+  while (stack.length) {
+    const node = stack.shift();
+    if (!(node instanceof HTMLElement)) continue;
+    if (isHelpModalFocusable(node)) {
+      focusableNodes.push(node);
+    }
+    stack.unshift(...Array.from(node.children || []));
+  }
+  return focusableNodes;
+}
+
+function handleHelpModalKeydown(event) {
+  if (event.key !== "Tab" || !helpModalNode || helpModalNode.hidden) return;
+  const focusableNodes = getHelpModalFocusableNodes();
+  if (focusableNodes.length < 2) return;
+  const firstNode = focusableNodes[0];
+  const lastNode = focusableNodes[focusableNodes.length - 1];
+  const activeNode = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  if (event.shiftKey) {
+    if (activeNode !== firstNode) return;
+    event.preventDefault();
+    lastNode.focus();
+    return;
+  }
+  if (activeNode !== lastNode) return;
+  event.preventDefault();
+  firstNode.focus();
 }
 
 function openWorkerSetupModal() {
@@ -3126,6 +3351,45 @@ function bindProjectSharing() {
   }
 }
 
+function bindHelpModal() {
+  if (helpBtn) {
+    helpBtn.addEventListener("click", () => {
+      openHelpModal();
+    });
+  }
+
+  if (helpModalCloseBtn) {
+    helpModalCloseBtn.addEventListener("click", () => {
+      closeHelpModal();
+    });
+  }
+
+  if (helpModalNode) {
+    helpModalNode.addEventListener("click", (event) => {
+      if (event.target === helpModalNode) {
+        closeHelpModal();
+      }
+    });
+    helpModalNode.addEventListener("keydown", handleHelpModalKeydown);
+  }
+
+  if (helpModalTabsNode) {
+    helpModalTabsNode.addEventListener("click", (event) => {
+      const target = event.target instanceof HTMLElement ? event.target.closest("[data-help-tab]") : null;
+      if (!(target instanceof HTMLButtonElement)) return;
+      selectHelpTab(target.dataset.helpTab, { focusTab: true });
+    });
+
+    helpModalTabsNode.addEventListener("keydown", handleHelpTabKeydown);
+  }
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    if (!helpModalNode || helpModalNode.hidden) return;
+    closeHelpModal();
+  });
+}
+
 function bindWorkerStatus() {
   if (workerRefreshBtn) {
     workerRefreshBtn.addEventListener("click", () => {
@@ -3771,6 +4035,7 @@ function bindOutputActions() {
 
 bindProjectGateway();
 bindProjectSharing();
+bindHelpModal();
 bindWorkerStatus();
 bindReferenceTrimModal();
 bindVoiceSource();

@@ -1,0 +1,10 @@
+{
+  "name": "radtts",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test:help-modal": "node tests/help_modal_behavior_test.js"
+  }
+}
