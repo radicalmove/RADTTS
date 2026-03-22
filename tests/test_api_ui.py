@@ -41,6 +41,16 @@ def test_ui_homepage_renders():
     assert "Recent projects" in response.text
 
 
+def test_ui_homepage_renders_help_button_and_modal_shell():
+    client = TestClient(app)
+    response = client.get("/")
+
+    assert response.status_code == 200
+    text = response.text
+    assert 'id="help-btn"' in text
+    assert 'id="help-modal"' in text
+
+
 def test_projects_endpoint_returns_recent_activity_first():
     client = TestClient(app)
     older_project_id = f"ui-old-{uuid.uuid4().hex[:8]}"

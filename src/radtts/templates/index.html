@@ -58,6 +58,7 @@
       <div class="topbar-actions">
         <button id="switch-project-btn" class="topbar-btn" type="button" hidden>Projects</button>
         <button id="share-project-btn" class="topbar-btn" type="button" hidden>Share</button>
+        <button id="help-btn" class="topbar-btn" type="button">Help</button>
         {% if current_user %}
         {% if current_user.is_admin and psychek_admin_url %}
         <a class="topbar-btn" href="{{ psychek_admin_url }}">Admin</a>
@@ -366,6 +367,90 @@
             <div id="share-project-members" class="share-project-members">
               <p class="share-project-empty">No collaborators yet.</p>
             </div>
+          </section>
+        </div>
+      </section>
+    </div>
+
+    <div id="help-modal" class="modal-overlay" hidden>
+      <section class="modal-card help-modal-card" role="dialog" aria-modal="true" aria-labelledby="help-modal-title">
+        <header class="modal-header">
+          <h2 id="help-modal-title">Help</h2>
+          <button id="help-close-btn" type="button" class="worker-mini-btn" data-close-help-modal>Close</button>
+        </header>
+        <p class="modal-copy">Placeholder help content for RADTTS. Detailed guidance will be filled in later.</p>
+        <div class="help-modal-tabs" role="tablist" aria-label="RADTTS help topics">
+          <button id="help-tab-overview" class="help-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="help-panel-overview" tabindex="0" data-help-tab="overview">Overview</button>
+          <button id="help-tab-generate-audio" class="help-tab" type="button" role="tab" aria-selected="false" aria-controls="help-panel-generate-audio" tabindex="-1" data-help-tab="generate-audio">Generate audio</button>
+          <button id="help-tab-use-custom-voice" class="help-tab" type="button" role="tab" aria-selected="false" aria-controls="help-panel-use-custom-voice" tabindex="-1" data-help-tab="use-custom-voice">Use a custom voice</button>
+          <button id="help-tab-prepare-reference-audio" class="help-tab" type="button" role="tab" aria-selected="false" aria-controls="help-panel-prepare-reference-audio" tabindex="-1" data-help-tab="prepare-reference-audio">Prepare reference audio</button>
+          <button id="help-tab-manage-versions-and-outputs" class="help-tab" type="button" role="tab" aria-selected="false" aria-controls="help-panel-manage-versions-and-outputs" tabindex="-1" data-help-tab="manage-versions-and-outputs">Manage versions and outputs</button>
+          <button id="help-tab-use-helper-processing" class="help-tab" type="button" role="tab" aria-selected="false" aria-controls="help-panel-use-helper-processing" tabindex="-1" data-help-tab="use-helper-processing">Use helper processing</button>
+          <button id="help-tab-troubleshooting" class="help-tab" type="button" role="tab" aria-selected="false" aria-controls="help-panel-troubleshooting" tabindex="-1" data-help-tab="troubleshooting">Troubleshooting</button>
+        </div>
+        <div class="help-modal-body">
+          <section id="help-panel-overview" class="help-panel is-active" role="tabpanel" aria-labelledby="help-tab-overview" data-help-panel="overview">
+            <p class="help-lead">Placeholder overview for RADTTS.</p>
+            <ol class="help-steps">
+              <li>Open or create a project from the topbar.</li>
+              <li>Enter or load text to synthesize.</li>
+              <li>Generate audio and review the completed versions.</li>
+            </ol>
+            <p class="help-note">This copy is temporary and will be replaced with fuller guidance later.</p>
+          </section>
+          <section id="help-panel-generate-audio" class="help-panel" role="tabpanel" aria-labelledby="help-tab-generate-audio" data-help-panel="generate-audio" hidden>
+            <p class="help-lead">Placeholder guidance for creating audio in RADTTS.</p>
+            <ol class="help-steps">
+              <li>Select a project and enter the script text.</li>
+              <li>Review the current settings before starting generation.</li>
+              <li>Run the generator and wait for the output to appear below.</li>
+            </ol>
+            <p class="help-note">Detailed workflow notes will be added in a later task.</p>
+          </section>
+          <section id="help-panel-use-custom-voice" class="help-panel" role="tabpanel" aria-labelledby="help-tab-use-custom-voice" data-help-panel="use-custom-voice" hidden>
+            <p class="help-lead">Placeholder guidance for using a custom voice.</p>
+            <ol class="help-steps">
+              <li>Choose the custom voice path or speaker configuration you want.</li>
+              <li>Confirm the voice source before starting generation.</li>
+              <li>Re-run generation if you change the voice selection.</li>
+            </ol>
+            <p class="help-note">The final copy will explain supported custom-voice setups more clearly.</p>
+          </section>
+          <section id="help-panel-prepare-reference-audio" class="help-panel" role="tabpanel" aria-labelledby="help-tab-prepare-reference-audio" data-help-panel="prepare-reference-audio" hidden>
+            <p class="help-lead">Placeholder guidance for preparing reference audio.</p>
+            <ol class="help-steps">
+              <li>Load a clean sample before cloning a voice.</li>
+              <li>Trim the file if it is longer than the recommended range.</li>
+              <li>Use the selected clip when it sounds clear and representative.</li>
+            </ol>
+            <p class="help-note">Later copy will describe the ideal sample length and content.</p>
+          </section>
+          <section id="help-panel-manage-versions-and-outputs" class="help-panel" role="tabpanel" aria-labelledby="help-tab-manage-versions-and-outputs" data-help-panel="manage-versions-and-outputs" hidden>
+            <p class="help-lead">Placeholder guidance for completed versions and outputs.</p>
+            <ol class="help-steps">
+              <li>Review generated versions after each run.</li>
+              <li>Use the metadata and playback controls to compare outputs.</li>
+              <li>Keep the versions that match your intended result.</li>
+            </ol>
+            <p class="help-note">A later task will document the output folder behavior in more detail.</p>
+          </section>
+          <section id="help-panel-use-helper-processing" class="help-panel" role="tabpanel" aria-labelledby="help-tab-use-helper-processing" data-help-panel="use-helper-processing" hidden>
+            <p class="help-lead">Placeholder guidance for helper processing.</p>
+            <ol class="help-steps">
+              <li>Check helper status before starting a long job.</li>
+              <li>Wait for helper assignment or fallback if none is available.</li>
+              <li>Refresh status if the job appears to stall.</li>
+            </ol>
+            <p class="help-note">The completed help text will explain the helper workflow and fallback path.</p>
+          </section>
+          <section id="help-panel-troubleshooting" class="help-panel" role="tabpanel" aria-labelledby="help-tab-troubleshooting" data-help-panel="troubleshooting" hidden>
+            <p class="help-lead">Placeholder troubleshooting guidance for RADTTS.</p>
+            <ol class="help-steps">
+              <li>Confirm the active project is correct.</li>
+              <li>Check helper status, reference audio, and script input.</li>
+              <li>Retry generation after correcting any missing inputs.</li>
+            </ol>
+            <p class="help-note">A later task will replace this with specific recovery steps.</p>
           </section>
         </div>
       </section>
