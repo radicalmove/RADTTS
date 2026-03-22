@@ -254,6 +254,7 @@ body {
 }
 
 .topbar-btn.topbar-btn-help {
+  gap: 5px;
   background: #2f8c4b;
   border-color: #2f8c4b;
   color: var(--uc-white);
@@ -265,6 +266,17 @@ body {
   background: #257640;
   border-color: #257640;
   color: var(--uc-white);
+}
+
+.topbar-btn.topbar-btn-help svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2;
+  flex: 0 0 auto;
+}
+
+#help-btn:not([hidden]) + #switch-project-btn {
+  margin-left: 50px;
 }
 
 .theme-toggle {
@@ -540,18 +552,18 @@ body.modal-open {
   align-items: flex-end;
   gap: 6px 8px;
   padding: 16px 18px 0;
-  background: linear-gradient(180deg, rgba(247, 248, 250, 0.98) 0%, rgba(238, 240, 244, 0.98) 100%);
+  background: linear-gradient(180deg, rgba(251, 243, 241, 0.98) 0%, rgba(247, 236, 233, 0.98) 100%);
   border-bottom: 1px solid rgba(17, 24, 39, 0.08);
   box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.7);
 }
 
 .help-tab {
   appearance: none;
-  border: 1px solid rgba(80, 87, 97, 0.22);
+  border: 1px solid rgba(156, 53, 39, 0.18);
   border-bottom: 0;
   border-radius: 16px 16px 0 0;
-  background: linear-gradient(180deg, #fdfefe 0%, #eef1f5 100%);
-  color: #2d3137;
+  background: linear-gradient(180deg, #fffdfd 0%, #f7e9e7 100%);
+  color: #71423d;
   padding: 11px 17px 13px;
   font: inherit;
   font-size: 0.9rem;
@@ -560,10 +572,13 @@ body.modal-open {
   cursor: pointer;
   text-align: left;
   white-space: normal;
-  min-height: 50px;
+  min-height: 58px;
+  height: 58px;
   max-width: 230px;
   min-width: 150px;
   flex: 1 1 180px;
+  display: inline-flex;
+  align-items: center;
   transition:
     background-color 0.15s ease,
     border-color 0.15s ease,
@@ -575,23 +590,23 @@ body.modal-open {
 
 .help-tab:hover {
   transform: translateY(-1px);
-  border-color: rgba(80, 87, 97, 0.45);
-  color: #20242a;
+  border-color: rgba(156, 53, 39, 0.38);
+  color: #592f2a;
 }
 
 .help-tab:focus-visible {
-  outline: 2px solid #2f8c4b;
+  outline: 2px solid var(--uc-red);
   outline-offset: 2px;
 }
 
 .help-tab.is-active,
 .help-tab[aria-selected="true"] {
-  background: linear-gradient(180deg, #ffffff 0%, #f5f8fb 100%);
-  border-color: rgba(80, 87, 97, 0.42);
+  background: linear-gradient(180deg, #ffffff 0%, #fbf3f2 100%);
+  border-color: rgba(156, 53, 39, 0.28);
   border-bottom-color: transparent;
-  color: #257640;
+  color: var(--uc-red);
   transform: translateY(1px);
-  box-shadow: 0 -1px 0 rgba(255, 255, 255, 0.95) inset, 0 10px 18px rgba(57, 63, 71, 0.08);
+  box-shadow: 0 -1px 0 rgba(255, 255, 255, 0.95) inset, 0 10px 18px rgba(105, 40, 32, 0.08);
 }
 
 .help-modal-body {
@@ -602,7 +617,7 @@ body.modal-open {
   min-height: 0;
   overflow: hidden;
   padding: 0 18px 18px;
-  background: linear-gradient(180deg, rgba(245, 248, 252, 0.98) 0%, rgba(239, 243, 247, 0.98) 100%);
+  background: linear-gradient(180deg, rgba(251, 243, 241, 0.98) 0%, rgba(247, 238, 236, 0.98) 100%);
 }
 
 .help-modal-body > * {
@@ -628,9 +643,9 @@ body.modal-open {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  border: 1px solid rgba(80, 87, 97, 0.14);
+  border: 1px solid rgba(156, 53, 39, 0.14);
   border-radius: 0 22px 22px 22px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(251, 252, 253, 0.98) 100%);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(252, 248, 247, 0.98) 100%);
   padding: 24px 26px 22px;
   box-shadow: 0 18px 40px rgba(23, 39, 28, 0.08);
   display: grid;
@@ -678,11 +693,11 @@ body.modal-open {
 }
 
 .help-callout {
-  border: 1px solid rgba(80, 87, 97, 0.14);
+  border: 1px solid rgba(156, 53, 39, 0.14);
   border-left-width: 6px;
   border-radius: 16px;
   padding: 14px 16px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(248, 249, 251, 0.98) 100%);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(252, 248, 247, 0.98) 100%);
   box-shadow: 0 10px 22px rgba(23, 39, 28, 0.06);
   display: grid;
   gap: 8px;
@@ -732,7 +747,7 @@ body.modal-open {
 }
 
 .help-callout-note {
-  background: linear-gradient(180deg, rgba(245, 247, 250, 0.98) 0%, rgba(239, 242, 247, 0.98) 100%);
+  background: linear-gradient(180deg, rgba(247, 247, 249, 0.98) 0%, rgba(242, 243, 246, 0.98) 100%);
 }
 
 .help-callout-trouble {
@@ -757,6 +772,8 @@ body.modal-open {
   .help-tab {
     min-width: 130px;
     flex-basis: 150px;
+    min-height: 52px;
+    height: 52px;
   }
 }
 
@@ -776,7 +793,8 @@ body.modal-open {
   }
 
   .help-tab {
-    min-height: 46px;
+    min-height: 52px;
+    height: 52px;
     padding: 10px 14px 12px;
     font-size: 0.86rem;
   }
