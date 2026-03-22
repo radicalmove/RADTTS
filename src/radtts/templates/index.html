@@ -56,9 +56,9 @@
         {% endif %}
       </div>
       <div class="topbar-actions">
+        <button id="help-btn" class="topbar-btn topbar-btn-help" type="button">Help</button>
         <button id="switch-project-btn" class="topbar-btn" type="button" hidden>Projects</button>
         <button id="share-project-btn" class="topbar-btn" type="button" hidden>Share</button>
-        <button id="help-btn" class="topbar-btn" type="button">Help</button>
         {% if current_user %}
         {% if current_user.is_admin and psychek_admin_url %}
         <a class="topbar-btn" href="{{ psychek_admin_url }}">Admin</a>
@@ -378,7 +378,7 @@
           <h2 id="help-modal-title">Help</h2>
           <button id="help-close-btn" type="button" class="worker-mini-btn" data-close-help-modal>Close</button>
         </header>
-        <p class="modal-copy">Quick reference for generating speech, working with voice sources, and recovering from common RADTTS issues.</p>
+        <p class="modal-copy">Quick reference for generating speech, choosing a voice source, and recovering from common RADTTS issues.</p>
         <div class="help-modal-tabs" role="tablist" aria-label="RADTTS help topics">
           <button id="help-tab-overview" class="help-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="help-panel-overview" tabindex="0" data-help-tab="overview">Overview</button>
           <button id="help-tab-generate-audio" class="help-tab" type="button" role="tab" aria-selected="false" aria-controls="help-panel-generate-audio" tabindex="-1" data-help-tab="generate-audio">Generate audio</button>
@@ -391,76 +391,174 @@
         <div class="help-modal-body">
           <section id="help-panel-overview" class="help-panel is-active" role="tabpanel" aria-labelledby="help-tab-overview" data-help-panel="overview">
             <p class="help-lead">RADTTS turns script text into project-based voice outputs using either a reference sample or a built-in voice.</p>
-            <ol class="help-steps">
-              <li>Create or open the project you want to work in.</li>
-              <li>Choose a voice source, then enter or load the script text.</li>
-              <li>Set the voice and output options you need for this run.</li>
-              <li>Generate audio and wait for the finished version to appear in Completed versions.</li>
-              <li>Review the versions, keep the best result, and save the output you want to use elsewhere.</li>
-            </ol>
-            <p class="help-note">Each run is saved in the current project, so you can compare versions without losing earlier outputs.</p>
+            <div class="help-article-grid">
+              <div class="help-article-section">
+                <h3 class="help-section-title">Read this first</h3>
+                <ol class="help-steps">
+                  <li>Create or open the project you want to work in.</li>
+                  <li>Choose a voice source, then enter or load the script text.</li>
+                  <li>Set the voice and output options you need for this run.</li>
+                  <li>Generate audio and wait for the finished version to appear in Completed versions.</li>
+                  <li>Review the versions, keep the best result, and save the output you want to use elsewhere.</li>
+                </ol>
+              </div>
+              <div class="help-article-section">
+                <div class="help-callout help-callout-tip">
+                  <p class="help-callout-title">Tip</p>
+                  <p>Read the overview first so you can choose the right voice source before you start editing the script or trimming reference audio.</p>
+                </div>
+                <div class="help-callout help-callout-note">
+                  <p class="help-callout-title">Note</p>
+                  <p>Each run is saved in the current project, so you can compare versions without losing earlier outputs or redoing earlier settings.</p>
+                </div>
+              </div>
+            </div>
           </section>
           <section id="help-panel-generate-audio" class="help-panel" role="tabpanel" aria-labelledby="help-tab-generate-audio" data-help-panel="generate-audio" hidden>
             <p class="help-lead">Use this flow when you want to turn a script into a new spoken version.</p>
-            <ol class="help-steps">
-              <li>Create or open a project before you start so the script, samples, and outputs stay together.</li>
-              <li>Paste text into the script box or load it from a supported file.</li>
-              <li>Choose the voice source, quality, transcript, and output format for this run.</li>
-              <li>Click <strong>Generate audio</strong> and wait for the progress panel to complete.</li>
-              <li>Play the finished versions in the output list and compare them before deciding which one to keep.</li>
-            </ol>
-            <p class="help-note">If you edit the script or change the voice source, generate a new version rather than expecting an old output to update.</p>
+            <div class="help-article-grid">
+              <div class="help-article-section">
+                <h3 class="help-section-title">Fast path</h3>
+                <ol class="help-steps">
+                  <li>Create or open a project before you start so the script, samples, and outputs stay together.</li>
+                  <li>Paste text into the script box or load it from a supported file.</li>
+                  <li>Choose the voice source, quality, transcript, and output format for this run.</li>
+                  <li>Click <strong>Generate audio</strong> and wait for the progress panel to complete.</li>
+                  <li>Play the finished versions in the output list and compare them before deciding which one to keep.</li>
+                </ol>
+              </div>
+              <div class="help-article-section">
+                <div class="help-callout help-callout-note">
+                  <p class="help-callout-title">Note</p>
+                  <p>If you edit the script or change the voice source, generate a new version rather than expecting an old output to update.</p>
+                </div>
+                <div class="help-callout help-callout-tip">
+                  <p class="help-callout-title">Tip</p>
+                  <p>Keep one browser tab on the project page while generation runs so you can catch the finished version as soon as it lands.</p>
+                </div>
+              </div>
+            </div>
           </section>
           <section id="help-panel-use-custom-voice" class="help-panel" role="tabpanel" aria-labelledby="help-tab-use-custom-voice" data-help-panel="use-custom-voice" hidden>
             <p class="help-lead">Choose between the built-in Qwen voice and a cloned reference sample for this workflow.</p>
-            <ol class="help-steps">
-              <li>Open the project where you want to generate audio.</li>
-              <li>Choose Built-in Qwen voice if you do not want to clone from a sample.</li>
-              <li>Choose Clone from sample when you want the output to follow the voice in a reference recording.</li>
-              <li>Run a short version first, then generate the full script once the selected voice sounds right.</li>
-            </ol>
-            <p class="help-note">If the voice sounds wrong, switch the voice source or replace the reference sample rather than looking for a separate custom voice setting.</p>
+            <div class="help-article-grid">
+              <div class="help-article-section">
+                <h3 class="help-section-title">Choosing the source</h3>
+                <ol class="help-steps">
+                  <li>Open the project where you want to generate audio.</li>
+                  <li>Choose Built-in Qwen voice if you do not want to clone from a sample.</li>
+                  <li>Choose Clone from sample when you want the output to follow the voice in a reference recording.</li>
+                  <li>Run a short version first, then generate the full script once the selected voice sounds right.</li>
+                </ol>
+              </div>
+              <div class="help-article-section">
+                <div class="help-callout help-callout-note">
+                  <p class="help-callout-title">Note</p>
+                  <p>If the voice sounds wrong, switch the voice source or replace the reference sample rather than looking for a separate custom voice setting.</p>
+                </div>
+                <div class="help-callout help-callout-tip">
+                  <p class="help-callout-title">Tip</p>
+                  <p>Use a clean reference sample or the built-in voice that best matches the result you want before you commit to a longer run.</p>
+                </div>
+              </div>
+            </div>
           </section>
           <section id="help-panel-prepare-reference-audio" class="help-panel" role="tabpanel" aria-labelledby="help-tab-prepare-reference-audio" data-help-panel="prepare-reference-audio" hidden>
             <p class="help-lead">A good reference sample gives RADTTS a clearer voice to copy and usually leads to more natural results.</p>
-            <ol class="help-steps">
-              <li>Choose a clean recording with one speaker, steady volume, and as little background noise as possible.</li>
-              <li>Trim or select a useful sample that sounds representative of the voice you want to clone.</li>
-              <li>Preview the sample and make sure it does not include long silences, music, or other speakers.</li>
-              <li>Use that sample for generation and replace it if the voice output sounds unstable or off-target.</li>
-            </ol>
-            <p class="help-note">Very short, noisy, or mixed-speaker samples usually produce weaker voice matches.</p>
+            <div class="help-article-grid">
+              <div class="help-article-section">
+                <h3 class="help-section-title">Sample quality checklist</h3>
+                <ol class="help-steps">
+                  <li>Choose a clean recording with one speaker, steady volume, and as little background noise as possible.</li>
+                  <li>Trim or select a useful sample that sounds representative of the voice you want to clone.</li>
+                  <li>Preview the sample and make sure it does not include long silences, music, or other speakers.</li>
+                  <li>Use that sample for generation and replace it if the voice output sounds unstable or off-target.</li>
+                </ol>
+              </div>
+              <div class="help-article-section">
+                <div class="help-callout help-callout-trouble">
+                  <p class="help-callout-title">Troubleshooting</p>
+                  <p>Very short, noisy, or mixed-speaker samples usually produce weaker voice matches and often need to be replaced before the next run.</p>
+                </div>
+                <div class="help-callout help-callout-note">
+                  <p class="help-callout-title">Note</p>
+                  <p>If the sample is usable but not ideal, trim it to the strongest section first instead of making the whole clip longer.</p>
+                </div>
+              </div>
+            </div>
           </section>
           <section id="help-panel-manage-versions-and-outputs" class="help-panel" role="tabpanel" aria-labelledby="help-tab-manage-versions-and-outputs" data-help-panel="manage-versions-and-outputs" hidden>
             <p class="help-lead">Completed versions let you compare runs, check metadata, and keep the output that best matches the script.</p>
-            <ol class="help-steps">
-              <li>Open Completed versions after each generation run.</li>
-              <li>Use playback controls and the version metadata to compare timing, settings, and output details.</li>
-              <li>Download or save the version you want to keep once you are happy with it.</li>
-              <li>Use the project output folder path when you need to find the generated files outside the app.</li>
-            </ol>
-            <p class="help-note">Older versions stay available in the project until you remove them, so label and review carefully if you generate many runs.</p>
+            <div class="help-article-grid">
+              <div class="help-article-section">
+                <h3 class="help-section-title">Review workflow</h3>
+                <ol class="help-steps">
+                  <li>Open Completed versions after each generation run.</li>
+                  <li>Use playback controls and the version metadata to compare timing, settings, and output details.</li>
+                  <li>Download or save the version you want to keep once you are happy with it.</li>
+                  <li>Use the project output folder path when you need to find the generated files outside the app.</li>
+                </ol>
+              </div>
+              <div class="help-article-section">
+                <div class="help-callout help-callout-note">
+                  <p class="help-callout-title">Note</p>
+                  <p>Older versions stay available in the project until you remove them, so label and review carefully if you generate many runs.</p>
+                </div>
+                <div class="help-callout help-callout-tip">
+                  <p class="help-callout-title">Tip</p>
+                  <p>Keep the best version name visible in the list so you can spot the right file even after several rounds of iteration.</p>
+                </div>
+              </div>
+            </div>
           </section>
           <section id="help-panel-use-helper-processing" class="help-panel" role="tabpanel" aria-labelledby="help-tab-use-helper-processing" data-help-panel="use-helper-processing" hidden>
             <p class="help-lead">Helper processing sends generation work to a live RADTTS helper when one is available.</p>
-            <ol class="help-steps">
-              <li>Check the helper status row before you start a longer generation run.</li>
-              <li>Use <strong>Set up helper app</strong> if you need to connect another machine for processing.</li>
-              <li>Start the job and watch the progress panel for the machine handling the work.</li>
-              <li>If no helper is live, the job may wait for helper assignment before falling back to the main RADTTS machine.</li>
-            </ol>
-            <p class="help-note">A helper must stay online for jobs to keep moving, so refresh status if the device was recently restarted or disconnected.</p>
+            <div class="help-article-grid">
+              <div class="help-article-section">
+                <h3 class="help-section-title">When helpers matter</h3>
+                <ol class="help-steps">
+                  <li>Check the helper status row before you start a longer generation run.</li>
+                  <li>Use <strong>Set up helper app</strong> if you need to connect another machine for processing.</li>
+                  <li>Start the job and watch the progress panel for the machine handling the work.</li>
+                  <li>If no helper is live, the job may wait for helper assignment before falling back to the main RADTTS machine.</li>
+                </ol>
+              </div>
+              <div class="help-article-section">
+                <div class="help-callout help-callout-note">
+                  <p class="help-callout-title">Note</p>
+                  <p>If the helper is offline, your job may wait for assignment before it falls back to the main RADTTS machine.</p>
+                </div>
+                <div class="help-callout help-callout-tip">
+                  <p class="help-callout-title">Tip</p>
+                  <p>A helper must stay online for jobs to keep moving, so refresh status if the device was recently restarted or disconnected.</p>
+                </div>
+              </div>
+            </div>
           </section>
           <section id="help-panel-troubleshooting" class="help-panel" role="tabpanel" aria-labelledby="help-tab-troubleshooting" data-help-panel="troubleshooting" hidden>
             <p class="help-lead">Use these checks when generation is slow, the helper is unavailable, or the output does not sound right.</p>
-            <ol class="help-steps">
-              <li>If a job is taking a long time, leave the page open and watch the stage and ETA before retrying.</li>
-              <li>If helper status is offline or unknown, refresh it and expect the job to run without helper support.</li>
-              <li>If generation fails, recheck the active project, the script text, and the selected voice source.</li>
-              <li>If the voice sounds wrong, swap in a cleaner reference sample or switch to the built-in voice.</li>
-              <li>If the reference sample is not loading, choose it again or use a saved sample from the current project.</li>
-            </ol>
-            <p class="help-note">Most generation problems come from missing text, an invalid voice source, or a weak reference sample.</p>
+            <div class="help-article-grid">
+              <div class="help-article-section">
+                <h3 class="help-section-title">Common recovery steps</h3>
+                <ol class="help-steps">
+                  <li>If a job is taking a long time, leave the page open and watch the stage and ETA before retrying.</li>
+                  <li>If helper status is offline or unknown, refresh it and expect the job to run without helper support.</li>
+                  <li>If generation fails, recheck the active project, the script text, and the selected voice source.</li>
+                  <li>If the voice sounds wrong, swap in a cleaner reference sample or switch to the built-in voice.</li>
+                  <li>If the reference sample is not loading, choose it again or use a saved sample from the current project.</li>
+                </ol>
+              </div>
+              <div class="help-article-section">
+                <div class="help-callout help-callout-trouble">
+                  <p class="help-callout-title">Troubleshooting</p>
+                  <p>Most generation problems come from missing text, an invalid voice source, a weak reference sample, or a helper that dropped offline mid-run.</p>
+                </div>
+                <div class="help-callout help-callout-note">
+                  <p class="help-callout-title">Note</p>
+                  <p>If the app keeps reporting a stalled helper, switch to the built-in voice for the next run so you can keep moving.</p>
+                </div>
+              </div>
+            </div>
           </section>
         </div>
       </section>

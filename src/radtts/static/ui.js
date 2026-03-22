@@ -372,6 +372,9 @@ function selectHelpTab(tabKey, { focusTab = false, persist = true } = {}) {
     const isActive = panelKey === activeTabKey;
     panel.classList.toggle("is-active", isActive);
     panel.hidden = !isActive;
+    if (isActive) {
+      panel.scrollTop = 0;
+    }
   }
 
   if (persist) {
