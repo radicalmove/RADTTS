@@ -566,8 +566,7 @@ body.modal-open {
   color: #71423d;
   padding: 11px 17px 13px;
   font: inherit;
-  font-size: 0.9rem;
-  font-weight: 700;
+  font-weight: 600;
   line-height: 1.2;
   cursor: pointer;
   text-align: left;
@@ -816,7 +815,7 @@ body.modal-open {
     min-height: 52px;
     height: 52px;
     padding: 10px 14px 12px;
-    font-size: 0.86rem;
+    font-size: 13px;
   }
 }
 
