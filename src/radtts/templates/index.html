@@ -412,14 +412,14 @@
             <p class="help-note">If you edit the script or change the voice source, generate a new version rather than expecting an old output to update.</p>
           </section>
           <section id="help-panel-use-custom-voice" class="help-panel" role="tabpanel" aria-labelledby="help-tab-use-custom-voice" data-help-panel="use-custom-voice" hidden>
-            <p class="help-lead">Use a custom voice only when you already have a prepared voice folder or path that RADTTS can read.</p>
+            <p class="help-lead">RADTTS does not use a separate custom voice path in this workflow. Your voice choices here are a built-in voice or a cloned reference sample.</p>
             <ol class="help-steps">
               <li>Open the project where you want to generate audio.</li>
-              <li>Select the custom voice option or enter the custom voice path your team has prepared.</li>
-              <li>Confirm the path points to the voice you intend to use before generating.</li>
-              <li>Run a short version first, then generate the full script once the voice sounds right.</li>
+              <li>Choose Built-in Qwen voice if you do not want to clone from a sample.</li>
+              <li>Choose Clone from sample when you want the output to follow the voice in a reference recording.</li>
+              <li>Run a short version first, then generate the full script once the selected voice sounds right.</li>
             </ol>
-            <p class="help-note">If the path is wrong or incomplete, generation may fail or fall back to a different voice than you expected.</p>
+            <p class="help-note">If the voice sounds wrong, switch the voice source or replace the reference sample rather than looking for a separate custom voice setting.</p>
           </section>
           <section id="help-panel-prepare-reference-audio" class="help-panel" role="tabpanel" aria-labelledby="help-tab-prepare-reference-audio" data-help-panel="prepare-reference-audio" hidden>
             <p class="help-lead">A good reference sample gives RADTTS a clearer voice to copy and usually leads to more natural results.</p>
@@ -457,7 +457,7 @@
               <li>If a job is taking a long time, leave the page open and watch the stage and ETA before retrying.</li>
               <li>If helper status is offline or unknown, refresh it and expect the job to run without helper support.</li>
               <li>If generation fails, recheck the active project, the script text, and the selected voice source.</li>
-              <li>If the voice sounds wrong, swap in a cleaner reference sample or confirm the custom voice path is correct.</li>
+              <li>If the voice sounds wrong, swap in a cleaner reference sample or switch to the built-in voice.</li>
               <li>If the reference sample is not loading, choose it again or use a saved sample from the current project.</li>
             </ol>
             <p class="help-note">Most generation problems come from missing text, an invalid voice source, or a weak reference sample.</p>
