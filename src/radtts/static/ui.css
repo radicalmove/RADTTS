@@ -534,8 +534,10 @@ body.modal-open {
   max-height: min(92vh, 980px);
   margin: 18px auto;
   overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.92);
   border-radius: 24px;
   box-shadow: 0 26px 80px rgba(0, 0, 0, 0.28);
+  background: linear-gradient(180deg, rgba(251, 243, 241, 0.98) 0%, rgba(247, 238, 236, 0.98) 100%);
 }
 
 .help-modal-card .modal-header {
@@ -570,8 +572,11 @@ body.modal-open {
 }
 
 .help-tab-rail {
-  padding: 12px 18px 0;
-  background: linear-gradient(180deg, rgba(251, 240, 238, 0.92), rgba(251, 240, 238, 0));
+  margin: 0 -18px;
+  padding: 16px 18px 0;
+  background: linear-gradient(180deg, rgba(252, 244, 242, 0.98) 0%, rgba(247, 236, 233, 0.98) 100%);
+  border-bottom: 1px solid rgba(17, 24, 39, 0.08);
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.7);
 }
 
 .help-modal-tabs {
@@ -741,12 +746,11 @@ body.modal-open {
 }
 
 .help-callout {
-  border: 1px solid rgba(156, 53, 39, 0.14);
-  border-left-width: 6px;
+  border: 1px solid rgba(156, 53, 39, 0.16);
   border-radius: 16px;
   padding: 14px 16px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(252, 248, 247, 0.98) 100%);
-  box-shadow: 0 10px 22px rgba(23, 39, 28, 0.06);
+  background: linear-gradient(180deg, rgba(255, 249, 247, 0.98) 0%, rgba(250, 242, 239, 0.98) 100%);
+  box-shadow: 0 10px 24px rgba(24, 39, 28, 0.06);
   display: grid;
   gap: 8px;
 }
@@ -767,15 +771,15 @@ body.modal-open {
 }
 
 .help-callout-tip {
-  border-left-color: #ce3e2e;
+  border-color: rgba(206, 62, 46, 0.22);
 }
 
 .help-callout-note {
-  border-left-color: #5a6268;
+  border-color: rgba(57, 93, 135, 0.18);
 }
 
 .help-callout-trouble {
-  border-left-color: #9c4b11;
+  border-color: rgba(156, 75, 17, 0.2);
 }
 
 .help-callout-tip .help-callout-title {
@@ -795,7 +799,7 @@ body.modal-open {
 }
 
 .help-callout-note {
-  background: linear-gradient(180deg, rgba(247, 247, 249, 0.98) 0%, rgba(242, 243, 246, 0.98) 100%);
+  background: linear-gradient(180deg, rgba(240, 247, 252, 0.98) 0%, rgba(229, 240, 248, 0.98) 100%);
 }
 
 .help-callout-trouble {
@@ -805,6 +809,23 @@ body.modal-open {
 [data-theme="dark"] .help-modal-card .modal-header {
   background: #090909;
   border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="dark"] .help-modal-card {
+  border-color: rgba(255, 255, 255, 0.9);
+  background:
+    linear-gradient(180deg, rgba(74, 33, 27, 0.34), rgba(21, 21, 23, 0) 180px),
+    var(--bg-surface);
+}
+
+[data-theme="dark"] .help-tab-rail {
+  background: linear-gradient(180deg, rgba(80, 34, 29, 0.42), rgba(80, 34, 29, 0) 100%);
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.05);
+}
+
+[data-theme="dark"] .help-modal-body {
+  background: linear-gradient(180deg, rgba(64, 28, 24, 0.42), rgba(32, 18, 15, 0.26) 100%);
 }
 
 .worker-setup-links-modal {
