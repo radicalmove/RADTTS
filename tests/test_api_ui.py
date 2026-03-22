@@ -49,9 +49,10 @@ def test_ui_homepage_renders_help_button_and_modal_shell():
     text = response.text
     assert 'id="help-btn"' in text
     assert 'id="help-modal"' in text
+    assert "Built-in or cloned voice" in text
     assert "RADTTS turns script text into project-based voice outputs using either a reference sample or a built-in voice." in text
     assert "Create or open the project you want to work in." in text
-    assert "RADTTS does not use a separate custom voice path in this workflow." in text
+    assert "Choose between the built-in Qwen voice and a cloned reference sample for this workflow." in text
     assert "If no helper is live, the job stays on the main RADTTS machine." in text
     assert "Choose Built-in Qwen voice if you do not want to clone from a sample." in text
     assert "Select the custom voice option or enter the custom voice path your team has prepared." not in text
