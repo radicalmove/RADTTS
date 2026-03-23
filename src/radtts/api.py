@@ -88,6 +88,7 @@ def _env_int(name: str, default: int) -> int:
 
 PROJECTS_ROOT = Path(os.environ.get("RADTTS_PROJECTS_ROOT", "projects"))
 MODULE_ROOT = Path(__file__).resolve().parent
+APP_ENV = (os.environ.get("APP_ENV", "production") or "production").strip().lower() or "production"
 AUTH_REQUIRED = _env_bool("RADTTS_AUTH_REQUIRED", False)
 SESSION_SECRET = os.environ.get("RADTTS_SESSION_SECRET", "radtts-dev-session-secret")
 SESSION_SECURE = _env_bool("RADTTS_SESSION_SECURE", False)
@@ -1229,6 +1230,7 @@ def home(request: Request):
         request=request,
         name="index.html",
         context={
+            "app_env": APP_ENV,
             "models": SUPPORTED_BASE_MODELS,
             "model_modes": MODEL_MODE_ALIASES,
             "presets": DEFAULT_PRESETS,

@@ -41,6 +41,15 @@ def test_ui_homepage_renders():
     assert "Recent projects" in response.text
 
 
+def test_ui_homepage_includes_app_env_marker(monkeypatch):
+    monkeypatch.setattr(radtts_api, "APP_ENV", "development")
+    client = TestClient(app)
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert 'data-app-env="development"' in response.text
+
+
 def test_ui_homepage_renders_help_button_and_modal_shell():
     client = TestClient(app)
     response = client.get("/")
