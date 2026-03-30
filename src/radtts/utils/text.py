@@ -24,17 +24,54 @@ def split_sentences(text: str) -> list[str]:
     return chunks
 
 
+def coalesce_sentence_chunks(
+    chunks: list[str],
+    *,
+    target_words: int = 26,
+    max_words: int = 38,
+    max_chars: int = 220,
+) -> list[str]:
+    cleaned = [normalize_whitespace(chunk) for chunk in chunks if normalize_whitespace(chunk)]
+    if not cleaned:
+        return []
+
+    merged: list[str] = []
+    current = cleaned[0]
+    for next_chunk in cleaned[1:]:
+        current_words = word_count(current)
+        next_words = word_count(next_chunk)
+        combined = f"{current} {next_chunk}".strip()
+        combined_words = word_count(combined)
+
+        if (
+            current_words < target_words
+            and combined_words <= max_words
+            and len(combined) <= max_chars
+        ):
+            current = combined
+            continue
+
+        merged.append(current)
+        current = next_chunk
+
+    merged.append(current)
+    return merged
+
+
 def word_count(text: str) -> int:
     return len(_WORD_RE.findall(text))
 
 
-def estimated_chunk_count(text: str, chunk_mode: str = "sentence") -> int:
+def estimated_chunk_count(text: str, chunk_mode: str = "sentence", *, voice_source: str | None = None) -> int:
     cleaned = normalize_whitespace(text)
     if not cleaned:
         return 0
     if str(chunk_mode).strip().lower() == "single":
         return 1
-    return max(1, len(split_sentences(cleaned)))
+    chunks = split_sentences(cleaned)
+    if str(voice_source or "").strip().lower() == "reference":
+        chunks = coalesce_sentence_chunks(chunks) or chunks
+    return max(1, len(chunks))
 
 
 def recommended_generation_timeout_seconds(
@@ -57,6 +94,8 @@ def recommended_generation_timeout_seconds(
         chunk_texts = [cleaned]
     else:
         chunk_texts = split_sentences(cleaned) or [cleaned]
+        if str(voice_source or "").strip().lower() == "reference":
+            chunk_texts = coalesce_sentence_chunks(chunk_texts) or chunk_texts
 
     chunks = max(1, len(chunk_texts))
     chunk_words = [max(1, word_count(chunk)) for chunk in chunk_texts]
@@ -78,7 +117,7 @@ def recommended_generation_timeout_seconds(
     )
     if str(voice_source or "").strip().lower() == "reference":
         reference_seconds = max(0.0, float(reference_duration_seconds or 0.0))
-        estimate += 90 + (chunks * 18) + max(0.0, reference_seconds - 6.0) * 14.0
+        estimate += 180 + (chunks * 28) + max(0.0, reference_seconds - 6.0) * 18.0
     bounded = max(float(minimum), min(float(maximum), estimate))
     return int(round(bounded))
 

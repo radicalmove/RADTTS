@@ -10,6 +10,7 @@ import torch
 
 from radtts.constants import SUPPORTED_BASE_MODELS
 from radtts.exceptions import ValidationError
+from radtts.models import ChunkMode, VoiceSource
 from radtts.services.tts import TTSService
 
 
@@ -147,6 +148,15 @@ def test_prepare_reference_audio_path_returns_original_wav_when_cleanup_disabled
 
     assert normalized == original
     assert called is False
+
+
+def test_build_chunks_coalesces_reference_sentence_runs():
+    text = "One short sentence. Two short sentence. Three short sentence. Four short sentence."
+
+    reference_chunks = TTSService._build_chunks(text, ChunkMode.SENTENCE, voice_source=VoiceSource.REFERENCE)
+    builtin_chunks = TTSService._build_chunks(text, ChunkMode.SENTENCE, voice_source=VoiceSource.BUILTIN)
+
+    assert len(reference_chunks) < len(builtin_chunks)
 
 
 def test_auto_reference_text_rejects_too_short_audio(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):

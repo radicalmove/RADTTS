@@ -254,7 +254,7 @@ class WorkerClient:
                 req,
                 reference_duration_seconds=reference_duration_seconds,
             )
-            estimated_chunks = estimated_chunk_count(req.text, req.chunk_mode)
+            estimated_chunks = estimated_chunk_count(req.text, req.chunk_mode, voice_source=req.voice_source)
             LOG.info(
                 "starting synthesis job_id=%s reference_audio=%s reference_seconds=%s reference_text_chars=%s built_in_speaker=%s estimated_chunks=%s generation_timeout_seconds=%s",
                 job_id,

@@ -15,7 +15,12 @@ from radtts.models import (
     SynthesisRequest,
 )
 from radtts.services.tts import PausePlanner
-from radtts.utils.text import estimated_chunk_count, recommended_generation_timeout_seconds, split_sentences
+from radtts.utils.text import (
+    coalesce_sentence_chunks,
+    estimated_chunk_count,
+    recommended_generation_timeout_seconds,
+    split_sentences,
+)
 
 
 def test_sentence_splitter_preserves_sentences():
@@ -45,6 +50,25 @@ def test_estimated_chunk_count_respects_chunk_mode():
     text = "One sentence. Two sentence. Three sentence."
     assert estimated_chunk_count(text, "sentence") == 3
     assert estimated_chunk_count(text, "single") == 1
+
+
+def test_estimated_chunk_count_coalesces_reference_sentence_runs():
+    text = "One short sentence. Two short sentence. Three short sentence. Four short sentence."
+
+    regular = estimated_chunk_count(text, "sentence")
+    reference = estimated_chunk_count(text, "sentence", voice_source="reference")
+
+    assert regular == 4
+    assert reference < regular
+
+
+def test_coalesce_sentence_chunks_merges_short_neighbors():
+    chunks = ["One short sentence.", "Two short sentence.", "This is a much longer sentence that should stand alone."]
+
+    merged = coalesce_sentence_chunks(chunks, target_words=8, max_words=20, max_chars=80)
+
+    assert merged[0] == "One short sentence. Two short sentence."
+    assert merged[1] == "This is a much longer sentence that should stand alone."
 
 
 def test_recommended_generation_timeout_scales_for_longer_scripts():

@@ -25,7 +25,7 @@ from radtts.exceptions import DependencyMissingError, ValidationError
 from radtts.models import ChunkMode, PauseConfig, SynthesisRequest, VoiceSource
 from radtts.services.asr import ASRService
 from radtts.utils.audio import concat_with_silence, convert_audio, probe_duration_seconds, read_audio, write_wav
-from radtts.utils.text import split_sentences, word_count
+from radtts.utils.text import coalesce_sentence_chunks, split_sentences, word_count
 
 
 class PausePlanner:
@@ -114,7 +114,7 @@ class TTSService:
                     if on_progress:
                         on_progress("reference transcription complete")
 
-            chunks = self._build_chunks(req.text, req.chunk_mode)
+            chunks = self._build_chunks(req.text, req.chunk_mode, voice_source=req.voice_source)
             pauses = self._pause_planner.build(chunks, req.pause_config) if req.chunk_mode == ChunkMode.SENTENCE else []
 
             model = self._load_model(req.model_id)
@@ -226,12 +226,16 @@ class TTSService:
         return normalized_path
 
     @staticmethod
-    def _build_chunks(text: str, chunk_mode: ChunkMode) -> list[str]:
+    def _build_chunks(text: str, chunk_mode: ChunkMode, *, voice_source: VoiceSource = VoiceSource.REFERENCE) -> list[str]:
         if chunk_mode == ChunkMode.SINGLE:
             return [text.strip()]
         chunks = split_sentences(text)
         if not chunks:
             return [text.strip()]
+        if voice_source == VoiceSource.REFERENCE:
+            merged = coalesce_sentence_chunks(chunks)
+            if merged:
+                return merged
         return chunks
 
     @staticmethod

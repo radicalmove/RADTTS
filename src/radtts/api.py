@@ -1027,6 +1027,8 @@ def _run_local_synthesis_from_worker_payload(
         chunk_mode=worker_payload.chunk_mode,
         max_new_tokens=fallback_max_new_tokens,
         minimum_seconds=LOCAL_FALLBACK_GENERATION_TIMEOUT_SECONDS,
+        voice_source=worker_payload.voice_source,
+        reference_duration_seconds=probe_duration_seconds(reference_path) if reference_path is not None else None,
     )
 
     try:
