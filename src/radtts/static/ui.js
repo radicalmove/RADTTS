@@ -215,11 +215,162 @@ const state = {
   shareProjectUsers: [],
   shareProjectCollaborators: [],
   shareProjectOwner: null,
+  projectSettings: null,
+  projectSettingsSaveTimer: null,
 };
 
 function cleanOptional(value) {
   const trimmed = (value ?? "").trim();
   return trimmed.length ? trimmed : null;
+}
+
+function defaultProjectSettings() {
+  return {
+    selected_audio_hash: null,
+    voice_source: "reference",
+    built_in_speaker: null,
+    quality: "normal",
+    add_ums: false,
+    add_ahs: false,
+    generate_transcript: false,
+    output_format: "mp3",
+    average_gap_seconds: 0.8,
+  };
+}
+
+function normalizeProjectSettings(payload) {
+  const data = payload && typeof payload === "object" ? payload : {};
+  const selectedAudioHash = cleanOptional(data.selected_audio_hash);
+  const voiceSource = String(cleanOptional(data.voice_source) || "").toLowerCase() === "builtin"
+    ? "builtin"
+    : "reference";
+  const quality = String(cleanOptional(data.quality) || "").toLowerCase() === "high" ? "high" : "normal";
+  const outputFormat = String(cleanOptional(data.output_format) || "").toLowerCase() === "wav" ? "wav" : "mp3";
+  const builtInSpeaker = cleanOptional(data.built_in_speaker);
+  const gap = Number(data.average_gap_seconds);
+
+  return {
+    selected_audio_hash: selectedAudioHash && selectedAudioHash.length >= 16 ? selectedAudioHash : null,
+    voice_source: voiceSource,
+    built_in_speaker: builtInSpeaker,
+    quality,
+    add_ums: Boolean(data.add_ums),
+    add_ahs: Boolean(data.add_ahs),
+    generate_transcript: Boolean(data.generate_transcript),
+    output_format: outputFormat,
+    average_gap_seconds: Number.isFinite(gap) ? Math.max(0.15, Math.min(2.5, gap)) : 0.8,
+  };
+}
+
+function updateGapValueDisplay() {
+  if (!gapSliderNode || !gapValueNode) return;
+  gapValueNode.textContent = Number(gapSliderNode.value || 0.8).toFixed(2);
+}
+
+function applyProjectSettingsToControls(settings) {
+  const normalized = normalizeProjectSettings(settings);
+  state.projectSettings = normalized;
+  state.selectedAudioHash = normalized.selected_audio_hash;
+  state.selectedBuiltInSpeaker = normalized.built_in_speaker || "";
+
+  if (qualityNode) {
+    qualityNode.value = normalized.quality;
+  }
+  if (outputFormatNode) {
+    outputFormatNode.value = normalized.output_format;
+  }
+  if (umsToggleNode) {
+    umsToggleNode.checked = normalized.add_ums;
+  }
+  if (ahsToggleNode) {
+    ahsToggleNode.checked = normalized.add_ahs;
+  }
+  if (transcriptToggleNode) {
+    transcriptToggleNode.checked = normalized.generate_transcript;
+  }
+  if (gapSliderNode) {
+    gapSliderNode.value = Number(normalized.average_gap_seconds).toFixed(2);
+  }
+  updateGapValueDisplay();
+  setVoiceSourceUi(normalized.voice_source);
+
+  if (builtinVoiceSelectNode) {
+    builtinVoiceSelectNode.value = state.selectedBuiltInSpeaker || "";
+  }
+}
+
+function resetProjectSettingsControls() {
+  applyProjectSettingsToControls(defaultProjectSettings());
+}
+
+function currentProjectSettingsPayload() {
+  return normalizeProjectSettings({
+    selected_audio_hash: state.selectedAudioHash,
+    voice_source: state.voiceSource,
+    built_in_speaker: state.selectedBuiltInSpeaker,
+    quality: qualityNode?.value || "normal",
+    add_ums: Boolean(umsToggleNode?.checked),
+    add_ahs: Boolean(ahsToggleNode?.checked),
+    generate_transcript: Boolean(transcriptToggleNode?.checked),
+    output_format: outputFormatNode?.value || "mp3",
+    average_gap_seconds: gapSliderNode?.value ?? 0.8,
+  });
+}
+
+function clearProjectSettingsSaveTimer() {
+  if (state.projectSettingsSaveTimer) {
+    clearTimeout(state.projectSettingsSaveTimer);
+    state.projectSettingsSaveTimer = null;
+  }
+}
+
+async function saveProjectSettings(projectRef, settings) {
+  if (!projectRef) return;
+  const normalized = normalizeProjectSettings(settings);
+  try {
+    const data = await requestJSON(`/projects/${encodeURIComponent(projectRef)}/settings`, "PUT", normalized);
+    if (state.activeProjectRef === projectRef) {
+      state.projectSettings = normalizeProjectSettings(data?.settings);
+    }
+  } catch (err) {
+    console.warn("Could not save project settings", err);
+  }
+}
+
+function queueProjectSettingsSave() {
+  const projectRef = state.activeProjectRef;
+  if (!projectRef) return;
+  const settings = currentProjectSettingsPayload();
+  state.projectSettings = settings;
+  clearProjectSettingsSaveTimer();
+  state.projectSettingsSaveTimer = setTimeout(() => {
+    state.projectSettingsSaveTimer = null;
+    void saveProjectSettings(projectRef, settings);
+  }, 250);
+}
+
+async function loadProjectSettings(projectRef) {
+  if (!projectRef) return defaultProjectSettings();
+  try {
+    const data = await requestJSON(`/projects/${encodeURIComponent(projectRef)}/settings`, "GET");
+    return normalizeProjectSettings(data?.settings);
+  } catch (err) {
+    console.warn("Could not load project settings", err);
+    return defaultProjectSettings();
+  }
+}
+
+async function restoreProjectSettings(projectRef) {
+  resetProjectSettingsControls();
+  const settings = await loadProjectSettings(projectRef);
+  if (state.activeProjectRef !== projectRef) return;
+
+  applyProjectSettingsToControls(settings);
+  await loadReferenceSamples(settings.selected_audio_hash);
+  if (state.activeProjectRef !== projectRef) return;
+  await loadBuiltinVoices();
+  if (state.activeProjectRef !== projectRef) return;
+  state.projectSettings = currentProjectSettingsPayload();
 }
 
 function setGatewayStatus(message, isError = false) {
@@ -1969,12 +2120,12 @@ function applyActiveProject(projectRef, projectLabel = projectRef) {
   resetProgressUi();
   clearJobTracking();
   resetScriptEditorState();
+  resetProjectSettingsControls();
   setGenerateEnabled(true);
   setCancelVisible(false);
   clearWorkerSetupLinks();
   void loadOutputs();
-  void loadReferenceSamples();
-  void loadBuiltinVoices();
+  void restoreProjectSettings(projectRef);
   void loadProjectScript();
   void refreshProjectAccessInfo();
   startWorkerStatusPolling();
@@ -2024,7 +2175,7 @@ function updateSavedSampleDeleteButtonState() {
   deleteSavedSampleBtn.disabled = !String(savedSampleSelectNode.value || "");
 }
 
-function applySavedSampleSelection(audioHash) {
+function applySavedSampleSelection(audioHash, { persist = false } = {}) {
   const sample = findReferenceSampleByHash(audioHash);
   if (!sample) {
     setSavedSampleStatus("Saved sample not found. Refresh and try again.", true);
@@ -2055,6 +2206,9 @@ function applySavedSampleSelection(audioHash) {
   );
   showReferencePreviewFromUrl(sample.artifact_url || "");
   updateSavedSampleDeleteButtonState();
+  if (persist) {
+    queueProjectSettingsSave();
+  }
 }
 
 async function loadReferenceSamples(preferredHash = null) {
@@ -2155,6 +2309,7 @@ async function handleDeleteSavedSample() {
     }
 
     await loadReferenceSamples();
+    queueProjectSettingsSave();
     setSavedSampleStatus("Saved sample deleted.");
   } catch (err) {
     setSavedSampleStatus(`Could not delete saved sample: ${String(err)}`, true);
@@ -2176,6 +2331,7 @@ async function attachAudioFileToProject(file, originLabel = "Audio") {
     setRecordStatus(`${originLabel} saved to project as ${data.filename}.`);
     setSavedSampleStatus(`${originLabel} saved. You can reuse it later from the saved sample list.`);
     await loadReferenceSamples(state.selectedAudioHash);
+    queueProjectSettingsSave();
   } catch (err) {
     setRecordStatus(`${originLabel} selected, but could not be saved yet: ${String(err)}`, true);
     setSavedSampleStatus(`Saved sample refresh failed: ${String(err)}`, true);
@@ -3380,6 +3536,7 @@ function bindVoiceSource() {
       if (!voiceSourceReferenceNode.checked) return;
       setVoiceSourceUi("reference");
       setGenerateStatus("");
+      queueProjectSettingsSave();
     });
   }
 
@@ -3388,6 +3545,7 @@ function bindVoiceSource() {
       if (!voiceSourceBuiltinNode.checked) return;
       setVoiceSourceUi("builtin");
       setGenerateStatus("");
+      queueProjectSettingsSave();
       if (!state.builtinVoices.length) {
         void loadBuiltinVoices();
       }
@@ -3399,6 +3557,7 @@ function bindVoiceSource() {
       state.selectedBuiltInSpeaker = builtinVoiceSelectNode.value || "";
       clearBuiltinVoicePreview();
       setBuiltinVoiceStatus(builtinVoiceSelectionMessage(getSelectedBuiltInVoice()));
+      queueProjectSettingsSave();
     });
   }
 
@@ -3454,7 +3613,7 @@ function bindAudioSelection() {
     savedSampleSelectNode.addEventListener("change", () => {
       const selectedHash = savedSampleSelectNode.value;
       if (selectedHash) {
-        applySavedSampleSelection(selectedHash);
+        applySavedSampleSelection(selectedHash, { persist: true });
       } else if (!state.selectedAudioFile) {
         state.selectedAudioHash = null;
         if (audioDropzoneTitleNode) {
@@ -3464,6 +3623,7 @@ function bindAudioSelection() {
           audioFileNameNode.textContent = "No file selected.";
         }
         clearReferencePreview();
+        queueProjectSettingsSave();
       }
       updateSavedSampleDeleteButtonState();
     });
@@ -3660,18 +3820,40 @@ function bindGapSlider() {
   if (!gapSliderNode || !gapValueNode) return;
 
   const update = () => {
-    gapValueNode.textContent = Number(gapSliderNode.value).toFixed(2);
+    updateGapValueDisplay();
+    queueProjectSettingsSave();
   };
 
   gapSliderNode.addEventListener("input", update);
   if (qualityNode) {
     qualityNode.addEventListener("change", () => {
+      queueProjectSettingsSave();
       if (state.voiceSource === "builtin") {
         void loadBuiltinVoices();
       }
     });
   }
-  update();
+  if (outputFormatNode) {
+    outputFormatNode.addEventListener("change", () => {
+      queueProjectSettingsSave();
+    });
+  }
+  if (umsToggleNode) {
+    umsToggleNode.addEventListener("change", () => {
+      queueProjectSettingsSave();
+    });
+  }
+  if (ahsToggleNode) {
+    ahsToggleNode.addEventListener("change", () => {
+      queueProjectSettingsSave();
+    });
+  }
+  if (transcriptToggleNode) {
+    transcriptToggleNode.addEventListener("change", () => {
+      queueProjectSettingsSave();
+    });
+  }
+  updateGapValueDisplay();
 }
 
 function setupThemeToggle() {

@@ -31,9 +31,11 @@ from radtts.models import (
     ProjectScriptDeleteRequest,
     ProjectScriptRestoreRequest,
     ProjectScriptSaveRequest,
+    ProjectUiSettings,
     SimpleSynthesisRequest,
     SynthesisRequest,
     TranscribeRequest,
+    OutputFormat,
     VoiceSource,
     WorkerInviteRequest,
     WorkerInviteResponse,
@@ -336,6 +338,60 @@ def _project_last_activity_at(scoped_project_id: str) -> datetime:
     if not timestamps:
         return datetime.fromtimestamp(0, tz=timezone.utc)
     return max(timestamps)
+
+
+def _coerce_project_settings(payload: object) -> ProjectUiSettings:
+    data = payload if isinstance(payload, dict) else {}
+
+    selected_audio_hash = str(data.get("selected_audio_hash") or "").strip() or None
+    if selected_audio_hash and len(selected_audio_hash) < 16:
+        selected_audio_hash = None
+
+    voice_source_raw = str(data.get("voice_source") or VoiceSource.REFERENCE.value).strip().lower()
+    try:
+        voice_source = VoiceSource(voice_source_raw)
+    except ValueError:
+        voice_source = VoiceSource.REFERENCE
+
+    built_in_speaker = str(data.get("built_in_speaker") or "").strip() or None
+    quality = "high" if str(data.get("quality") or "").strip().lower() == "high" else "normal"
+
+    output_format_raw = str(data.get("output_format") or OutputFormat.MP3.value).strip().lower()
+    try:
+        output_format = OutputFormat(output_format_raw)
+    except ValueError:
+        output_format = OutputFormat.MP3
+
+    try:
+        average_gap_seconds = float(data.get("average_gap_seconds", 0.8))
+    except (TypeError, ValueError):
+        average_gap_seconds = 0.8
+    average_gap_seconds = max(0.15, min(2.5, average_gap_seconds))
+
+    return ProjectUiSettings(
+        selected_audio_hash=selected_audio_hash,
+        voice_source=voice_source,
+        built_in_speaker=built_in_speaker,
+        quality=quality,
+        add_ums=bool(data.get("add_ums", False)),
+        add_ahs=bool(data.get("add_ahs", False)),
+        generate_transcript=bool(data.get("generate_transcript", False)),
+        output_format=output_format,
+        average_gap_seconds=average_gap_seconds,
+    )
+
+
+def _load_project_settings(scoped_project_id: str) -> ProjectUiSettings:
+    metadata = pipeline.project_manager.load_project_metadata(scoped_project_id)
+    return _coerce_project_settings(metadata.get("ui_settings"))
+
+
+def _write_project_settings(scoped_project_id: str, settings: ProjectUiSettings) -> ProjectUiSettings:
+    pipeline.project_manager.update_project_metadata(
+        scoped_project_id,
+        {"ui_settings": settings.model_dump(mode="json")},
+    )
+    return settings
 
 
 def _inferred_owner_key_from_project_id(scoped_project_id: str) -> str:
@@ -1428,6 +1484,28 @@ def get_project_script(request: Request, project_id: str):
     return {
         "project_id": _display_project_id(scoped_project_id),
         **payload,
+    }
+
+
+@app.get("/projects/{project_id}/settings")
+def get_project_settings(request: Request, project_id: str):
+    _require_auth(request)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
+    settings = _load_project_settings(scoped_project_id)
+    return {
+        "project_id": _display_project_id(scoped_project_id),
+        "settings": settings.model_dump(mode="json"),
+    }
+
+
+@app.put("/projects/{project_id}/settings")
+def update_project_settings(request: Request, project_id: str, req: ProjectUiSettings):
+    _require_auth(request)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
+    settings = _write_project_settings(scoped_project_id, req)
+    return {
+        "project_id": _display_project_id(scoped_project_id),
+        "settings": settings.model_dump(mode="json"),
     }
 
 

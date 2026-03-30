@@ -59,6 +59,18 @@ class ProjectCreateRequest(BaseModel):
     lesson: str | None = None
 
 
+class ProjectUiSettings(BaseModel):
+    selected_audio_hash: str | None = Field(default=None, min_length=16)
+    voice_source: VoiceSource = VoiceSource.REFERENCE
+    built_in_speaker: str | None = None
+    quality: Literal["normal", "high"] = "normal"
+    add_ums: bool = False
+    add_ahs: bool = False
+    generate_transcript: bool = False
+    output_format: OutputFormat = OutputFormat.MP3
+    average_gap_seconds: float = Field(default=0.8, ge=0.15, le=2.5)
+
+
 class TranscribeRequest(BaseModel):
     project_id: str = Field(min_length=2)
     audio_path: Path

@@ -111,6 +111,64 @@ def test_project_outputs_endpoint_returns_empty_list_for_new_project():
             shutil.rmtree(project_root)
 
 
+def test_project_settings_endpoint_returns_defaults_and_persists_updates():
+    client = TestClient(app)
+    project_id = f"ui-{uuid.uuid4().hex[:8]}"
+    project_root = Path("projects") / project_id
+
+    try:
+        created = client.post("/projects", json={"project_id": project_id})
+        assert created.status_code == 200
+
+        loaded = client.get(f"/projects/{project_id}/settings")
+        assert loaded.status_code == 200
+        assert loaded.json()["settings"] == {
+            "selected_audio_hash": None,
+            "voice_source": "reference",
+            "built_in_speaker": None,
+            "quality": "normal",
+            "add_ums": False,
+            "add_ahs": False,
+            "generate_transcript": False,
+            "output_format": "mp3",
+            "average_gap_seconds": 0.8,
+        }
+
+        updated = client.put(
+            f"/projects/{project_id}/settings",
+            json={
+                "selected_audio_hash": "abcd1234abcd1234",
+                "voice_source": "builtin",
+                "built_in_speaker": "Ryan",
+                "quality": "high",
+                "add_ums": True,
+                "add_ahs": True,
+                "generate_transcript": True,
+                "output_format": "wav",
+                "average_gap_seconds": 1.15,
+            },
+        )
+        assert updated.status_code == 200
+        assert updated.json()["settings"] == {
+            "selected_audio_hash": "abcd1234abcd1234",
+            "voice_source": "builtin",
+            "built_in_speaker": "Ryan",
+            "quality": "high",
+            "add_ums": True,
+            "add_ahs": True,
+            "generate_transcript": True,
+            "output_format": "wav",
+            "average_gap_seconds": 1.15,
+        }
+
+        loaded_again = client.get(f"/projects/{project_id}/settings")
+        assert loaded_again.status_code == 200
+        assert loaded_again.json()["settings"] == updated.json()["settings"]
+    finally:
+        if project_root.exists():
+            shutil.rmtree(project_root)
+
+
 def test_project_outputs_endpoint_includes_audio_tuning_label():
     client = TestClient(app)
     project_id = f"ui-{uuid.uuid4().hex[:8]}"
