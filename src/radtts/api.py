@@ -91,6 +91,7 @@ MODULE_ROOT = Path(__file__).resolve().parent
 AUTH_REQUIRED = _env_bool("RADTTS_AUTH_REQUIRED", False)
 SESSION_SECRET = os.environ.get("RADTTS_SESSION_SECRET", "radtts-dev-session-secret")
 SESSION_SECURE = _env_bool("RADTTS_SESSION_SECURE", False)
+APP_ENV = os.environ.get("APP_ENV", "").strip().lower()
 PSYCHEK_LOGIN_URL = os.environ.get("PSYCHEK_LOGIN_URL", "http://127.0.0.1:8000/login")
 BRIDGE_SECRET = os.environ.get("RADTTS_BRIDGE_SECRET", SESSION_SECRET)
 BRIDGE_MAX_AGE_SECONDS = int(os.environ.get("RADTTS_BRIDGE_MAX_AGE_SECONDS", "120"))
@@ -1234,6 +1235,7 @@ def home(request: Request):
             "models": SUPPORTED_BASE_MODELS,
             "model_modes": MODEL_MODE_ALIASES,
             "presets": DEFAULT_PRESETS,
+            "app_env": APP_ENV,
             "auth_required": AUTH_REQUIRED,
             "current_user": current_user,
             "psychek_app_url": PSYCHEK_APP_URL,

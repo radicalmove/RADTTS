@@ -41,6 +41,18 @@ def test_ui_homepage_renders():
     assert "Recent projects" in response.text
 
 
+def test_ui_homepage_exposes_app_env_and_versioned_assets(monkeypatch):
+    monkeypatch.setattr(radtts_api, "APP_ENV", "development")
+    client = TestClient(app)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert 'data-app-env="development"' in response.text
+    assert '/static/ui.css?v=development' in response.text
+    assert '/static/ui.js?v=development' in response.text
+
+
 def test_projects_endpoint_returns_recent_activity_first():
     client = TestClient(app)
     older_project_id = f"ui-old-{uuid.uuid4().hex[:8]}"
