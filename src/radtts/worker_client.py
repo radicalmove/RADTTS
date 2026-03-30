@@ -64,7 +64,12 @@ class WorkerClient:
             int(os.environ.get("RADTTS_WORKER_GENERATION_TIMEOUT_SECONDS", DEFAULT_WORKER_GENERATION_TIMEOUT_SECONDS)),
         )
 
-    def _generation_timeout_for_request(self, req: WorkerSynthesisEnqueueRequest) -> float:
+    def _generation_timeout_for_request(
+        self,
+        req: WorkerSynthesisEnqueueRequest,
+        *,
+        reference_duration_seconds: float | None = None,
+    ) -> float:
         if self.generation_timeout_seconds < 1:
             return self.generation_timeout_seconds
         return max(
@@ -74,6 +79,8 @@ class WorkerClient:
                 chunk_mode=req.chunk_mode,
                 max_new_tokens=req.max_new_tokens,
                 minimum_seconds=self.generation_timeout_seconds,
+                voice_source=req.voice_source,
+                reference_duration_seconds=reference_duration_seconds,
             ),
         )
 
@@ -232,9 +239,6 @@ class WorkerClient:
             if normalized_payload.get("reference_audio_filename") is None:
                 normalized_payload.pop("reference_audio_filename", None)
         req = WorkerSynthesisEnqueueRequest(**normalized_payload)
-        generation_timeout_seconds = self._generation_timeout_for_request(req)
-        estimated_chunks = estimated_chunk_count(req.text, req.chunk_mode)
-
         with tempfile.TemporaryDirectory(prefix="radtts_worker_") as tmp:
             tmp_path = Path(tmp)
             reference_path = None
@@ -246,6 +250,11 @@ class WorkerClient:
                     reference_duration_seconds = round(probe_duration_seconds(reference_path), 3)
                 except Exception:
                     reference_duration_seconds = None
+            generation_timeout_seconds = self._generation_timeout_for_request(
+                req,
+                reference_duration_seconds=reference_duration_seconds,
+            )
+            estimated_chunks = estimated_chunk_count(req.text, req.chunk_mode)
             LOG.info(
                 "starting synthesis job_id=%s reference_audio=%s reference_seconds=%s reference_text_chars=%s built_in_speaker=%s estimated_chunks=%s generation_timeout_seconds=%s",
                 job_id,
@@ -303,6 +312,14 @@ class WorkerClient:
 
                     if lower == "reference transcription complete":
                         emit_progress(0.36, stage="generation", detail=cleaned)
+                        return
+
+                    if lower == "preparing reference audio":
+                        emit_progress(0.31, stage="generation", detail=cleaned)
+                        return
+
+                    if lower == "reference sample check complete" or lower.startswith("reference validation warning:"):
+                        emit_progress(0.32, stage="generation", detail=cleaned)
                         return
 
                     if chunk_match:

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
+import types
 
 import numpy as np
 import pytest
 import torch
 
+from radtts.constants import SUPPORTED_BASE_MODELS
 from radtts.exceptions import ValidationError
 from radtts.services.tts import TTSService
 
@@ -176,3 +179,66 @@ def test_auto_reference_text_rejects_empty_transcript(monkeypatch: pytest.Monkey
 
     with pytest.raises(ValidationError, match="too short or unclear"):
         service._auto_reference_text(audio_path)
+
+
+def test_load_model_with_runtime_reports_warm_cache_and_evicts_idle_models(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class FakeModel:
+        def __init__(self, model_id: str):
+            self.model_id = model_id
+            self.device = "mps"
+            self.dtype = "float32"
+
+    load_calls: list[str] = []
+
+    class FakeQwen3TTSModel:
+        @staticmethod
+        def from_pretrained(model_id: str, **kwargs):  # noqa: ANN003
+            load_calls.append(model_id)
+            return FakeModel(model_id)
+
+    monkeypatch.setitem(sys.modules, "qwen_tts", types.SimpleNamespace(Qwen3TTSModel=FakeQwen3TTSModel))
+
+    service = TTSService()
+    service.model_cache_idle_seconds = 10
+
+    clock = {"value": 100.0}
+    monkeypatch.setattr("radtts.services.tts.time.monotonic", lambda: clock["value"])
+
+    model_id = SUPPORTED_BASE_MODELS[0]
+
+    _, first_summary = service.load_model_with_runtime(model_id)
+    _, second_summary = service.load_model_with_runtime(model_id)
+    clock["value"] = 111.0
+    _, third_summary = service.load_model_with_runtime(model_id)
+
+    assert load_calls == [model_id, model_id]
+    assert "cache=fresh" in first_summary
+    assert "cache=warm" in second_summary
+    assert "cache=fresh" in third_summary
+
+
+def test_validate_reference_audio_warns_for_quiet_or_clipped_audio(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    service = TTSService()
+    audio_path = tmp_path / "ref.wav"
+    audio_path.write_bytes(b"RIFF")
+
+    monkeypatch.setattr("radtts.services.tts.probe_duration_seconds", lambda path: 8.0)
+    monkeypatch.setattr(
+        "radtts.services.tts.read_audio",
+        lambda path: (
+            np.concatenate(
+                [np.array([0.999], dtype=np.float32), np.zeros(5000, dtype=np.float32)]
+            ),
+            24000,
+        ),
+    )
+
+    warnings = service.validate_reference_audio(audio_path)
+
+    assert any("quiet" in warning.lower() for warning in warnings)
+    assert any("clipp" in warning.lower() for warning in warnings)

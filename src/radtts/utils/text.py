@@ -44,6 +44,8 @@ def recommended_generation_timeout_seconds(
     max_new_tokens: int = 1200,
     minimum_seconds: int = 600,
     maximum_seconds: int = 5400,
+    voice_source: str | None = None,
+    reference_duration_seconds: float | None = None,
 ) -> int:
     minimum = max(1, int(minimum_seconds))
     maximum = max(minimum, int(maximum_seconds))
@@ -74,6 +76,9 @@ def recommended_generation_timeout_seconds(
         + (dense_chunk_words * 6.0)
         + (longest_chunk_penalty * 6.0)
     )
+    if str(voice_source or "").strip().lower() == "reference":
+        reference_seconds = max(0.0, float(reference_duration_seconds or 0.0))
+        estimate += 90 + (chunks * 18) + max(0.0, reference_seconds - 6.0) * 14.0
     bounded = max(float(minimum), min(float(maximum), estimate))
     return int(round(bounded))
 

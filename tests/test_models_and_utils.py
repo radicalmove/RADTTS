@@ -90,6 +90,28 @@ def test_recommended_generation_timeout_penalizes_dense_sentence_chunks():
     assert dense_timeout > spread_timeout
 
 
+def test_recommended_generation_timeout_penalizes_reference_voice_jobs():
+    text = " ".join([f"Sentence {idx}." for idx in range(1, 16)])
+
+    builtin_timeout = recommended_generation_timeout_seconds(
+        text,
+        chunk_mode="sentence",
+        max_new_tokens=1000,
+        minimum_seconds=600,
+        voice_source="builtin",
+    )
+    reference_timeout = recommended_generation_timeout_seconds(
+        text,
+        chunk_mode="sentence",
+        max_new_tokens=1000,
+        minimum_seconds=600,
+        voice_source="reference",
+        reference_duration_seconds=12.0,
+    )
+
+    assert reference_timeout > builtin_timeout
+
+
 def test_model_id_validation_rejects_unsupported():
     with pytest.raises(ValidationError):
         SynthesisRequest(

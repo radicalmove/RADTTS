@@ -1568,6 +1568,26 @@ function detailFromLogLine(line, currentStage) {
     return "Reference sample analysis complete.";
   }
 
+  if (lower === "preparing reference audio") {
+    return "Preparing reference sample.";
+  }
+
+  if (lower === "reference sample check complete") {
+    return "Reference sample looks usable.";
+  }
+
+  if (lower.startsWith("reference validation warning:")) {
+    return cleaned.slice("reference validation warning:".length).trim();
+  }
+
+  if (lower.includes("cache=warm")) {
+    return "Reusing warmed voice model.";
+  }
+
+  if (lower.includes("cache=fresh")) {
+    return "Voice model loaded.";
+  }
+
   if (lower === "stitching encoding mp3") {
     return "Encoding MP3 output.";
   }
