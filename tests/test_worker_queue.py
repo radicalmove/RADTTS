@@ -151,6 +151,30 @@ def test_worker_queue_round_trip_completes_job():
             shutil.rmtree(project_root)
 
 
+def test_list_workers_ignores_unknown_legacy_capabilities():
+    worker_manager.workers_path.write_text(
+        json.dumps(
+            [
+                {
+                    "worker_id": "wrk_legacy",
+                    "worker_name": "legacy-worker",
+                    "capabilities": ["synthesize", "enhance"],
+                    "status": "active",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "last_seen_at": datetime.now(timezone.utc).isoformat(),
+                    "api_key_hash": "ignored",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    workers = worker_manager.list_workers()
+
+    assert len(workers) == 1
+    assert [cap.value for cap in workers[0].capabilities] == ["synthesize"]
+
+
 def test_stale_worker_updates_are_ignored_after_project_job_cancel():
     client = TestClient(app)
     project_id = f"worker-stale-{uuid.uuid4().hex[:8]}"

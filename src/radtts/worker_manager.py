@@ -150,7 +150,12 @@ class WorkerManager:
         workers = self._read_list(self.workers_path)
         result: list[WorkerSummary] = []
         for worker in workers:
-            caps = [WorkerCapability(cap) for cap in worker.get("capabilities", [])]
+            caps: list[WorkerCapability] = []
+            for cap in worker.get("capabilities", []):
+                try:
+                    caps.append(WorkerCapability(cap))
+                except ValueError:
+                    continue
             result.append(
                 WorkerSummary(
                     worker_id=worker["worker_id"],
