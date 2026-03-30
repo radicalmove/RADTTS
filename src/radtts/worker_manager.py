@@ -530,13 +530,14 @@ class WorkerManager:
         previous_activity_at = job.activity_at or job.updated_at or job.created_at
         now = datetime.now(timezone.utc)
         next_progress = max(job.progress, progress) if status == JobStatus.RUNNING else progress
+        is_heartbeat = bool(str(log or "").strip().lower().startswith("heartbeat:"))
 
         job.status = status
         job.stage = stage
         job.progress = next_progress
         job.updated_at = now
         if status == JobStatus.RUNNING:
-            if stage != previous_stage or next_progress > previous_progress:
+            if stage != previous_stage or next_progress > previous_progress or is_heartbeat:
                 job.activity_at = now
             else:
                 job.activity_at = previous_activity_at

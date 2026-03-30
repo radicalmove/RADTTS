@@ -121,7 +121,7 @@ def test_worker_queue_round_trip_completes_job():
         job_after_stale = client.get(f"/jobs/{job_id}?project_id={project_id}")
         assert job_after_stale.status_code == 200
         assert job_after_stale.json()["progress"] == 0.58
-        assert job_after_stale.json()["activity_at"] == first_activity_at
+        assert job_after_stale.json()["activity_at"] != first_activity_at
 
         complete = client.post(
             f"/workers/jobs/{job_id}/complete",
@@ -438,7 +438,7 @@ def test_recent_helper_extends_queue_fallback_timeout(monkeypatch):
             shutil.rmtree(project_root)
 
 
-def test_worker_fallback_uses_activity_timestamp_not_heartbeat(monkeypatch):
+def test_worker_fallback_uses_stale_activity_timestamp(monkeypatch):
     client = TestClient(app)
     project_id = f"worker-stall-{uuid.uuid4().hex[:8]}"
     project_root = Path("projects") / project_id
