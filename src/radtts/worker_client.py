@@ -37,6 +37,8 @@ LOG = logging.getLogger("radtts.worker")
 
 
 class WorkerClient:
+    HEARTBEAT_INTERVAL_SECONDS = 10.0
+
     def __init__(
         self,
         *,
@@ -282,11 +284,16 @@ class WorkerClient:
                 self._post_progress_update(job_id, progress=progress, stage=stage, detail=detail)
 
             def heartbeat_worker() -> None:
-                while not stop_heartbeat.wait(10):
+                while not stop_heartbeat.wait(self.HEARTBEAT_INTERVAL_SECONDS):
                     with progress_lock:
                         progress = float(progress_state["progress"])
                         stage = str(progress_state["stage"] or "worker_running")
-                    self._post_progress_update(job_id, progress=progress, stage=stage)
+                    self._post_progress_update(
+                        job_id,
+                        progress=progress,
+                        stage=stage,
+                        detail=f"heartbeat: stage={stage}",
+                    )
 
             heartbeat_thread = threading.Thread(target=heartbeat_worker, name="radtts-worker-heartbeat", daemon=True)
             heartbeat_thread.start()

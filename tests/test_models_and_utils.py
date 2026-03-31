@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
 from pydantic import ValidationError
@@ -15,6 +17,7 @@ from radtts.models import (
     SynthesisRequest,
 )
 from radtts.services.tts import PausePlanner
+from radtts.utils.audio import probe_duration_seconds
 from radtts.utils.text import (
     coalesce_sentence_chunks,
     estimated_chunk_count,
@@ -215,3 +218,24 @@ def test_simple_synthesis_request_rejects_missing_reference_input():
             text="hello",
             voice_clone_authorized=True,
         )
+
+
+def test_probe_duration_seconds_uses_ffprobe_fallback_when_soundfile_cannot_read(monkeypatch, tmp_path):
+    audio_path = tmp_path / "reference.webm"
+    audio_path.write_bytes(b"webm")
+
+    class DummyInfoError(Exception):
+        pass
+
+    def fail_info(path):
+        raise DummyInfoError("unsupported")
+
+    def fake_run(cmd, check, capture_output, text):
+        assert cmd[-1] == str(audio_path)
+        return subprocess.CompletedProcess(cmd, 0, stdout="6.25\n", stderr="")
+
+    monkeypatch.setattr("radtts.utils.audio.sf.info", fail_info)
+    monkeypatch.setattr("radtts.utils.audio.get_ffprobe_binary", lambda: "/usr/bin/ffprobe")
+    monkeypatch.setattr("radtts.utils.audio.subprocess.run", fake_run)
+
+    assert probe_duration_seconds(audio_path) == pytest.approx(6.25)
