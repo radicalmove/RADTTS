@@ -58,6 +58,20 @@ def coalesce_sentence_chunks(
     return merged
 
 
+def coalesce_reference_sentence_chunks(chunks: list[str]) -> list[str]:
+    cleaned = [normalize_whitespace(chunk) for chunk in chunks if normalize_whitespace(chunk)]
+    if not cleaned:
+        return []
+
+    total_words = sum(word_count(chunk) for chunk in cleaned)
+    total_sentences = len(cleaned)
+    if total_words >= 150 or total_sentences >= 12:
+        return coalesce_sentence_chunks(cleaned, target_words=44, max_words=64, max_chars=340)
+    if total_words >= 96 or total_sentences >= 8:
+        return coalesce_sentence_chunks(cleaned, target_words=36, max_words=52, max_chars=300)
+    return coalesce_sentence_chunks(cleaned)
+
+
 def word_count(text: str) -> int:
     return len(_WORD_RE.findall(text))
 
@@ -70,7 +84,7 @@ def estimated_chunk_count(text: str, chunk_mode: str = "sentence", *, voice_sour
         return 1
     chunks = split_sentences(cleaned)
     if str(voice_source or "").strip().lower() == "reference":
-        chunks = coalesce_sentence_chunks(chunks) or chunks
+        chunks = coalesce_reference_sentence_chunks(chunks) or chunks
     return max(1, len(chunks))
 
 
@@ -95,7 +109,7 @@ def recommended_generation_timeout_seconds(
     else:
         chunk_texts = split_sentences(cleaned) or [cleaned]
         if str(voice_source or "").strip().lower() == "reference":
-            chunk_texts = coalesce_sentence_chunks(chunk_texts) or chunk_texts
+            chunk_texts = coalesce_reference_sentence_chunks(chunk_texts) or chunk_texts
 
     chunks = max(1, len(chunk_texts))
     chunk_words = [max(1, word_count(chunk)) for chunk in chunk_texts]

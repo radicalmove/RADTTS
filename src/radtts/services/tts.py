@@ -25,7 +25,7 @@ from radtts.exceptions import DependencyMissingError, ValidationError
 from radtts.models import ChunkMode, PauseConfig, SynthesisRequest, VoiceSource
 from radtts.services.asr import ASRService
 from radtts.utils.audio import concat_with_silence, convert_audio, probe_duration_seconds, read_audio, write_wav
-from radtts.utils.text import coalesce_sentence_chunks, split_sentences, word_count
+from radtts.utils.text import coalesce_reference_sentence_chunks, coalesce_sentence_chunks, split_sentences, word_count
 
 
 class PausePlanner:
@@ -233,7 +233,7 @@ class TTSService:
         if not chunks:
             return [text.strip()]
         if voice_source == VoiceSource.REFERENCE:
-            merged = coalesce_sentence_chunks(chunks)
+            merged = coalesce_reference_sentence_chunks(chunks)
             if merged:
                 return merged
         return chunks

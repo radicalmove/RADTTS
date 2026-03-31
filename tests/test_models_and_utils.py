@@ -20,6 +20,7 @@ from radtts.services.tts import PausePlanner
 from radtts.utils.audio import probe_duration_seconds
 from radtts.utils.text import (
     coalesce_sentence_chunks,
+    coalesce_reference_sentence_chunks,
     estimated_chunk_count,
     recommended_generation_timeout_seconds,
     split_sentences,
@@ -63,6 +64,16 @@ def test_estimated_chunk_count_coalesces_reference_sentence_runs():
 
     assert regular == 4
     assert reference < regular
+
+
+def test_coalesce_reference_sentence_chunks_is_more_aggressive_for_long_scripts():
+    chunks = [f"Sentence {idx} has several words to keep the chunk realistic." for idx in range(1, 13)]
+
+    regular = coalesce_sentence_chunks(chunks)
+    reference = coalesce_reference_sentence_chunks(chunks)
+
+    assert len(reference) < len(regular)
+    assert len(reference) <= 6
 
 
 def test_coalesce_sentence_chunks_merges_short_neighbors():
