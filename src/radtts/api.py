@@ -338,6 +338,8 @@ def _worker_queue_fallback_timeout_seconds(worker_snapshot: dict[str, int | str 
     return WORKER_FALLBACK_TIMEOUT_SECONDS
 
 
+
+
 def _path_mtime(path: Path) -> datetime | None:
     try:
         return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)

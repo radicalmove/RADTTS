@@ -73,7 +73,7 @@ def test_coalesce_reference_sentence_chunks_is_more_aggressive_for_long_scripts(
     reference = coalesce_reference_sentence_chunks(chunks)
 
     assert len(reference) < len(regular)
-    assert len(reference) <= 6
+    assert len(reference) <= 4
 
 
 def test_coalesce_sentence_chunks_merges_short_neighbors():

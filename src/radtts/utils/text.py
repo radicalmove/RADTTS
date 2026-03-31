@@ -66,9 +66,9 @@ def coalesce_reference_sentence_chunks(chunks: list[str]) -> list[str]:
     total_words = sum(word_count(chunk) for chunk in cleaned)
     total_sentences = len(cleaned)
     if total_words >= 150 or total_sentences >= 12:
-        return coalesce_sentence_chunks(cleaned, target_words=44, max_words=64, max_chars=340)
+        return coalesce_sentence_chunks(cleaned, target_words=62, max_words=92, max_chars=440)
     if total_words >= 96 or total_sentences >= 8:
-        return coalesce_sentence_chunks(cleaned, target_words=36, max_words=52, max_chars=300)
+        return coalesce_sentence_chunks(cleaned, target_words=50, max_words=76, max_chars=380)
     return coalesce_sentence_chunks(cleaned)
 
 

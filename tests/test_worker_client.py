@@ -258,6 +258,37 @@ def test_worker_client_extends_generation_timeout_for_long_scripts(tmp_path: Pat
     assert captured_timeout["value"] > 600
 
 
+def test_worker_client_uses_larger_timeout_floor_for_heavy_reference_model(tmp_path: Path):
+    client = WorkerClient(
+        server_url="http://example.test",
+        config_path=tmp_path / "worker.json",
+        worker_name="test-worker",
+        invite_token=None,
+        poll_seconds=5,
+    )
+    client.generation_timeout_seconds = 600
+
+    payload = WorkerSynthesisEnqueueRequest(
+        project_id="proj-worker",
+        text=" ".join([f"Sentence {idx} has several words for a longer reference synthesis run." for idx in range(1, 15)]),
+        reference_audio_b64="QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw",
+        reference_audio_filename="reference.wav",
+        reference_text="hello",
+        model_id="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+        max_new_tokens=1400,
+        chunk_mode="sentence",
+        pause_config=PauseConfig(seed=1),
+        output_format=OutputFormat.WAV,
+        output_name="worker-heavy-reference-timeout",
+        generate_transcript=False,
+        voice_clone_authorized=True,
+    )
+
+    timeout = client._generation_timeout_for_request(payload, reference_duration_seconds=6.8)
+
+    assert timeout >= 1800
+
+
 def test_worker_client_emits_reference_validation_warning_progress(tmp_path: Path, monkeypatch):
     client = WorkerClient(
         server_url="http://example.test",
