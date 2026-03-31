@@ -128,6 +128,13 @@ WORKER_RECENT_QUEUE_GRACE_SECONDS = max(
     WORKER_FALLBACK_TIMEOUT_SECONDS,
     WORKER_RECENT_WINDOW_SECONDS,
 )
+WORKER_BUSY_QUEUE_GRACE_SECONDS = max(
+    WORKER_RECENT_QUEUE_GRACE_SECONDS,
+    _env_int(
+        "RADTTS_WORKER_BUSY_QUEUE_GRACE_SECONDS",
+        max(WORKER_MODEL_LOAD_STALL_TIMEOUT_SECONDS * 2, WORKER_RUNNING_STALL_TIMEOUT_SECONDS * 4),
+    ),
+)
 SCRIPT_VERSION_HISTORY_LIMIT = max(10, _env_int("RADTTS_SCRIPT_VERSION_HISTORY_LIMIT", 60))
 SCOPED_PROJECT_RE = re.compile(r"^u[0-9a-f]{12}__.+$")
 BUILTIN_VOICE_PREVIEW_TEXT = "Hello, this is a quick built-in voice preview."
@@ -272,6 +279,17 @@ def _worker_availability_snapshot() -> dict[str, int | str | None]:
 
     now = datetime.now(timezone.utc)
     workers = worker_manager.list_workers()
+    queued_jobs = 0
+    running_worker_jobs = 0
+    for entry in worker_manager._read_list(worker_manager.jobs_path):
+        status = str(entry.get("status") or "").strip().lower()
+        assigned_worker_id = str(entry.get("assigned_worker_id") or "").strip().lower()
+        if status == "queued":
+            queued_jobs += 1
+            continue
+        if status == "running" and assigned_worker_id and assigned_worker_id != "local-fallback":
+            running_worker_jobs += 1
+
     online = 0
     recent = 0
     latest_live_seen_at: datetime | None = None
@@ -300,6 +318,8 @@ def _worker_availability_snapshot() -> dict[str, int | str | None]:
         "worker_recent_count": recent,
         "worker_registered_count": len(workers),
         "worker_stale_count": stale,
+        "worker_running_job_count": running_worker_jobs,
+        "worker_queued_job_count": queued_jobs,
         "worker_online_window_seconds": WORKER_ONLINE_WINDOW_SECONDS,
         "worker_recent_window_seconds": WORKER_RECENT_WINDOW_SECONDS,
         "worker_last_live_seen_at": latest_live_seen_at.isoformat() if latest_live_seen_at else None,
@@ -310,7 +330,10 @@ def _worker_availability_snapshot() -> dict[str, int | str | None]:
 def _worker_queue_fallback_timeout_seconds(worker_snapshot: dict[str, int | str | None] | None = None) -> int:
     snapshot = worker_snapshot or _worker_availability_snapshot()
     recent = max(0, int(snapshot.get("worker_recent_count") or 0))
+    running_jobs = max(0, int(snapshot.get("worker_running_job_count") or 0))
     if recent > 0:
+        if running_jobs >= recent:
+            return WORKER_BUSY_QUEUE_GRACE_SECONDS
         return WORKER_RECENT_QUEUE_GRACE_SECONDS
     return WORKER_FALLBACK_TIMEOUT_SECONDS
 

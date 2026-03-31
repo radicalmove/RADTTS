@@ -1131,6 +1131,10 @@ function updateRunningStatusMessage() {
           setGenerateStatus(fallbackReason);
         } else if (Number(state.workerLiveCount || 0) <= 0 && !hasRecentHelper) {
           setGenerateStatus("No active helper was connected, so this job is running on the RADTTS server (Mac mini).");
+        } else if (allRecentHelpersBusy()) {
+          setGenerateStatus(
+            `The local helper stayed busy with another run for ${Math.round(state.workerFallbackTimeoutSeconds || 0)}s, so this job is running on the RADTTS server (Mac mini).`
+          );
         } else if (availability) {
           setGenerateStatus(
             `No helper pulled this job within ${Math.round(state.workerFallbackTimeoutSeconds || 0)}s (${availability}). Running on the RADTTS server (Mac mini).`
@@ -1171,6 +1175,8 @@ function updateRunningStatusMessage() {
       if (remaining > 0) {
         if (noWorkersKnown) {
           setGenerateStatus(`No active helper is connected. Waiting up to ${remainingLabel} before server fallback.`);
+        } else if (allRecentHelpersBusy()) {
+          setGenerateStatus(`The local helper is busy with another run. Waiting up to ${remainingLabel} for it to become free.`);
         } else if (availability) {
           setGenerateStatus(`Waiting for a helper device (${availability}). Server fallback in ${remainingLabel}.`);
         } else {
@@ -1845,6 +1851,15 @@ function describeWorkerAvailability(live, registered, stale, lastSeenAt, recent,
   return "No helper app connected yet. Jobs will use server fallback when needed.";
 }
 
+function helperBusyCount() {
+  return Math.max(0, Number(state.workerRunningJobCount || 0));
+}
+
+function allRecentHelpersBusy() {
+  const recent = Math.max(0, Number(state.workerRecentCount || 0));
+  return recent > 0 && helperBusyCount() >= recent;
+}
+
 async function refreshWorkerStatus({ announceErrors = false } = {}) {
   if (!state.activeProjectRef) {
     resetWorkerStatusUi();
@@ -1869,6 +1884,8 @@ async function refreshWorkerStatus({ announceErrors = false } = {}) {
     state.workerLastRecentSeenAt = lastRecentSeenAt;
     state.workerOnlineCount = online;
     state.workerTotalCount = total;
+    state.workerRunningJobCount = Math.max(0, Number(data.worker_running_job_count || 0));
+    state.workerQueuedJobCount = Math.max(0, Number(data.worker_queued_job_count || 0));
     state.workerOnlineWindowSeconds = Math.max(0, Number(data.worker_online_window_seconds || 0));
     state.workerRecentWindowSeconds = Math.max(0, Number(data.worker_recent_window_seconds || 0));
 
@@ -3112,6 +3129,8 @@ async function handleGenerate() {
     state.workerLastRecentSeenAt = workerLastRecentSeenAt;
     state.workerOnlineCount = workerOnlineCount;
     state.workerTotalCount = workerTotalCount;
+    state.workerRunningJobCount = Math.max(0, Number(data.worker_running_job_count || 0));
+    state.workerQueuedJobCount = Math.max(0, Number(data.worker_queued_job_count || 0));
     state.workerOnlineWindowSeconds = workerOnlineWindowSeconds;
     state.workerRecentWindowSeconds = workerRecentWindowSeconds;
 
@@ -3119,6 +3138,10 @@ async function handleGenerate() {
       const hasRecentHelper = workerRecentCount !== null && workerRecentCount > 0;
       if (workerLiveCount !== null && workerLiveCount <= 0 && !hasRecentHelper) {
         setGenerateStatus("No active helper is connected right now. Waiting for helper assignment...");
+      } else if ((workerRecentCount !== null && workerRecentCount > 0) && Math.max(0, Number(data.worker_running_job_count || 0)) >= workerRecentCount) {
+        setGenerateStatus(
+          `The local helper is busy with another run. Waiting up to ${Math.round(fallbackTimeout)}s for it to become free.`
+        );
       } else {
         const availability = workerAvailabilitySummary();
         const helperLabel = workerLiveCount !== null && workerLiveCount > 0 ? "live helper" : "helper";
