@@ -995,14 +995,14 @@ function detectComputeMode(job) {
 
   if (
     stage === "fallback_local" ||
-    joinedLogs.includes("switching to local server fallback") ||
-    hasServerHeartbeatLog(logs)
+    joinedLogs.includes("switching to local server fallback")
   ) {
     return "server";
   }
 
   if (
     stage === "worker_running" ||
+    hasWorkerHeartbeatLog(logs) ||
     (joinedLogs.includes("worker ") && joinedLogs.includes("started processing")) ||
     (joinedLogs.includes("worker ") && joinedLogs.includes("completed job"))
   ) {
@@ -1788,7 +1788,7 @@ function hasChunkProgressLog(logs) {
   return (Array.isArray(logs) ? logs : []).some((line) => /generation chunk \d+\/\d+/i.test(String(line || "")));
 }
 
-function hasServerHeartbeatLog(logs) {
+function hasWorkerHeartbeatLog(logs) {
   return (Array.isArray(logs) ? logs : []).some((line) => String(line || "").toLowerCase().includes("heartbeat: stage="));
 }
 
