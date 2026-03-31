@@ -31,9 +31,11 @@ from radtts.models import (
     ProjectScriptDeleteRequest,
     ProjectScriptRestoreRequest,
     ProjectScriptSaveRequest,
+    ProjectUiSettings,
     SimpleSynthesisRequest,
     SynthesisRequest,
     TranscribeRequest,
+    OutputFormat,
     VoiceSource,
     WorkerInviteRequest,
     WorkerInviteResponse,
@@ -91,6 +93,7 @@ MODULE_ROOT = Path(__file__).resolve().parent
 AUTH_REQUIRED = _env_bool("RADTTS_AUTH_REQUIRED", False)
 SESSION_SECRET = os.environ.get("RADTTS_SESSION_SECRET", "radtts-dev-session-secret")
 SESSION_SECURE = _env_bool("RADTTS_SESSION_SECURE", False)
+APP_ENV = os.environ.get("APP_ENV", "").strip().lower()
 PSYCHEK_LOGIN_URL = os.environ.get("PSYCHEK_LOGIN_URL", "http://127.0.0.1:8000/login")
 BRIDGE_SECRET = os.environ.get("RADTTS_BRIDGE_SECRET", SESSION_SECRET)
 BRIDGE_MAX_AGE_SECONDS = int(os.environ.get("RADTTS_BRIDGE_MAX_AGE_SECONDS", "120"))
@@ -124,6 +127,13 @@ WORKER_RECENT_WINDOW_SECONDS = max(
 WORKER_RECENT_QUEUE_GRACE_SECONDS = max(
     WORKER_FALLBACK_TIMEOUT_SECONDS,
     WORKER_RECENT_WINDOW_SECONDS,
+)
+WORKER_BUSY_QUEUE_GRACE_SECONDS = max(
+    WORKER_RECENT_QUEUE_GRACE_SECONDS,
+    _env_int(
+        "RADTTS_WORKER_BUSY_QUEUE_GRACE_SECONDS",
+        max(WORKER_MODEL_LOAD_STALL_TIMEOUT_SECONDS * 2, WORKER_RUNNING_STALL_TIMEOUT_SECONDS * 4),
+    ),
 )
 SCRIPT_VERSION_HISTORY_LIMIT = max(10, _env_int("RADTTS_SCRIPT_VERSION_HISTORY_LIMIT", 60))
 SCOPED_PROJECT_RE = re.compile(r"^u[0-9a-f]{12}__.+$")
@@ -269,6 +279,17 @@ def _worker_availability_snapshot() -> dict[str, int | str | None]:
 
     now = datetime.now(timezone.utc)
     workers = worker_manager.list_workers()
+    queued_jobs = 0
+    running_worker_jobs = 0
+    for entry in worker_manager._read_list(worker_manager.jobs_path):
+        status = str(entry.get("status") or "").strip().lower()
+        assigned_worker_id = str(entry.get("assigned_worker_id") or "").strip().lower()
+        if status == "queued":
+            queued_jobs += 1
+            continue
+        if status == "running" and assigned_worker_id and assigned_worker_id != "local-fallback":
+            running_worker_jobs += 1
+
     online = 0
     recent = 0
     latest_live_seen_at: datetime | None = None
@@ -297,6 +318,8 @@ def _worker_availability_snapshot() -> dict[str, int | str | None]:
         "worker_recent_count": recent,
         "worker_registered_count": len(workers),
         "worker_stale_count": stale,
+        "worker_running_job_count": running_worker_jobs,
+        "worker_queued_job_count": queued_jobs,
         "worker_online_window_seconds": WORKER_ONLINE_WINDOW_SECONDS,
         "worker_recent_window_seconds": WORKER_RECENT_WINDOW_SECONDS,
         "worker_last_live_seen_at": latest_live_seen_at.isoformat() if latest_live_seen_at else None,
@@ -307,9 +330,14 @@ def _worker_availability_snapshot() -> dict[str, int | str | None]:
 def _worker_queue_fallback_timeout_seconds(worker_snapshot: dict[str, int | str | None] | None = None) -> int:
     snapshot = worker_snapshot or _worker_availability_snapshot()
     recent = max(0, int(snapshot.get("worker_recent_count") or 0))
+    running_jobs = max(0, int(snapshot.get("worker_running_job_count") or 0))
     if recent > 0:
+        if running_jobs >= recent:
+            return WORKER_BUSY_QUEUE_GRACE_SECONDS
         return WORKER_RECENT_QUEUE_GRACE_SECONDS
     return WORKER_FALLBACK_TIMEOUT_SECONDS
+
+
 
 
 def _path_mtime(path: Path) -> datetime | None:
@@ -335,6 +363,60 @@ def _project_last_activity_at(scoped_project_id: str) -> datetime:
     if not timestamps:
         return datetime.fromtimestamp(0, tz=timezone.utc)
     return max(timestamps)
+
+
+def _coerce_project_settings(payload: object) -> ProjectUiSettings:
+    data = payload if isinstance(payload, dict) else {}
+
+    selected_audio_hash = str(data.get("selected_audio_hash") or "").strip() or None
+    if selected_audio_hash and len(selected_audio_hash) < 16:
+        selected_audio_hash = None
+
+    voice_source_raw = str(data.get("voice_source") or VoiceSource.REFERENCE.value).strip().lower()
+    try:
+        voice_source = VoiceSource(voice_source_raw)
+    except ValueError:
+        voice_source = VoiceSource.REFERENCE
+
+    built_in_speaker = str(data.get("built_in_speaker") or "").strip() or None
+    quality = "high" if str(data.get("quality") or "").strip().lower() == "high" else "normal"
+
+    output_format_raw = str(data.get("output_format") or OutputFormat.MP3.value).strip().lower()
+    try:
+        output_format = OutputFormat(output_format_raw)
+    except ValueError:
+        output_format = OutputFormat.MP3
+
+    try:
+        average_gap_seconds = float(data.get("average_gap_seconds", 0.8))
+    except (TypeError, ValueError):
+        average_gap_seconds = 0.8
+    average_gap_seconds = max(0.15, min(2.5, average_gap_seconds))
+
+    return ProjectUiSettings(
+        selected_audio_hash=selected_audio_hash,
+        voice_source=voice_source,
+        built_in_speaker=built_in_speaker,
+        quality=quality,
+        add_ums=bool(data.get("add_ums", False)),
+        add_ahs=bool(data.get("add_ahs", False)),
+        generate_transcript=bool(data.get("generate_transcript", False)),
+        output_format=output_format,
+        average_gap_seconds=average_gap_seconds,
+    )
+
+
+def _load_project_settings(scoped_project_id: str) -> ProjectUiSettings:
+    metadata = pipeline.project_manager.load_project_metadata(scoped_project_id)
+    return _coerce_project_settings(metadata.get("ui_settings"))
+
+
+def _write_project_settings(scoped_project_id: str, settings: ProjectUiSettings) -> ProjectUiSettings:
+    pipeline.project_manager.update_project_metadata(
+        scoped_project_id,
+        {"ui_settings": settings.model_dump(mode="json")},
+    )
+    return settings
 
 
 def _inferred_owner_key_from_project_id(scoped_project_id: str) -> str:
@@ -1027,6 +1109,8 @@ def _run_local_synthesis_from_worker_payload(
         chunk_mode=worker_payload.chunk_mode,
         max_new_tokens=fallback_max_new_tokens,
         minimum_seconds=LOCAL_FALLBACK_GENERATION_TIMEOUT_SECONDS,
+        voice_source=worker_payload.voice_source,
+        reference_duration_seconds=probe_duration_seconds(reference_path) if reference_path is not None else None,
     )
 
     try:
@@ -1232,6 +1316,7 @@ def home(request: Request):
             "models": SUPPORTED_BASE_MODELS,
             "model_modes": MODEL_MODE_ALIASES,
             "presets": DEFAULT_PRESETS,
+            "app_env": APP_ENV,
             "auth_required": AUTH_REQUIRED,
             "current_user": current_user,
             "psychek_app_url": PSYCHEK_APP_URL,
@@ -1424,6 +1509,28 @@ def get_project_script(request: Request, project_id: str):
     return {
         "project_id": _display_project_id(scoped_project_id),
         **payload,
+    }
+
+
+@app.get("/projects/{project_id}/settings")
+def get_project_settings(request: Request, project_id: str):
+    _require_auth(request)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
+    settings = _load_project_settings(scoped_project_id)
+    return {
+        "project_id": _display_project_id(scoped_project_id),
+        "settings": settings.model_dump(mode="json"),
+    }
+
+
+@app.put("/projects/{project_id}/settings")
+def update_project_settings(request: Request, project_id: str, req: ProjectUiSettings):
+    _require_auth(request)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
+    settings = _write_project_settings(scoped_project_id, req)
+    return {
+        "project_id": _display_project_id(scoped_project_id),
+        "settings": settings.model_dump(mode="json"),
     }
 
 

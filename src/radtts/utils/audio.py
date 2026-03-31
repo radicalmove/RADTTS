@@ -22,9 +22,43 @@ def get_ffmpeg_binary() -> str:
         return ffmpeg
 
 
+def get_ffprobe_binary() -> str:
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe:
+        return ffprobe
+
+    ffmpeg = get_ffmpeg_binary()
+    sibling = Path(ffmpeg).with_name("ffprobe")
+    if sibling.exists():
+        return str(sibling)
+    raise RuntimeError("ffprobe not found. Install ffmpeg/ffprobe or imageio-ffmpeg.")
+
+
 def probe_duration_seconds(path: Path) -> float:
-    info = sf.info(str(path))
-    return float(info.frames) / float(info.samplerate)
+    try:
+        info = sf.info(str(path))
+        return float(info.frames) / float(info.samplerate)
+    except Exception:
+        ffprobe = get_ffprobe_binary()
+        result = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        duration_text = str(result.stdout or "").strip()
+        if not duration_text:
+            raise RuntimeError(f"ffprobe returned no duration for {path}")
+        return float(duration_text)
 
 
 def convert_audio(input_path: Path, output_path: Path, *, audio_filters: str | None = None) -> Path:

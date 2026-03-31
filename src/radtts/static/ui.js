@@ -219,6 +219,8 @@ const state = {
   shareProjectUsers: [],
   shareProjectCollaborators: [],
   shareProjectOwner: null,
+  projectSettings: null,
+  projectSettingsSaveTimer: null,
 };
 
 const HELP_STORAGE_KEY = "radtts-help-last-tab";
@@ -238,6 +240,155 @@ let helpModalReturnFocusNode = null;
 function cleanOptional(value) {
   const trimmed = (value ?? "").trim();
   return trimmed.length ? trimmed : null;
+}
+
+function defaultProjectSettings() {
+  return {
+    selected_audio_hash: null,
+    voice_source: "reference",
+    built_in_speaker: null,
+    quality: "normal",
+    add_ums: false,
+    add_ahs: false,
+    generate_transcript: false,
+    output_format: "mp3",
+    average_gap_seconds: 0.8,
+  };
+}
+
+function normalizeProjectSettings(payload) {
+  const data = payload && typeof payload === "object" ? payload : {};
+  const selectedAudioHash = cleanOptional(data.selected_audio_hash);
+  const voiceSource = String(cleanOptional(data.voice_source) || "").toLowerCase() === "builtin"
+    ? "builtin"
+    : "reference";
+  const quality = String(cleanOptional(data.quality) || "").toLowerCase() === "high" ? "high" : "normal";
+  const outputFormat = String(cleanOptional(data.output_format) || "").toLowerCase() === "wav" ? "wav" : "mp3";
+  const builtInSpeaker = cleanOptional(data.built_in_speaker);
+  const gap = Number(data.average_gap_seconds);
+
+  return {
+    selected_audio_hash: selectedAudioHash && selectedAudioHash.length >= 16 ? selectedAudioHash : null,
+    voice_source: voiceSource,
+    built_in_speaker: builtInSpeaker,
+    quality,
+    add_ums: Boolean(data.add_ums),
+    add_ahs: Boolean(data.add_ahs),
+    generate_transcript: Boolean(data.generate_transcript),
+    output_format: outputFormat,
+    average_gap_seconds: Number.isFinite(gap) ? Math.max(0.15, Math.min(2.5, gap)) : 0.8,
+  };
+}
+
+function updateGapValueDisplay() {
+  if (!gapSliderNode || !gapValueNode) return;
+  gapValueNode.textContent = Number(gapSliderNode.value || 0.8).toFixed(2);
+}
+
+function applyProjectSettingsToControls(settings) {
+  const normalized = normalizeProjectSettings(settings);
+  state.projectSettings = normalized;
+  state.selectedAudioHash = normalized.selected_audio_hash;
+  state.selectedBuiltInSpeaker = normalized.built_in_speaker || "";
+
+  if (qualityNode) {
+    qualityNode.value = normalized.quality;
+  }
+  if (outputFormatNode) {
+    outputFormatNode.value = normalized.output_format;
+  }
+  if (umsToggleNode) {
+    umsToggleNode.checked = normalized.add_ums;
+  }
+  if (ahsToggleNode) {
+    ahsToggleNode.checked = normalized.add_ahs;
+  }
+  if (transcriptToggleNode) {
+    transcriptToggleNode.checked = normalized.generate_transcript;
+  }
+  if (gapSliderNode) {
+    gapSliderNode.value = Number(normalized.average_gap_seconds).toFixed(2);
+  }
+  updateGapValueDisplay();
+  setVoiceSourceUi(normalized.voice_source);
+
+  if (builtinVoiceSelectNode) {
+    builtinVoiceSelectNode.value = state.selectedBuiltInSpeaker || "";
+  }
+}
+
+function resetProjectSettingsControls() {
+  applyProjectSettingsToControls(defaultProjectSettings());
+}
+
+function currentProjectSettingsPayload() {
+  return normalizeProjectSettings({
+    selected_audio_hash: state.selectedAudioHash,
+    voice_source: state.voiceSource,
+    built_in_speaker: state.selectedBuiltInSpeaker,
+    quality: qualityNode?.value || "normal",
+    add_ums: Boolean(umsToggleNode?.checked),
+    add_ahs: Boolean(ahsToggleNode?.checked),
+    generate_transcript: Boolean(transcriptToggleNode?.checked),
+    output_format: outputFormatNode?.value || "mp3",
+    average_gap_seconds: gapSliderNode?.value ?? 0.8,
+  });
+}
+
+function clearProjectSettingsSaveTimer() {
+  if (state.projectSettingsSaveTimer) {
+    clearTimeout(state.projectSettingsSaveTimer);
+    state.projectSettingsSaveTimer = null;
+  }
+}
+
+async function saveProjectSettings(projectRef, settings) {
+  if (!projectRef) return;
+  const normalized = normalizeProjectSettings(settings);
+  try {
+    const data = await requestJSON(`/projects/${encodeURIComponent(projectRef)}/settings`, "PUT", normalized);
+    if (state.activeProjectRef === projectRef) {
+      state.projectSettings = normalizeProjectSettings(data?.settings);
+    }
+  } catch (err) {
+    console.warn("Could not save project settings", err);
+  }
+}
+
+function queueProjectSettingsSave() {
+  const projectRef = state.activeProjectRef;
+  if (!projectRef) return;
+  const settings = currentProjectSettingsPayload();
+  state.projectSettings = settings;
+  clearProjectSettingsSaveTimer();
+  state.projectSettingsSaveTimer = setTimeout(() => {
+    state.projectSettingsSaveTimer = null;
+    void saveProjectSettings(projectRef, settings);
+  }, 250);
+}
+
+async function loadProjectSettings(projectRef) {
+  if (!projectRef) return defaultProjectSettings();
+  try {
+    const data = await requestJSON(`/projects/${encodeURIComponent(projectRef)}/settings`, "GET");
+    return normalizeProjectSettings(data?.settings);
+  } catch (err) {
+    console.warn("Could not load project settings", err);
+    return defaultProjectSettings();
+  }
+}
+
+async function restoreProjectSettings(projectRef) {
+  resetProjectSettingsControls();
+  const settings = await loadProjectSettings(projectRef);
+  if (state.activeProjectRef !== projectRef) return;
+
+  applyProjectSettingsToControls(settings);
+  await loadReferenceSamples(settings.selected_audio_hash);
+  if (state.activeProjectRef !== projectRef) return;
+  await loadBuiltinVoices();
+  if (state.activeProjectRef !== projectRef) return;
+  state.projectSettings = currentProjectSettingsPayload();
 }
 
 function setGatewayStatus(message, isError = false) {
@@ -1069,14 +1220,14 @@ function detectComputeMode(job) {
 
   if (
     stage === "fallback_local" ||
-    joinedLogs.includes("switching to local server fallback") ||
-    hasServerHeartbeatLog(logs)
+    joinedLogs.includes("switching to local server fallback")
   ) {
     return "server";
   }
 
   if (
     stage === "worker_running" ||
+    hasWorkerHeartbeatLog(logs) ||
     (joinedLogs.includes("worker ") && joinedLogs.includes("started processing")) ||
     (joinedLogs.includes("worker ") && joinedLogs.includes("completed job"))
   ) {
@@ -1205,6 +1356,10 @@ function updateRunningStatusMessage() {
           setGenerateStatus(fallbackReason);
         } else if (Number(state.workerLiveCount || 0) <= 0 && !hasRecentHelper) {
           setGenerateStatus("No active helper was connected, so this job is running on the RADTTS server (Mac mini).");
+        } else if (allRecentHelpersBusy()) {
+          setGenerateStatus(
+            `The local helper stayed busy with another run for ${Math.round(state.workerFallbackTimeoutSeconds || 0)}s, so this job is running on the RADTTS server (Mac mini).`
+          );
         } else if (availability) {
           setGenerateStatus(
             `No helper pulled this job within ${Math.round(state.workerFallbackTimeoutSeconds || 0)}s (${availability}). Running on the RADTTS server (Mac mini).`
@@ -1245,6 +1400,8 @@ function updateRunningStatusMessage() {
       if (remaining > 0) {
         if (noWorkersKnown) {
           setGenerateStatus(`No active helper is connected. Waiting up to ${remainingLabel} before server fallback.`);
+        } else if (allRecentHelpersBusy()) {
+          setGenerateStatus(`The local helper is busy with another run. Waiting up to ${remainingLabel} for it to become free.`);
         } else if (availability) {
           setGenerateStatus(`Waiting for a helper device (${availability}). Server fallback in ${remainingLabel}.`);
         } else {
@@ -1793,6 +1950,26 @@ function detailFromLogLine(line, currentStage) {
     return "Reference sample analysis complete.";
   }
 
+  if (lower === "preparing reference audio") {
+    return "Preparing reference sample.";
+  }
+
+  if (lower === "reference sample check complete") {
+    return "Reference sample looks usable.";
+  }
+
+  if (lower.startsWith("reference validation warning:")) {
+    return cleaned.slice("reference validation warning:".length).trim();
+  }
+
+  if (lower.includes("cache=warm")) {
+    return "Reusing warmed voice model.";
+  }
+
+  if (lower.includes("cache=fresh")) {
+    return "Voice model loaded.";
+  }
+
   if (lower === "stitching encoding mp3") {
     return "Encoding MP3 output.";
   }
@@ -1836,7 +2013,7 @@ function hasChunkProgressLog(logs) {
   return (Array.isArray(logs) ? logs : []).some((line) => /generation chunk \d+\/\d+/i.test(String(line || "")));
 }
 
-function hasServerHeartbeatLog(logs) {
+function hasWorkerHeartbeatLog(logs) {
   return (Array.isArray(logs) ? logs : []).some((line) => String(line || "").toLowerCase().includes("heartbeat: stage="));
 }
 
@@ -1899,6 +2076,15 @@ function describeWorkerAvailability(live, registered, stale, lastSeenAt, recent,
   return "No helper app connected yet. Jobs will use server fallback when needed.";
 }
 
+function helperBusyCount() {
+  return Math.max(0, Number(state.workerRunningJobCount || 0));
+}
+
+function allRecentHelpersBusy() {
+  const recent = Math.max(0, Number(state.workerRecentCount || 0));
+  return recent > 0 && helperBusyCount() >= recent;
+}
+
 async function refreshWorkerStatus({ announceErrors = false } = {}) {
   if (!state.activeProjectRef) {
     resetWorkerStatusUi();
@@ -1923,6 +2109,8 @@ async function refreshWorkerStatus({ announceErrors = false } = {}) {
     state.workerLastRecentSeenAt = lastRecentSeenAt;
     state.workerOnlineCount = online;
     state.workerTotalCount = total;
+    state.workerRunningJobCount = Math.max(0, Number(data.worker_running_job_count || 0));
+    state.workerQueuedJobCount = Math.max(0, Number(data.worker_queued_job_count || 0));
     state.workerOnlineWindowSeconds = Math.max(0, Number(data.worker_online_window_seconds || 0));
     state.workerRecentWindowSeconds = Math.max(0, Number(data.worker_recent_window_seconds || 0));
 
@@ -2174,12 +2362,12 @@ function applyActiveProject(projectRef, projectLabel = projectRef) {
   resetProgressUi();
   clearJobTracking();
   resetScriptEditorState();
+  resetProjectSettingsControls();
   setGenerateEnabled(true);
   setCancelVisible(false);
   clearWorkerSetupLinks();
   void loadOutputs();
-  void loadReferenceSamples();
-  void loadBuiltinVoices();
+  void restoreProjectSettings(projectRef);
   void loadProjectScript();
   void refreshProjectAccessInfo();
   startWorkerStatusPolling();
@@ -2229,7 +2417,7 @@ function updateSavedSampleDeleteButtonState() {
   deleteSavedSampleBtn.disabled = !String(savedSampleSelectNode.value || "");
 }
 
-function applySavedSampleSelection(audioHash) {
+function applySavedSampleSelection(audioHash, { persist = false } = {}) {
   const sample = findReferenceSampleByHash(audioHash);
   if (!sample) {
     setSavedSampleStatus("Saved sample not found. Refresh and try again.", true);
@@ -2260,6 +2448,9 @@ function applySavedSampleSelection(audioHash) {
   );
   showReferencePreviewFromUrl(sample.artifact_url || "");
   updateSavedSampleDeleteButtonState();
+  if (persist) {
+    queueProjectSettingsSave();
+  }
 }
 
 async function loadReferenceSamples(preferredHash = null) {
@@ -2360,6 +2551,7 @@ async function handleDeleteSavedSample() {
     }
 
     await loadReferenceSamples();
+    queueProjectSettingsSave();
     setSavedSampleStatus("Saved sample deleted.");
   } catch (err) {
     setSavedSampleStatus(`Could not delete saved sample: ${String(err)}`, true);
@@ -2381,6 +2573,7 @@ async function attachAudioFileToProject(file, originLabel = "Audio") {
     setRecordStatus(`${originLabel} saved to project as ${data.filename}.`);
     setSavedSampleStatus(`${originLabel} saved. You can reuse it later from the saved sample list.`);
     await loadReferenceSamples(state.selectedAudioHash);
+    queueProjectSettingsSave();
   } catch (err) {
     setRecordStatus(`${originLabel} selected, but could not be saved yet: ${String(err)}`, true);
     setSavedSampleStatus(`Saved sample refresh failed: ${String(err)}`, true);
@@ -3161,6 +3354,8 @@ async function handleGenerate() {
     state.workerLastRecentSeenAt = workerLastRecentSeenAt;
     state.workerOnlineCount = workerOnlineCount;
     state.workerTotalCount = workerTotalCount;
+    state.workerRunningJobCount = Math.max(0, Number(data.worker_running_job_count || 0));
+    state.workerQueuedJobCount = Math.max(0, Number(data.worker_queued_job_count || 0));
     state.workerOnlineWindowSeconds = workerOnlineWindowSeconds;
     state.workerRecentWindowSeconds = workerRecentWindowSeconds;
 
@@ -3168,6 +3363,10 @@ async function handleGenerate() {
       const hasRecentHelper = workerRecentCount !== null && workerRecentCount > 0;
       if (workerLiveCount !== null && workerLiveCount <= 0 && !hasRecentHelper) {
         setGenerateStatus("No active helper is connected right now. Waiting for helper assignment...");
+      } else if ((workerRecentCount !== null && workerRecentCount > 0) && Math.max(0, Number(data.worker_running_job_count || 0)) >= workerRecentCount) {
+        setGenerateStatus(
+          `The local helper is busy with another run. Waiting up to ${Math.round(fallbackTimeout)}s for it to become free.`
+        );
       } else {
         const availability = workerAvailabilitySummary();
         const helperLabel = workerLiveCount !== null && workerLiveCount > 0 ? "live helper" : "helper";
@@ -3624,6 +3823,7 @@ function bindVoiceSource() {
       if (!voiceSourceReferenceNode.checked) return;
       setVoiceSourceUi("reference");
       setGenerateStatus("");
+      queueProjectSettingsSave();
     });
   }
 
@@ -3632,6 +3832,7 @@ function bindVoiceSource() {
       if (!voiceSourceBuiltinNode.checked) return;
       setVoiceSourceUi("builtin");
       setGenerateStatus("");
+      queueProjectSettingsSave();
       if (!state.builtinVoices.length) {
         void loadBuiltinVoices();
       }
@@ -3643,6 +3844,7 @@ function bindVoiceSource() {
       state.selectedBuiltInSpeaker = builtinVoiceSelectNode.value || "";
       clearBuiltinVoicePreview();
       setBuiltinVoiceStatus(builtinVoiceSelectionMessage(getSelectedBuiltInVoice()));
+      queueProjectSettingsSave();
     });
   }
 
@@ -3698,7 +3900,7 @@ function bindAudioSelection() {
     savedSampleSelectNode.addEventListener("change", () => {
       const selectedHash = savedSampleSelectNode.value;
       if (selectedHash) {
-        applySavedSampleSelection(selectedHash);
+        applySavedSampleSelection(selectedHash, { persist: true });
       } else if (!state.selectedAudioFile) {
         state.selectedAudioHash = null;
         if (audioDropzoneTitleNode) {
@@ -3708,6 +3910,7 @@ function bindAudioSelection() {
           audioFileNameNode.textContent = "No file selected.";
         }
         clearReferencePreview();
+        queueProjectSettingsSave();
       }
       updateSavedSampleDeleteButtonState();
     });
@@ -3904,18 +4107,40 @@ function bindGapSlider() {
   if (!gapSliderNode || !gapValueNode) return;
 
   const update = () => {
-    gapValueNode.textContent = Number(gapSliderNode.value).toFixed(2);
+    updateGapValueDisplay();
+    queueProjectSettingsSave();
   };
 
   gapSliderNode.addEventListener("input", update);
   if (qualityNode) {
     qualityNode.addEventListener("change", () => {
+      queueProjectSettingsSave();
       if (state.voiceSource === "builtin") {
         void loadBuiltinVoices();
       }
     });
   }
-  update();
+  if (outputFormatNode) {
+    outputFormatNode.addEventListener("change", () => {
+      queueProjectSettingsSave();
+    });
+  }
+  if (umsToggleNode) {
+    umsToggleNode.addEventListener("change", () => {
+      queueProjectSettingsSave();
+    });
+  }
+  if (ahsToggleNode) {
+    ahsToggleNode.addEventListener("change", () => {
+      queueProjectSettingsSave();
+    });
+  }
+  if (transcriptToggleNode) {
+    transcriptToggleNode.addEventListener("change", () => {
+      queueProjectSettingsSave();
+    });
+  }
+  updateGapValueDisplay();
 }
 
 function setupThemeToggle() {

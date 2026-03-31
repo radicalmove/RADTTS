@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
 from pydantic import ValidationError
@@ -15,7 +17,14 @@ from radtts.models import (
     SynthesisRequest,
 )
 from radtts.services.tts import PausePlanner
-from radtts.utils.text import estimated_chunk_count, recommended_generation_timeout_seconds, split_sentences
+from radtts.utils.audio import probe_duration_seconds
+from radtts.utils.text import (
+    coalesce_sentence_chunks,
+    coalesce_reference_sentence_chunks,
+    estimated_chunk_count,
+    recommended_generation_timeout_seconds,
+    split_sentences,
+)
 
 
 def test_sentence_splitter_preserves_sentences():
@@ -45,6 +54,35 @@ def test_estimated_chunk_count_respects_chunk_mode():
     text = "One sentence. Two sentence. Three sentence."
     assert estimated_chunk_count(text, "sentence") == 3
     assert estimated_chunk_count(text, "single") == 1
+
+
+def test_estimated_chunk_count_coalesces_reference_sentence_runs():
+    text = "One short sentence. Two short sentence. Three short sentence. Four short sentence."
+
+    regular = estimated_chunk_count(text, "sentence")
+    reference = estimated_chunk_count(text, "sentence", voice_source="reference")
+
+    assert regular == 4
+    assert reference < regular
+
+
+def test_coalesce_reference_sentence_chunks_is_more_aggressive_for_long_scripts():
+    chunks = [f"Sentence {idx} has several words to keep the chunk realistic." for idx in range(1, 13)]
+
+    regular = coalesce_sentence_chunks(chunks)
+    reference = coalesce_reference_sentence_chunks(chunks)
+
+    assert len(reference) < len(regular)
+    assert len(reference) <= 4
+
+
+def test_coalesce_sentence_chunks_merges_short_neighbors():
+    chunks = ["One short sentence.", "Two short sentence.", "This is a much longer sentence that should stand alone."]
+
+    merged = coalesce_sentence_chunks(chunks, target_words=8, max_words=20, max_chars=80)
+
+    assert merged[0] == "One short sentence. Two short sentence."
+    assert merged[1] == "This is a much longer sentence that should stand alone."
 
 
 def test_recommended_generation_timeout_scales_for_longer_scripts():
@@ -88,6 +126,28 @@ def test_recommended_generation_timeout_penalizes_dense_sentence_chunks():
     )
 
     assert dense_timeout > spread_timeout
+
+
+def test_recommended_generation_timeout_penalizes_reference_voice_jobs():
+    text = " ".join([f"Sentence {idx}." for idx in range(1, 16)])
+
+    builtin_timeout = recommended_generation_timeout_seconds(
+        text,
+        chunk_mode="sentence",
+        max_new_tokens=1000,
+        minimum_seconds=600,
+        voice_source="builtin",
+    )
+    reference_timeout = recommended_generation_timeout_seconds(
+        text,
+        chunk_mode="sentence",
+        max_new_tokens=1000,
+        minimum_seconds=600,
+        voice_source="reference",
+        reference_duration_seconds=12.0,
+    )
+
+    assert reference_timeout > builtin_timeout
 
 
 def test_model_id_validation_rejects_unsupported():
@@ -169,3 +229,24 @@ def test_simple_synthesis_request_rejects_missing_reference_input():
             text="hello",
             voice_clone_authorized=True,
         )
+
+
+def test_probe_duration_seconds_uses_ffprobe_fallback_when_soundfile_cannot_read(monkeypatch, tmp_path):
+    audio_path = tmp_path / "reference.webm"
+    audio_path.write_bytes(b"webm")
+
+    class DummyInfoError(Exception):
+        pass
+
+    def fail_info(path):
+        raise DummyInfoError("unsupported")
+
+    def fake_run(cmd, check, capture_output, text):
+        assert cmd[-1] == str(audio_path)
+        return subprocess.CompletedProcess(cmd, 0, stdout="6.25\n", stderr="")
+
+    monkeypatch.setattr("radtts.utils.audio.sf.info", fail_info)
+    monkeypatch.setattr("radtts.utils.audio.get_ffprobe_binary", lambda: "/usr/bin/ffprobe")
+    monkeypatch.setattr("radtts.utils.audio.subprocess.run", fake_run)
+
+    assert probe_duration_seconds(audio_path) == pytest.approx(6.25)

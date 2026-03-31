@@ -1,21 +1,21 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-app-env="{{ app_env }}">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>RADTTS Studio</title>
-    <link rel="icon" href="/static/radtts-logo.svg" type="image/svg+xml" />
+    <link rel="icon" href="/static/radtts-logo.svg?v={{ app_env or 'prod' }}" type="image/svg+xml" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;800&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="/static/ui.css" />
+    <link rel="stylesheet" href="/static/ui.css?v={{ app_env or 'prod' }}" />
   </head>
   <body>
     <div class="bg-grid"></div>
     <header class="topbar">
       <div class="topbar-brand">
         <a class="topbar-logo-link" href="/" aria-label="Go to RADTTS home">
-          <img src="/static/radtts-logo.svg" alt="RADTTS logo" class="topbar-logo" width="32" height="32" />
+          <img src="/static/radtts-logo.svg?v={{ app_env or 'prod' }}" alt="RADTTS logo" class="topbar-logo" width="32" height="32" />
         </a>
         <div>
           <p class="eyebrow">Voice production</p>
@@ -578,6 +578,6 @@
       };
     </script>
     <script src="https://unpkg.com/mammoth@1.8.0/mammoth.browser.min.js"></script>
-    <script src="/static/ui.js" defer></script>
+    <script src="/static/ui.js?v={{ app_env or 'prod' }}" defer></script>
   </body>
 </html>

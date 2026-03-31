@@ -11,7 +11,16 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
-from radtts.api import WORKER_ONLINE_WINDOW_SECONDS, WORKER_RECENT_QUEUE_GRACE_SECONDS, _maybe_trigger_worker_fallback, app, worker_manager
+from radtts.api import (
+    WORKER_BUSY_QUEUE_GRACE_SECONDS,
+    WORKER_ONLINE_WINDOW_SECONDS,
+    WORKER_RECENT_QUEUE_GRACE_SECONDS,
+    _maybe_trigger_worker_fallback,
+    _worker_availability_snapshot,
+    _worker_queue_fallback_timeout_seconds,
+    app,
+    worker_manager,
+)
 from radtts.manifests import ManifestStore
 from radtts.models import JobRecord
 
@@ -121,7 +130,7 @@ def test_worker_queue_round_trip_completes_job():
         job_after_stale = client.get(f"/jobs/{job_id}?project_id={project_id}")
         assert job_after_stale.status_code == 200
         assert job_after_stale.json()["progress"] == 0.58
-        assert job_after_stale.json()["activity_at"] == first_activity_at
+        assert job_after_stale.json()["activity_at"] != first_activity_at
 
         complete = client.post(
             f"/workers/jobs/{job_id}/complete",
@@ -149,6 +158,30 @@ def test_worker_queue_round_trip_completes_job():
     finally:
         if project_root.exists():
             shutil.rmtree(project_root)
+
+
+def test_list_workers_ignores_unknown_legacy_capabilities():
+    worker_manager.workers_path.write_text(
+        json.dumps(
+            [
+                {
+                    "worker_id": "wrk_legacy",
+                    "worker_name": "legacy-worker",
+                    "capabilities": ["synthesize", "enhance"],
+                    "status": "active",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "last_seen_at": datetime.now(timezone.utc).isoformat(),
+                    "api_key_hash": "ignored",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    workers = worker_manager.list_workers()
+
+    assert len(workers) == 1
+    assert [cap.value for cap in workers[0].capabilities] == ["synthesize"]
 
 
 def test_stale_worker_updates_are_ignored_after_project_job_cancel():
@@ -438,7 +471,91 @@ def test_recent_helper_extends_queue_fallback_timeout(monkeypatch):
             shutil.rmtree(project_root)
 
 
-def test_worker_fallback_uses_activity_timestamp_not_heartbeat(monkeypatch):
+def test_busy_live_helper_extends_queue_fallback_timeout():
+    client = TestClient(app)
+    project_id = f"worker-busy-a-{uuid.uuid4().hex[:8]}"
+    second_project_id = f"worker-busy-b-{uuid.uuid4().hex[:8]}"
+    project_roots = [Path("projects") / project_id, Path("projects") / second_project_id]
+
+    try:
+        for current_project_id in (project_id, second_project_id):
+            create = client.post(
+                "/projects",
+                json={"project_id": current_project_id, "course": "C1", "module": "M1", "lesson": "L1"},
+            )
+            assert create.status_code == 200
+
+        invite = client.post("/workers/invite", json={"capabilities": ["synthesize"]})
+        assert invite.status_code == 200
+        invite_token = invite.json()["invite_token"]
+
+        register = client.post(
+            "/workers/register",
+            json={
+                "invite_token": invite_token,
+                "worker_name": "busy-worker",
+                "capabilities": ["synthesize"],
+            },
+        )
+        assert register.status_code == 200
+        worker_id = register.json()["worker_id"]
+        api_key = register.json()["api_key"]
+
+        first = client.post(
+            "/synthesize/worker",
+            json={
+                "project_id": project_id,
+                "text": "First queued worker job.",
+                "reference_audio_b64": _b64_blob(9),
+                "reference_audio_filename": "reference.wav",
+                "reference_text": "hello",
+                "model_id": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+                "max_new_tokens": 300,
+                "chunk_mode": "single",
+                "pause_config": {"min_seconds": 0.2, "max_seconds": 0.4, "seed": 1},
+                "output_format": "wav",
+                "output_name": "worker_busy_first",
+                "voice_clone_authorized": True,
+            },
+        )
+        assert first.status_code == 200
+        first_job_id = first.json()["job_id"]
+
+        pull = client.post("/workers/pull", json={"worker_id": worker_id, "api_key": api_key})
+        assert pull.status_code == 200
+        assert pull.json()["job"]["job_id"] == first_job_id
+
+        snapshot = _worker_availability_snapshot()
+        assert snapshot["worker_recent_count"] == 1
+        assert snapshot["worker_running_job_count"] == 1
+        assert _worker_queue_fallback_timeout_seconds(snapshot) == WORKER_BUSY_QUEUE_GRACE_SECONDS
+
+        second = client.post(
+            "/synthesize/worker",
+            json={
+                "project_id": second_project_id,
+                "text": "Second queued worker job.",
+                "reference_audio_b64": _b64_blob(10),
+                "reference_audio_filename": "reference.wav",
+                "reference_text": "hello",
+                "model_id": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+                "max_new_tokens": 300,
+                "chunk_mode": "single",
+                "pause_config": {"min_seconds": 0.2, "max_seconds": 0.4, "seed": 1},
+                "output_format": "wav",
+                "output_name": "worker_busy_second",
+                "voice_clone_authorized": True,
+            },
+        )
+        assert second.status_code == 200
+        assert second.json()["fallback_timeout_seconds"] == WORKER_BUSY_QUEUE_GRACE_SECONDS
+    finally:
+        for project_root in project_roots:
+            if project_root.exists():
+                shutil.rmtree(project_root)
+
+
+def test_worker_fallback_uses_stale_activity_timestamp(monkeypatch):
     client = TestClient(app)
     project_id = f"worker-stall-{uuid.uuid4().hex[:8]}"
     project_root = Path("projects") / project_id

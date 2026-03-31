@@ -6,6 +6,7 @@ import contextlib
 import inspect
 import os
 import tempfile
+import time
 from pathlib import Path
 from random import Random
 from typing import Any, Callable
@@ -23,8 +24,8 @@ from radtts.constants import (
 from radtts.exceptions import DependencyMissingError, ValidationError
 from radtts.models import ChunkMode, PauseConfig, SynthesisRequest, VoiceSource
 from radtts.services.asr import ASRService
-from radtts.utils.audio import concat_with_silence, convert_audio, probe_duration_seconds, write_wav
-from radtts.utils.text import split_sentences, word_count
+from radtts.utils.audio import concat_with_silence, convert_audio, probe_duration_seconds, read_audio, write_wav
+from radtts.utils.text import coalesce_reference_sentence_chunks, coalesce_sentence_chunks, split_sentences, word_count
 
 
 class PausePlanner:
@@ -54,9 +55,11 @@ class TTSService:
     MIN_REFERENCE_DURATION_SECONDS = 2.5
     MIN_REFERENCE_WORDS = 2
     MIN_REFERENCE_TEXT_CHARS = 8
+    DEFAULT_MODEL_CACHE_IDLE_SECONDS = 1800
 
     def __init__(self, *, auto_reference_asr_model: str = "small"):
         self._model_cache: dict[str, Any] = {}
+        self._model_cache_last_used: dict[str, float] = {}
         self._pause_planner = PausePlanner()
         self._asr_service = ASRService(model_size=auto_reference_asr_model)
         self.reference_audio_filter = str(
@@ -66,6 +69,10 @@ class TTSService:
             os.environ.get("RADTTS_OUTPUT_AUDIO_FILTER", DEFAULT_TTS_OUTPUT_FILTER)
         ).strip()
         self.audio_tuning_label = current_audio_tuning_label()
+        self.model_cache_idle_seconds = max(
+            0,
+            int(os.environ.get("RADTTS_MODEL_CACHE_IDLE_SECONDS", self.DEFAULT_MODEL_CACHE_IDLE_SECONDS)),
+        )
 
     def ensure_supported_model(self, model_id: str) -> None:
         if model_id not in SUPPORTED_TTS_MODELS:
@@ -88,7 +95,16 @@ class TTSService:
             if req.voice_source == VoiceSource.REFERENCE:
                 if req.reference_audio_path is None:
                     raise ValidationError("Reference audio is required for reference voice synthesis.")
+                if on_progress:
+                    on_progress("preparing reference audio")
                 reference_audio_path = self._prepare_reference_audio_path(req.reference_audio_path, stack=stack)
+                warnings = self.validate_reference_audio(reference_audio_path)
+                if on_progress:
+                    if warnings:
+                        for warning in warnings[:2]:
+                            on_progress(f"reference validation warning: {warning}")
+                    else:
+                        on_progress("reference sample check complete")
                 if req.reference_text:
                     reference_text = req.reference_text
                 else:
@@ -98,7 +114,7 @@ class TTSService:
                     if on_progress:
                         on_progress("reference transcription complete")
 
-            chunks = self._build_chunks(req.text, req.chunk_mode)
+            chunks = self._build_chunks(req.text, req.chunk_mode, voice_source=req.voice_source)
             pauses = self._pause_planner.build(chunks, req.pause_config) if req.chunk_mode == ChunkMode.SENTENCE else []
 
             model = self._load_model(req.model_id)
@@ -210,12 +226,16 @@ class TTSService:
         return normalized_path
 
     @staticmethod
-    def _build_chunks(text: str, chunk_mode: ChunkMode) -> list[str]:
+    def _build_chunks(text: str, chunk_mode: ChunkMode, *, voice_source: VoiceSource = VoiceSource.REFERENCE) -> list[str]:
         if chunk_mode == ChunkMode.SINGLE:
             return [text.strip()]
         chunks = split_sentences(text)
         if not chunks:
             return [text.strip()]
+        if voice_source == VoiceSource.REFERENCE:
+            merged = coalesce_reference_sentence_chunks(chunks)
+            if merged:
+                return merged
         return chunks
 
     @staticmethod
@@ -308,11 +328,34 @@ class TTSService:
 
     def load_model_with_runtime(self, model_id: str) -> tuple[Any, str]:
         self.ensure_supported_model(model_id)
+        cache_state = "warm" if self._is_model_warm(model_id) else "fresh"
         model = self._load_model(model_id)
-        return model, self.describe_model_runtime(model, model_id=model_id)
+        return model, f"{self.describe_model_runtime(model, model_id=model_id)} cache={cache_state}"
+
+    def _evict_idle_models(self, *, now: float | None = None) -> None:
+        if self.model_cache_idle_seconds <= 0:
+            return
+        current = float(now if now is not None else time.monotonic())
+        stale = [
+            model_id
+            for model_id, last_used in self._model_cache_last_used.items()
+            if current - last_used > self.model_cache_idle_seconds
+        ]
+        for model_id in stale:
+            self._model_cache.pop(model_id, None)
+            self._model_cache_last_used.pop(model_id, None)
+
+    def _is_model_warm(self, model_id: str, *, now: float | None = None) -> bool:
+        self._evict_idle_models(now=now)
+        return model_id in self._model_cache
+
+    def _touch_model(self, model_id: str, *, now: float | None = None) -> None:
+        self._model_cache_last_used[model_id] = float(now if now is not None else time.monotonic())
 
     def _load_model(self, model_id: str) -> Any:
+        self._evict_idle_models()
         if model_id in self._model_cache:
+            self._touch_model(model_id)
             return self._model_cache[model_id]
         try:
             from qwen_tts import Qwen3TTSModel
@@ -327,7 +370,44 @@ class TTSService:
         else:
             model = Qwen3TTSModel(model_id)
         self._model_cache[model_id] = model
+        self._touch_model(model_id)
         return model
+
+    def validate_reference_audio(self, reference_audio_path: Path) -> list[str]:
+        warnings: list[str] = []
+        try:
+            duration_seconds = probe_duration_seconds(reference_audio_path)
+        except Exception:
+            duration_seconds = None
+
+        if duration_seconds is not None and duration_seconds < self.MIN_REFERENCE_DURATION_SECONDS:
+            raise ValidationError(
+                "Reference sample is too short. Please use at least 3 seconds of clear speech, ideally a full sentence."
+            )
+
+        try:
+            audio, _sample_rate = read_audio(reference_audio_path)
+        except Exception:
+            return warnings
+
+        if audio.size == 0:
+            raise ValidationError("Reference sample is empty. Please choose a clear spoken sample.")
+
+        level = np.abs(audio.astype(np.float32))
+        peak = float(np.max(level))
+        rms = float(np.sqrt(np.mean(np.square(level))))
+        clipped_ratio = float(np.mean(level >= 0.995))
+
+        if rms < 0.0015:
+            raise ValidationError("Reference sample is too quiet. Please choose a clearer, louder spoken sample.")
+        if rms < 0.015:
+            warnings.append("Reference sample sounds quiet; voice matching may be weaker.")
+        if peak >= 0.995 or clipped_ratio > 0.001:
+            warnings.append("Reference sample may be clipped; distortion can reduce voice quality.")
+        if duration_seconds is not None and duration_seconds > 30:
+            warnings.append("Reference sample is long; trimming to 6 to 15 seconds usually gives cleaner cloning.")
+
+        return warnings
 
     def _synthesize_reference_chunk(
         self,

@@ -42,7 +42,7 @@ def test_worker_client_emits_progress_updates(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
         client.tts_service,
         "load_model_with_runtime",
-        lambda model_id: (object(), f"tts model={model_id} runtime device=mps:0 dtype=torch.float16"),
+        lambda model_id: (object(), f"tts model={model_id} runtime device=mps:0 dtype=torch.float16 cache=fresh"),
     )
 
     def fake_synthesize(req, output_dir, *, on_progress=None, cancel_check=None):
@@ -50,6 +50,8 @@ def test_worker_client_emits_progress_updates(tmp_path: Path, monkeypatch):
         output_path.write_bytes(b"ID3")
         assert on_progress is not None
         for message in [
+            "preparing reference audio",
+            "reference sample check complete",
             "generation chunk 1/2",
             "generation chunk 2/2",
             "stitching chunks",
@@ -94,6 +96,8 @@ def test_worker_client_emits_progress_updates(tmp_path: Path, monkeypatch):
         "model_load",
         "generation",
         "generation",
+        "generation",
+        "generation",
         "stitching",
         "stitching",
         "captioning",
@@ -102,7 +106,9 @@ def test_worker_client_emits_progress_updates(tmp_path: Path, monkeypatch):
     ]
     assert [detail for _, _, _, detail in progress_calls] == [
         "Loading voice model...",
-        f"tts model={SUPPORTED_BASE_MODELS[0]} runtime device=mps:0 dtype=torch.float16",
+        f"tts model={SUPPORTED_BASE_MODELS[0]} runtime device=mps:0 dtype=torch.float16 cache=fresh",
+        "preparing reference audio",
+        "reference sample check complete",
         "generation chunk 1/2",
         "generation chunk 2/2",
         "stitching chunks",
@@ -112,7 +118,7 @@ def test_worker_client_emits_progress_updates(tmp_path: Path, monkeypatch):
         "uploading completed audio",
     ]
     assert [progress for _, progress, _, _ in progress_calls] == pytest.approx(
-        [0.28, 0.30, 0.535, 0.72, 0.78, 0.84, 0.85, 0.95, 0.97],
+        [0.28, 0.30, 0.31, 0.32, 0.535, 0.72, 0.78, 0.84, 0.85, 0.95, 0.97],
         rel=0,
         abs=1e-4,
     )
@@ -252,6 +258,108 @@ def test_worker_client_extends_generation_timeout_for_long_scripts(tmp_path: Pat
     assert captured_timeout["value"] > 600
 
 
+def test_worker_client_uses_larger_timeout_floor_for_heavy_reference_model(tmp_path: Path):
+    client = WorkerClient(
+        server_url="http://example.test",
+        config_path=tmp_path / "worker.json",
+        worker_name="test-worker",
+        invite_token=None,
+        poll_seconds=5,
+    )
+    client.generation_timeout_seconds = 600
+
+    payload = WorkerSynthesisEnqueueRequest(
+        project_id="proj-worker",
+        text=" ".join([f"Sentence {idx} has several words for a longer reference synthesis run." for idx in range(1, 15)]),
+        reference_audio_b64="QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw",
+        reference_audio_filename="reference.wav",
+        reference_text="hello",
+        model_id="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+        max_new_tokens=1400,
+        chunk_mode="sentence",
+        pause_config=PauseConfig(seed=1),
+        output_format=OutputFormat.WAV,
+        output_name="worker-heavy-reference-timeout",
+        generate_transcript=False,
+        voice_clone_authorized=True,
+    )
+
+    timeout = client._generation_timeout_for_request(payload, reference_duration_seconds=6.8)
+
+    assert timeout >= 1800
+
+
+def test_worker_client_emits_reference_validation_warning_progress(tmp_path: Path, monkeypatch):
+    client = WorkerClient(
+        server_url="http://example.test",
+        config_path=tmp_path / "worker.json",
+        worker_name="test-worker",
+        invite_token=None,
+        poll_seconds=5,
+    )
+    client.worker_id = "worker-1"
+    client.api_key = "api-key"
+
+    progress_calls: list[tuple[float, str | None, str | None]] = []
+
+    def fake_post_json(path: str, payload: dict[str, object], timeout: int = 120):
+        if path.endswith("/progress"):
+            progress_calls.append((float(payload["progress"]), payload.get("stage"), payload.get("detail")))
+        return {}
+
+    monkeypatch.setattr(client, "_post_json", fake_post_json)
+    monkeypatch.setattr("radtts.worker_client.probe_duration_seconds", lambda path: 9.0)
+    monkeypatch.setattr(
+        client.tts_service,
+        "load_model_with_runtime",
+        lambda model_id: (object(), f"tts model={model_id} runtime device=mps:0 dtype=torch.float32 cache=warm"),
+    )
+    monkeypatch.setattr(
+        client.quality_service,
+        "evaluate",
+        lambda **_: QualityReport(
+            speech_rate_wpm=120.0,
+            pause_stats={"min": 0.3, "max": 0.4, "mean": 0.35, "stddev": 0.05},
+            warnings=[],
+        ),
+    )
+
+    def fake_synthesize(req, output_dir, *, on_progress=None, cancel_check=None):
+        output_path = output_dir / f"{req.output_name}.wav"
+        output_path.write_bytes(b"RIFF")
+        assert on_progress is not None
+        on_progress("preparing reference audio")
+        on_progress("reference validation warning: Reference sample sounds quiet; voice matching may be weaker.")
+        on_progress("generation chunk 1/1")
+        return output_path, [0.3], "reference text"
+
+    monkeypatch.setattr(client.tts_service, "synthesize", fake_synthesize)
+
+    payload = WorkerSynthesisEnqueueRequest(
+        project_id="proj-worker",
+        text="One sentence.",
+        reference_audio_b64="QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw",
+        reference_audio_filename="reference.wav",
+        reference_text="hello",
+        model_id=SUPPORTED_BASE_MODELS[0],
+        max_new_tokens=400,
+        chunk_mode="single",
+        pause_config=PauseConfig(seed=1),
+        output_format=OutputFormat.WAV,
+        output_name="worker-reference-warning",
+        generate_transcript=False,
+        voice_clone_authorized=True,
+    ).model_dump(mode="json")
+
+    client._process_synthesis_job("job-worker-reference-warning", payload)
+
+    assert (0.31, "generation", "preparing reference audio") in progress_calls
+    assert any(
+        stage == "generation" and detail and detail.startswith("reference validation warning:")
+        for _, stage, detail in progress_calls
+    )
+
+
 def test_worker_client_accepts_builtin_payload_with_null_reference_fields(tmp_path: Path, monkeypatch):
     client = WorkerClient(
         server_url="http://example.test",
@@ -378,3 +486,74 @@ def test_worker_client_emits_reference_transcription_progress(tmp_path: Path, mo
 
     assert (0.33, "generation", "reference transcription started") in progress_calls
     assert (0.36, "generation", "reference transcription complete") in progress_calls
+
+
+def test_worker_client_emits_explicit_heartbeat_during_long_generation(tmp_path: Path, monkeypatch):
+    client = WorkerClient(
+        server_url="http://example.test",
+        config_path=tmp_path / "worker.json",
+        worker_name="test-worker",
+        invite_token=None,
+        poll_seconds=5,
+    )
+    client.worker_id = "worker-1"
+    client.api_key = "api-key"
+    monkeypatch.setattr(client, "HEARTBEAT_INTERVAL_SECONDS", 0.01, raising=False)
+
+    progress_calls: list[tuple[float, str | None, str | None]] = []
+
+    def fake_post_json(path: str, payload: dict[str, object], timeout: int = 120):
+        if path.endswith("/progress"):
+            progress_calls.append((float(payload["progress"]), payload.get("stage"), payload.get("detail")))
+        return {}
+
+    monkeypatch.setattr(client, "_post_json", fake_post_json)
+    monkeypatch.setattr("radtts.worker_client.probe_duration_seconds", lambda path: 4.2)
+    monkeypatch.setattr(
+        client.tts_service,
+        "load_model_with_runtime",
+        lambda model_id: (object(), f"tts model={model_id} runtime device=mps:0 dtype=torch.float32"),
+    )
+    monkeypatch.setattr(
+        client.quality_service,
+        "evaluate",
+        lambda **_: QualityReport(
+            speech_rate_wpm=120.0,
+            pause_stats={"min": 0.3, "max": 0.4, "mean": 0.35, "stddev": 0.05},
+            warnings=[],
+        ),
+    )
+
+    def slow_synthesize(req, output_dir, *, on_progress=None, cancel_check=None):
+        output_path = output_dir / f"{req.output_name}.wav"
+        output_path.write_bytes(b"RIFF")
+        assert on_progress is not None
+        on_progress("preparing reference audio")
+        time.sleep(0.04)
+        on_progress("generation chunk 1/1")
+        return output_path, [], "reference text"
+
+    monkeypatch.setattr(client.tts_service, "synthesize", slow_synthesize)
+
+    payload = WorkerSynthesisEnqueueRequest(
+        project_id="proj-worker",
+        text="One sentence.",
+        reference_audio_b64="QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw",
+        reference_audio_filename="reference.wav",
+        reference_text="hello",
+        model_id=SUPPORTED_BASE_MODELS[0],
+        max_new_tokens=400,
+        chunk_mode="single",
+        pause_config=PauseConfig(seed=1),
+        output_format=OutputFormat.WAV,
+        output_name="worker-heartbeat",
+        generate_transcript=False,
+        voice_clone_authorized=True,
+    ).model_dump(mode="json")
+
+    client._process_synthesis_job("job-worker-heartbeat", payload)
+
+    assert any(
+        stage == "generation" and detail == "heartbeat: stage=generation"
+        for _, stage, detail in progress_calls
+    )

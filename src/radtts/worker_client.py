@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import json
 import logging
 import os
 import re
 import socket
+import subprocess
 import tempfile
 import threading
 import time
@@ -16,6 +18,11 @@ from pathlib import Path
 from typing import Any
 
 import requests
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None
 
 from radtts.models import SynthesisRequest, WorkerSynthesisEnqueueRequest
 from radtts.progress import (
@@ -33,10 +40,93 @@ from radtts.utils.text import estimated_chunk_count, recommended_generation_time
 
 _GENERATION_CHUNK_RE = re.compile(r"^generation chunk (\d+)/(\d+)$", re.IGNORECASE)
 DEFAULT_WORKER_GENERATION_TIMEOUT_SECONDS = 600
+DEFAULT_HEAVY_REFERENCE_GENERATION_TIMEOUT_SECONDS = 1800
 LOG = logging.getLogger("radtts.worker")
 
 
+def _pid_is_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _pid_looks_like_radtts_worker(pid: int) -> bool:
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return False
+    command = str(result.stdout or "").strip().lower()
+    return "radtts.worker_client" in command or "radtts.worker" in command
+
+
+def _terminate_pid(pid: int, *, timeout_seconds: float = 5.0) -> bool:
+    try:
+        os.kill(pid, 15)
+    except OSError:
+        return True
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if not _pid_is_running(pid):
+            return True
+        time.sleep(0.1)
+    try:
+        os.kill(pid, 9)
+    except OSError:
+        return not _pid_is_running(pid)
+    time.sleep(0.1)
+    return not _pid_is_running(pid)
+
+
+@contextlib.contextmanager
+def _worker_single_instance(config_path: Path):
+    if fcntl is None:
+        yield
+        return
+
+    lock_path = config_path.with_suffix(".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_file = lock_path.open("a+", encoding="utf-8")
+
+    def _write_current_pid() -> None:
+        lock_file.seek(0)
+        lock_file.truncate()
+        lock_file.write(str(os.getpid()))
+        lock_file.flush()
+
+    try:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            lock_file.seek(0)
+            raw_pid = lock_file.read().strip()
+            prior_pid = int(raw_pid) if raw_pid.isdigit() else None
+            if prior_pid and prior_pid != os.getpid() and _pid_is_running(prior_pid) and _pid_looks_like_radtts_worker(prior_pid):
+                LOG.warning("terminating prior RADTTS worker pid=%s before starting a new one", prior_pid)
+                _terminate_pid(prior_pid)
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+
+        _write_current_pid()
+        yield
+    finally:
+        try:
+            lock_file.seek(0)
+            lock_file.truncate()
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        lock_file.close()
+
+
 class WorkerClient:
+    HEARTBEAT_INTERVAL_SECONDS = 10.0
+
     def __init__(
         self,
         *,
@@ -64,16 +154,35 @@ class WorkerClient:
             int(os.environ.get("RADTTS_WORKER_GENERATION_TIMEOUT_SECONDS", DEFAULT_WORKER_GENERATION_TIMEOUT_SECONDS)),
         )
 
-    def _generation_timeout_for_request(self, req: WorkerSynthesisEnqueueRequest) -> float:
-        if self.generation_timeout_seconds < 1:
-            return self.generation_timeout_seconds
+    def _generation_timeout_for_request(
+        self,
+        req: WorkerSynthesisEnqueueRequest,
+        *,
+        reference_duration_seconds: float | None = None,
+    ) -> float:
+        voice_source = str(getattr(req.voice_source, "value", req.voice_source) or "").strip().lower()
+        minimum_seconds = self.generation_timeout_seconds
+        if (
+            voice_source == "reference"
+            and "1.7b" in str(req.model_id).lower()
+            and int(req.max_new_tokens) >= 1200
+        ):
+            minimum_seconds = max(
+                minimum_seconds,
+                int(os.environ.get("RADTTS_HEAVY_REFERENCE_GENERATION_TIMEOUT_SECONDS", DEFAULT_HEAVY_REFERENCE_GENERATION_TIMEOUT_SECONDS)),
+            )
+
+        if minimum_seconds < 1:
+            return minimum_seconds
         return max(
-            self.generation_timeout_seconds,
+            minimum_seconds,
             recommended_generation_timeout_seconds(
                 req.text,
                 chunk_mode=req.chunk_mode,
                 max_new_tokens=req.max_new_tokens,
-                minimum_seconds=self.generation_timeout_seconds,
+                minimum_seconds=minimum_seconds,
+                voice_source=req.voice_source,
+                reference_duration_seconds=reference_duration_seconds,
             ),
         )
 
@@ -232,9 +341,6 @@ class WorkerClient:
             if normalized_payload.get("reference_audio_filename") is None:
                 normalized_payload.pop("reference_audio_filename", None)
         req = WorkerSynthesisEnqueueRequest(**normalized_payload)
-        generation_timeout_seconds = self._generation_timeout_for_request(req)
-        estimated_chunks = estimated_chunk_count(req.text, req.chunk_mode)
-
         with tempfile.TemporaryDirectory(prefix="radtts_worker_") as tmp:
             tmp_path = Path(tmp)
             reference_path = None
@@ -246,6 +352,11 @@ class WorkerClient:
                     reference_duration_seconds = round(probe_duration_seconds(reference_path), 3)
                 except Exception:
                     reference_duration_seconds = None
+            generation_timeout_seconds = self._generation_timeout_for_request(
+                req,
+                reference_duration_seconds=reference_duration_seconds,
+            )
+            estimated_chunks = estimated_chunk_count(req.text, req.chunk_mode, voice_source=req.voice_source)
             LOG.info(
                 "starting synthesis job_id=%s reference_audio=%s reference_seconds=%s reference_text_chars=%s built_in_speaker=%s estimated_chunks=%s generation_timeout_seconds=%s",
                 job_id,
@@ -273,11 +384,16 @@ class WorkerClient:
                 self._post_progress_update(job_id, progress=progress, stage=stage, detail=detail)
 
             def heartbeat_worker() -> None:
-                while not stop_heartbeat.wait(10):
+                while not stop_heartbeat.wait(self.HEARTBEAT_INTERVAL_SECONDS):
                     with progress_lock:
                         progress = float(progress_state["progress"])
                         stage = str(progress_state["stage"] or "worker_running")
-                    self._post_progress_update(job_id, progress=progress, stage=stage)
+                    self._post_progress_update(
+                        job_id,
+                        progress=progress,
+                        stage=stage,
+                        detail=f"heartbeat: stage={stage}",
+                    )
 
             heartbeat_thread = threading.Thread(target=heartbeat_worker, name="radtts-worker-heartbeat", daemon=True)
             heartbeat_thread.start()
@@ -303,6 +419,14 @@ class WorkerClient:
 
                     if lower == "reference transcription complete":
                         emit_progress(0.36, stage="generation", detail=cleaned)
+                        return
+
+                    if lower == "preparing reference audio":
+                        emit_progress(0.31, stage="generation", detail=cleaned)
+                        return
+
+                    if lower == "reference sample check complete" or lower.startswith("reference validation warning:"):
+                        emit_progress(0.32, stage="generation", detail=cleaned)
                         return
 
                     if chunk_match:
@@ -427,14 +551,16 @@ def main() -> None:
         force=True,
     )
     args = build_parser().parse_args()
-    client = WorkerClient(
-        server_url=args.server_url,
-        config_path=Path(args.config_path),
-        worker_name=args.worker_name,
-        invite_token=args.invite_token,
-        poll_seconds=max(1, args.poll_seconds),
-    )
-    client.run(once=args.once)
+    config_path = Path(args.config_path)
+    with _worker_single_instance(config_path):
+        client = WorkerClient(
+            server_url=args.server_url,
+            config_path=config_path,
+            worker_name=args.worker_name,
+            invite_token=args.invite_token,
+            poll_seconds=max(1, args.poll_seconds),
+        )
+        client.run(once=args.once)
 
 
 if __name__ == "__main__":

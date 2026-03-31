@@ -150,7 +150,12 @@ class WorkerManager:
         workers = self._read_list(self.workers_path)
         result: list[WorkerSummary] = []
         for worker in workers:
-            caps = [WorkerCapability(cap) for cap in worker.get("capabilities", [])]
+            caps: list[WorkerCapability] = []
+            for cap in worker.get("capabilities", []):
+                try:
+                    caps.append(WorkerCapability(cap))
+                except ValueError:
+                    continue
             result.append(
                 WorkerSummary(
                     worker_id=worker["worker_id"],
@@ -530,13 +535,14 @@ class WorkerManager:
         previous_activity_at = job.activity_at or job.updated_at or job.created_at
         now = datetime.now(timezone.utc)
         next_progress = max(job.progress, progress) if status == JobStatus.RUNNING else progress
+        is_heartbeat = bool(str(log or "").strip().lower().startswith("heartbeat:"))
 
         job.status = status
         job.stage = stage
         job.progress = next_progress
         job.updated_at = now
         if status == JobStatus.RUNNING:
-            if stage != previous_stage or next_progress > previous_progress:
+            if stage != previous_stage or next_progress > previous_progress or is_heartbeat:
                 job.activity_at = now
             else:
                 job.activity_at = previous_activity_at

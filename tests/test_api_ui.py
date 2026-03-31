@@ -64,6 +64,18 @@ def test_ui_homepage_renders_help_button_and_modal_shell():
     assert "Placeholder guidance" not in text
 
 
+def test_ui_homepage_exposes_app_env_and_versioned_assets(monkeypatch):
+    monkeypatch.setattr(radtts_api, "APP_ENV", "development")
+    client = TestClient(app)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert 'data-app-env="development"' in response.text
+    assert '/static/ui.css?v=development' in response.text
+    assert '/static/ui.js?v=development' in response.text
+
+
 def test_projects_endpoint_returns_recent_activity_first():
     client = TestClient(app)
     older_project_id = f"ui-old-{uuid.uuid4().hex[:8]}"
@@ -117,6 +129,64 @@ def test_project_outputs_endpoint_returns_empty_list_for_new_project():
         payload = outputs.json()
         assert payload["project_id"] == project_id
         assert payload["outputs"] == []
+    finally:
+        if project_root.exists():
+            shutil.rmtree(project_root)
+
+
+def test_project_settings_endpoint_returns_defaults_and_persists_updates():
+    client = TestClient(app)
+    project_id = f"ui-{uuid.uuid4().hex[:8]}"
+    project_root = Path("projects") / project_id
+
+    try:
+        created = client.post("/projects", json={"project_id": project_id})
+        assert created.status_code == 200
+
+        loaded = client.get(f"/projects/{project_id}/settings")
+        assert loaded.status_code == 200
+        assert loaded.json()["settings"] == {
+            "selected_audio_hash": None,
+            "voice_source": "reference",
+            "built_in_speaker": None,
+            "quality": "normal",
+            "add_ums": False,
+            "add_ahs": False,
+            "generate_transcript": False,
+            "output_format": "mp3",
+            "average_gap_seconds": 0.8,
+        }
+
+        updated = client.put(
+            f"/projects/{project_id}/settings",
+            json={
+                "selected_audio_hash": "abcd1234abcd1234",
+                "voice_source": "builtin",
+                "built_in_speaker": "Ryan",
+                "quality": "high",
+                "add_ums": True,
+                "add_ahs": True,
+                "generate_transcript": True,
+                "output_format": "wav",
+                "average_gap_seconds": 1.15,
+            },
+        )
+        assert updated.status_code == 200
+        assert updated.json()["settings"] == {
+            "selected_audio_hash": "abcd1234abcd1234",
+            "voice_source": "builtin",
+            "built_in_speaker": "Ryan",
+            "quality": "high",
+            "add_ums": True,
+            "add_ahs": True,
+            "generate_transcript": True,
+            "output_format": "wav",
+            "average_gap_seconds": 1.15,
+        }
+
+        loaded_again = client.get(f"/projects/{project_id}/settings")
+        assert loaded_again.status_code == 200
+        assert loaded_again.json()["settings"] == updated.json()["settings"]
     finally:
         if project_root.exists():
             shutil.rmtree(project_root)
@@ -265,6 +335,8 @@ def test_workers_status_endpoint_returns_counts():
     assert "worker_recent_count" in payload
     assert "worker_registered_count" in payload
     assert "worker_stale_count" in payload
+    assert "worker_running_job_count" in payload
+    assert "worker_queued_job_count" in payload
     assert "worker_last_live_seen_at" in payload
     assert "worker_last_recent_seen_at" in payload
     assert "worker_online_window_seconds" in payload
