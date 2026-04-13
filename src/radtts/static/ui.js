@@ -403,6 +403,22 @@ function setGenerateStatus(message, isError = false) {
   generateStatusNode.style.color = isError ? "#a73527" : "#444";
 }
 
+function formatGenerationErrorMessage(message) {
+  const raw = String(message || "").trim();
+  if (!raw) return "Unknown error";
+  const lower = raw.toLowerCase();
+  const timeoutMatch = raw.match(/timed out after (\d+)s/i);
+  if (state.voiceSource === "reference" && lower.includes("worker_generation") && lower.includes("timed out")) {
+    const timeoutLabel = timeoutMatch ? ` after ${timeoutMatch[1]}s` : "";
+    return (
+      `Reference-voice generation timed out on the local helper${timeoutLabel}. ` +
+      "Try a 6 to 15 second sample with one clear speaker, no background noise or long pauses, " +
+      "and retry with Normal quality first."
+    );
+  }
+  return raw;
+}
+
 function setRecordStatus(message, isError = false) {
   if (!recordStatusNode) return;
   recordStatusNode.textContent = message || "";
@@ -3204,7 +3220,7 @@ async function pollJob() {
       clearJobTracking();
       setGenerateEnabled(true);
       setCancelVisible(false);
-      setGenerateStatus(`Generation failed: ${data.error || "Unknown error"}`, true);
+      setGenerateStatus(`Generation failed: ${formatGenerationErrorMessage(data.error || "Unknown error")}`, true);
       return;
     }
 

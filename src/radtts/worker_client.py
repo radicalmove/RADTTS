@@ -84,6 +84,26 @@ def _terminate_pid(pid: int, *, timeout_seconds: float = 5.0) -> bool:
     return not _pid_is_running(pid)
 
 
+def _friendly_reference_timeout_message(
+    *,
+    raw_error: str,
+    reference_duration_seconds: float | None,
+) -> str:
+    timeout_match = re.search(r"timed out after (\d+)s", raw_error, re.IGNORECASE)
+    if timeout_match:
+        timeout_label = f"after {timeout_match.group(1)}s"
+    else:
+        timeout_label = "before completion"
+    duration_note = ""
+    if reference_duration_seconds and reference_duration_seconds > 15:
+        duration_note = f" The current reference sample is about {round(reference_duration_seconds)}s long."
+    return (
+        f"Reference-voice generation timed out on the local helper {timeout_label}."
+        f"{duration_note} Try a 6 to 15 second sample with one clear speaker, no background noise or long pauses,"
+        " and retry with Normal quality first."
+    )
+
+
 @contextlib.contextmanager
 def _worker_single_instance(config_path: Path):
     if fcntl is None:
@@ -463,17 +483,28 @@ class WorkerClient:
                     output_name=req.output_name,
                     voice_clone_authorized=True,
                 )
-                output_path, pause_seconds, reference_text = run_with_retry_timeout(
-                    stage_name="worker_generation",
-                    fn=lambda: self.tts_service.synthesize(
-                        synth_req,
-                        output_dir=tmp_path,
-                        on_progress=on_tts_progress,
-                    ),
-                    timeout_seconds=generation_timeout_seconds,
-                    retries=0,
-                    on_log=lambda message: LOG.info("job_id=%s %s", job_id, message),
-                )
+                try:
+                    output_path, pause_seconds, reference_text = run_with_retry_timeout(
+                        stage_name="worker_generation",
+                        fn=lambda: self.tts_service.synthesize(
+                            synth_req,
+                            output_dir=tmp_path,
+                            on_progress=on_tts_progress,
+                        ),
+                        timeout_seconds=generation_timeout_seconds,
+                        retries=0,
+                        on_log=lambda message: LOG.info("job_id=%s %s", job_id, message),
+                    )
+                except Exception as exc:
+                    error_text = str(exc).strip()
+                    if req.voice_source == "reference" and "timed out" in error_text.lower():
+                        raise RuntimeError(
+                            _friendly_reference_timeout_message(
+                                raw_error=error_text,
+                                reference_duration_seconds=reference_duration_seconds,
+                            )
+                        ) from exc
+                    raise
                 synth_finished_at = time.monotonic()
 
                 if stitching_started_at is None:
