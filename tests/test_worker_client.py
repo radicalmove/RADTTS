@@ -177,6 +177,7 @@ def test_worker_client_times_out_generation_and_reports_failure(tmp_path: Path, 
         "load_model_with_runtime",
         lambda model_id: (object(), f"tts model={model_id} runtime device=mps:0 dtype=torch.float32"),
     )
+    monkeypatch.setattr("radtts.worker_client.probe_duration_seconds", lambda path: 80.64)
 
     def slow_synthesize(req, output_dir, *, on_progress=None, cancel_check=None):
         time.sleep(0.2)
@@ -190,7 +191,11 @@ def test_worker_client_times_out_generation_and_reports_failure(tmp_path: Path, 
 
     fail_calls = [payload for path, payload in calls if path.endswith("/fail")]
     assert len(fail_calls) == 1
-    assert "timed out" in str(fail_calls[0]["error"])
+    error_text = str(fail_calls[0]["error"])
+    assert "Reference-voice generation timed out on the local helper" in error_text
+    assert "about 81s long" in error_text
+    assert "6 to 15 second sample" in error_text
+    assert "Normal quality first" in error_text
 
 
 def test_worker_client_extends_generation_timeout_for_long_scripts(tmp_path: Path, monkeypatch):
