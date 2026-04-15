@@ -121,6 +121,10 @@ WORKER_MODEL_LOAD_STALL_TIMEOUT_SECONDS = max(
     WORKER_RUNNING_STALL_TIMEOUT_SECONDS,
     _env_int("RADTTS_WORKER_MODEL_LOAD_STALL_TIMEOUT_SECONDS", 600),
 )
+WORKER_FIRST_CHUNK_STALL_TIMEOUT_SECONDS = max(
+    WORKER_MODEL_LOAD_STALL_TIMEOUT_SECONDS,
+    _env_int("RADTTS_WORKER_FIRST_CHUNK_STALL_TIMEOUT_SECONDS", 900),
+)
 WORKER_RECENT_WINDOW_SECONDS = max(
     WORKER_ONLINE_WINDOW_SECONDS,
     min(WORKER_MODEL_LOAD_STALL_TIMEOUT_SECONDS, 180),
@@ -1265,10 +1269,20 @@ def _maybe_trigger_worker_fallback(
         activity_age_seconds = _iso_age_seconds(
             str(job_payload.get("activity_at") or job_payload.get("updated_at") or "")
         )
+        logs = job_payload.get("logs")
+        log_lines = logs if isinstance(logs, list) else []
+        has_generation_chunk_progress = any(
+            isinstance(line, str) and re.search(r"generation chunk \d+/\d+", line, flags=re.IGNORECASE)
+            for line in log_lines
+        )
         stage_timeout_seconds = (
             WORKER_MODEL_LOAD_STALL_TIMEOUT_SECONDS
             if stage == "model_load"
-            else WORKER_RUNNING_STALL_TIMEOUT_SECONDS
+            else (
+                WORKER_FIRST_CHUNK_STALL_TIMEOUT_SECONDS
+                if stage == "generation" and not has_generation_chunk_progress
+                else WORKER_RUNNING_STALL_TIMEOUT_SECONDS
+            )
         )
         if activity_age_seconds is None or activity_age_seconds < stage_timeout_seconds:
             return False

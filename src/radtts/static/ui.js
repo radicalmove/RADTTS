@@ -216,6 +216,8 @@ const state = {
   currentJobLogs: [],
   completedOutputs: [],
   currentRunProfile: null,
+  pollFailureCount: 0,
+  pollFailureStartedAtMs: null,
   shareProjectUsers: [],
   shareProjectCollaborators: [],
   shareProjectOwner: null,
@@ -1003,6 +1005,8 @@ function resetProgressUi() {
   state.outputFormatRequested = "mp3";
   state.stageProgressSamples = [];
   state.currentRunProfile = null;
+  state.pollFailureCount = 0;
+  state.pollFailureStartedAtMs = null;
 
   if (progressWrapNode) progressWrapNode.hidden = true;
   if (progressFillNode) progressFillNode.style.width = "0%";
@@ -1144,6 +1148,7 @@ function estimateEtaSeconds(progressPercent, stage) {
   const nowMs = Date.now();
   const clamped = Math.max(0, Math.min(100, progressPercent));
   const waitingForFirstChunk = isEarlyGenerationWithoutChunkProgress(state.currentJobLogs, stage);
+  if (waitingForFirstChunk) return null;
   const observedBased = waitingForFirstChunk ? null : estimateEtaFromObservedVelocity(clamped, stage);
 
   let progressBased = null;
@@ -2035,6 +2040,17 @@ function hasWorkerHeartbeatLog(logs) {
 
 function isEarlyGenerationWithoutChunkProgress(logs, stage) {
   return String(stage || "") === "generation" && !hasChunkProgressLog(logs);
+}
+
+function isTransientPollError(err) {
+  const text = String(err || "").toLowerCase();
+  return (
+    /\b(502|503|504|524)\b/.test(text) ||
+    text.includes("server returned non-json response") ||
+    text.includes("networkerror") ||
+    text.includes("failed to fetch") ||
+    text.includes("timeout")
+  );
 }
 
 async function requestJSON(url, method, payload) {
@@ -3162,6 +3178,8 @@ function applyJobSnapshot(job) {
 
   const logs = Array.isArray(job.logs) ? job.logs : [];
   state.currentJobLogs = logs;
+  state.pollFailureCount = 0;
+  state.pollFailureStartedAtMs = null;
   const latestLog = logs.length ? detailFromLogLine(logs[logs.length - 1], stage) : "";
   const mode = detectComputeMode(job);
   if (mode) {
@@ -3234,6 +3252,17 @@ async function pollJob() {
   } catch (err) {
     if (String(err).includes("404")) {
       return;
+    }
+    if (state.activeJobId && state.currentStatus === "running" && isTransientPollError(err)) {
+      state.pollFailureCount += 1;
+      if (!state.pollFailureStartedAtMs) {
+        state.pollFailureStartedAtMs = Date.now();
+      }
+      const failureAgeMs = Date.now() - state.pollFailureStartedAtMs;
+      if (state.pollFailureCount < 6 && failureAgeMs < 60000) {
+        setGenerateStatus("Progress check is timing out. Retrying automatically...", true);
+        return;
+      }
     }
     clearJobTracking();
     setGenerateEnabled(true);
