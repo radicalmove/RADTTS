@@ -769,3 +769,101 @@ def test_worker_model_load_uses_longer_stall_timeout(monkeypatch):
     finally:
         if project_root.exists():
             shutil.rmtree(project_root)
+
+
+def test_worker_first_generation_chunk_uses_longer_stall_timeout(monkeypatch):
+    client = TestClient(app)
+    project_id = f"worker-first-chunk-{uuid.uuid4().hex[:8]}"
+    project_root = Path("projects") / project_id
+
+    try:
+        created = client.post(
+            "/projects",
+            json={"project_id": project_id, "course": "C1", "module": "M1", "lesson": "L1"},
+        )
+        assert created.status_code == 200
+
+        invite = client.post("/workers/invite", json={"capabilities": ["synthesize"]})
+        invite_token = invite.json()["invite_token"]
+        register = client.post(
+            "/workers/register",
+            json={
+                "invite_token": invite_token,
+                "worker_name": "test-worker",
+                "capabilities": ["synthesize"],
+            },
+        )
+        worker_id = register.json()["worker_id"]
+        api_key = register.json()["api_key"]
+
+        enqueue = client.post(
+            "/synthesize/worker",
+            json={
+                "project_id": project_id,
+                "text": "Hello from worker queue.",
+                "reference_audio_b64": _b64_blob(11),
+                "reference_audio_filename": "reference.wav",
+                "reference_text": "hello",
+                "model_id": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+                "max_new_tokens": 300,
+                "chunk_mode": "single",
+                "pause_config": {"min_seconds": 0.2, "max_seconds": 0.4, "seed": 1},
+                "output_format": "wav",
+                "output_name": "worker_first_chunk_output",
+                "voice_clone_authorized": True,
+            },
+        )
+        job_id = enqueue.json()["job_id"]
+
+        pull = client.post("/workers/pull", json={"worker_id": worker_id, "api_key": api_key})
+        assert pull.status_code == 200
+
+        progress = client.post(
+            f"/workers/jobs/{job_id}/progress",
+            json={
+                "worker_id": worker_id,
+                "api_key": api_key,
+                "progress": 0.41,
+                "stage": "generation",
+                "detail": "heartbeat: stage=generation",
+            },
+        )
+        assert progress.status_code == 200
+
+        store = ManifestStore(project_root / "manifests")
+        payload = store.get_job(job_id)
+        assert payload is not None
+        stale_at = datetime.now(timezone.utc) - timedelta(seconds=400)
+        payload["activity_at"] = stale_at.isoformat()
+        payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+        store.upsert_job(JobRecord(**payload))
+
+        claimed: dict[str, object] = {}
+
+        def fake_claim_and_launch_local_fallback(**kwargs):  # noqa: ANN001
+            claimed.update(kwargs)
+            return True
+
+        monkeypatch.setattr("radtts.api._claim_and_launch_local_fallback", fake_claim_and_launch_local_fallback)
+        monkeypatch.setattr("radtts.api.WORKER_RUNNING_STALL_TIMEOUT_SECONDS", 180)
+        monkeypatch.setattr("radtts.api.WORKER_MODEL_LOAD_STALL_TIMEOUT_SECONDS", 600)
+        monkeypatch.setattr("radtts.api.WORKER_FIRST_CHUNK_STALL_TIMEOUT_SECONDS", 900)
+        request = Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": f"/jobs/{job_id}",
+                "headers": [],
+                "session": {},
+            }
+        )
+
+        assert not _maybe_trigger_worker_fallback(
+            request,
+            scoped_project_id=project_id,
+            job_payload=payload,
+        )
+        assert claimed == {}
+    finally:
+        if project_root.exists():
+            shutil.rmtree(project_root)
