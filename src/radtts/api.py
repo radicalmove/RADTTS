@@ -57,6 +57,7 @@ from radtts.constants import (
     SUPPORTED_BASE_MODELS,
 )
 from radtts.worker_manager import WorkerManager
+from radtts.worker_setup import normalize_helper_profile
 from radtts.utils.audio import probe_duration_seconds
 from radtts.utils.text import recommended_generation_timeout_seconds
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
@@ -139,6 +140,14 @@ SCRIPT_VERSION_HISTORY_LIMIT = max(10, _env_int("RADTTS_SCRIPT_VERSION_HISTORY_L
 SCOPED_PROJECT_RE = re.compile(r"^u[0-9a-f]{12}__.+$")
 BUILTIN_VOICE_PREVIEW_TEXT = "Hello, this is a quick built-in voice preview."
 BUILTIN_VOICE_PREVIEW_CACHE_DIR = PROJECTS_ROOT / ".builtin_voice_previews"
+
+
+def _worker_helper_profile() -> str:
+    if APP_ENV == "development":
+        return "dev"
+    if APP_ENV == "production":
+        return "prod"
+    return normalize_helper_profile(APP_ENV or "default")
 
 
 def _infer_psychek_admin_url(login_url: str) -> str:
@@ -2283,17 +2292,21 @@ def worker_invite(request: Request, req: WorkerInviteRequest):
     _require_auth(request)
     token = worker_manager.issue_invite_token(req.capabilities)
     base_url = str(request.base_url).rstrip("/")
+    helper_profile = _worker_helper_profile()
     macos_python_selector = (
         'if command -v python3.12 >/dev/null 2>&1; then RADTTS_PYTHON="$(command -v python3.12)"; '
         'elif command -v python3.11 >/dev/null 2>&1; then RADTTS_PYTHON="$(command -v python3.11)"; '
         'else RADTTS_PYTHON="$(command -v python3)"; fi'
     )
-    install_command = f"radtts-worker-install --server-url {base_url} --invite-token {token}"
+    install_command = (
+        f"radtts-worker-install --server-url {base_url} --invite-token {token} "
+        f"--helper-profile {helper_profile}"
+    )
     install_command_windows = (
         "py -m pip install --upgrade pip; "
         "py -m pip install --index-url https://download.pytorch.org/whl/cpu "
         '--extra-index-url https://pypi.org/simple "radtts[asr,tts] @ git+https://github.com/radicalmove/RADTTS.git"; '
-        f"py -m radtts.worker_setup --server-url {base_url} --invite-token {token} --platform windows"
+        f"py -m radtts.worker_setup --server-url {base_url} --invite-token {token} --helper-profile {helper_profile} --platform windows"
     )
     install_command_macos = (
         f"{macos_python_selector} && "
@@ -2302,19 +2315,20 @@ def worker_invite(request: Request, req: WorkerInviteRequest):
         '"$RADTTS_PYTHON" -m venv "$RADTTS_VENV" && '
         '"$RADTTS_VENV/bin/python" -m pip install --upgrade pip && '
         '"$RADTTS_VENV/bin/python" -m pip install "radtts[asr,tts] @ git+https://github.com/radicalmove/RADTTS.git" && '
-        f'"$RADTTS_VENV/bin/python" -m radtts.worker_setup --server-url {base_url} --invite-token {token} --platform macos --python-exe "$RADTTS_VENV/bin/python"'
+        f'"$RADTTS_VENV/bin/python" -m radtts.worker_setup --server-url {base_url} --invite-token {token} --helper-profile {helper_profile} --platform macos --python-exe "$RADTTS_VENV/bin/python"'
     )
     install_command_linux = (
         "python3 -m pip install --upgrade pip && "
         "python3 -m pip install --index-url https://download.pytorch.org/whl/cpu "
         '--extra-index-url https://pypi.org/simple "radtts[asr,tts] @ git+https://github.com/radicalmove/RADTTS.git" && '
-        f"python3 -m radtts.worker_setup --server-url {base_url} --invite-token {token} --platform linux"
+        f"python3 -m radtts.worker_setup --server-url {base_url} --invite-token {token} --helper-profile {helper_profile} --platform linux"
     )
     windows_installer_url = f"{base_url}/workers/bootstrap/windows.cmd?invite_token={quote(token)}"
     macos_installer_url = f"{base_url}/workers/bootstrap/macos.command?invite_token={quote(token)}"
     return WorkerInviteResponse(
         invite_token=token,
         expires_in_seconds=WORKER_INVITE_MAX_AGE_SECONDS,
+        helper_profile=helper_profile,
         install_command=install_command,
         install_command_windows=install_command_windows,
         install_command_macos=install_command_macos,
@@ -2331,25 +2345,37 @@ def worker_register(req: WorkerRegisterRequest):
 
 @app.post("/workers/pull", response_model=WorkerPullResponse)
 def worker_pull(req: WorkerPullRequest):
-    job = worker_manager.pull_job(req)
+    try:
+        job = worker_manager.pull_job(req)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     return WorkerPullResponse(job=job)
 
 
 @app.post("/workers/jobs/{job_id}/complete")
 def worker_complete(job_id: str, req: WorkerJobCompleteRequest):
-    status = worker_manager.complete_job(job_id, req)
+    try:
+        status = worker_manager.complete_job(job_id, req)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     return {"job_id": job_id, "status": status}
 
 
 @app.post("/workers/jobs/{job_id}/progress")
 def worker_progress(job_id: str, req: WorkerJobProgressRequest):
-    status = worker_manager.progress_job(job_id, req)
+    try:
+        status = worker_manager.progress_job(job_id, req)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     return {"job_id": job_id, "status": status, "progress": req.progress}
 
 
 @app.post("/workers/jobs/{job_id}/fail")
 def worker_fail(job_id: str, req: WorkerJobFailRequest):
-    status = worker_manager.fail_job(job_id, req)
+    try:
+        status = worker_manager.fail_job(job_id, req)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     return {"job_id": job_id, "status": status}
 
 
@@ -2360,6 +2386,7 @@ def worker_bootstrap_windows_cmd(
 ):
     base_url = str(request.base_url).rstrip("/")
     safe_token = invite_token.replace('"', "")
+    helper_profile = _worker_helper_profile()
     script = (
         "@echo off\r\n"
         "setlocal\r\n"
@@ -2368,7 +2395,7 @@ def worker_bootstrap_windows_cmd(
         "if errorlevel 1 goto :fail\r\n"
         'py -m pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple "radtts[asr,tts] @ git+https://github.com/radicalmove/RADTTS.git"\r\n'
         "if errorlevel 1 goto :fail\r\n"
-        f"py -m radtts.worker_setup --server-url {base_url} --invite-token {safe_token} --platform windows\r\n"
+        f"py -m radtts.worker_setup --server-url {base_url} --invite-token {safe_token} --helper-profile {helper_profile} --platform windows\r\n"
         "if errorlevel 1 goto :fail\r\n"
         "echo.\r\n"
         "echo Worker is installed and will start automatically in the background at login.\r\n"
@@ -2394,6 +2421,7 @@ def worker_bootstrap_macos_command(
 ):
     base_url = str(request.base_url).rstrip("/")
     safe_token = invite_token.replace('"', "")
+    helper_profile = _worker_helper_profile()
     script = (
         "#!/bin/bash\n"
         "set -euo pipefail\n"
@@ -2406,7 +2434,7 @@ def worker_bootstrap_macos_command(
         "\"$RADTTS_PYTHON\" -m venv \"$RADTTS_VENV\"\n"
         "\"$RADTTS_VENV/bin/python\" -m pip install --upgrade pip\n"
         "\"$RADTTS_VENV/bin/python\" -m pip install \"radtts[asr,tts] @ git+https://github.com/radicalmove/RADTTS.git\"\n"
-        f"\"$RADTTS_VENV/bin/python\" -m radtts.worker_setup --server-url {base_url} --invite-token {safe_token} --platform macos --python-exe \"$RADTTS_VENV/bin/python\"\n"
+        f"\"$RADTTS_VENV/bin/python\" -m radtts.worker_setup --server-url {base_url} --invite-token {safe_token} --helper-profile {helper_profile} --platform macos --python-exe \"$RADTTS_VENV/bin/python\"\n"
         "echo \"\"\n"
         "echo \"Worker is installed and will start automatically in the background at login.\"\n"
         "echo \"You can close this window.\"\n"

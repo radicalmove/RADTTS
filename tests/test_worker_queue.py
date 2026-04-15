@@ -184,6 +184,29 @@ def test_list_workers_ignores_unknown_legacy_capabilities():
     assert [cap.value for cap in workers[0].capabilities] == ["synthesize"]
 
 
+def test_worker_endpoints_return_403_for_invalid_credentials():
+    client = TestClient(app)
+
+    invite = client.post("/workers/invite", json={"capabilities": ["synthesize"]})
+    assert invite.status_code == 200
+    invite_token = invite.json()["invite_token"]
+
+    register = client.post(
+        "/workers/register",
+        json={
+            "invite_token": invite_token,
+            "worker_name": "test-worker",
+            "capabilities": ["synthesize"],
+        },
+    )
+    assert register.status_code == 200
+    worker_id = register.json()["worker_id"]
+
+    pull = client.post("/workers/pull", json={"worker_id": worker_id, "api_key": "wrong-key"})
+    assert pull.status_code == 403
+    assert pull.json()["detail"] == "invalid worker credentials"
+
+
 def test_stale_worker_updates_are_ignored_after_project_job_cancel():
     client = TestClient(app)
     project_id = f"worker-stale-{uuid.uuid4().hex[:8]}"

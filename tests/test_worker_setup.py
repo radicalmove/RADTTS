@@ -5,8 +5,13 @@ from pathlib import Path
 from radtts.worker_setup import (
     build_worker_command_args,
     default_worker_path,
+    default_worker_config_path,
+    helper_launch_label,
+    helper_service_name,
+    helper_task_name,
     linux_service_unit_text,
     macos_launch_agent_payload,
+    normalize_helper_profile,
     normalize_platform,
     windows_task_command,
 )
@@ -30,6 +35,16 @@ def test_build_worker_command_args_contains_required_flags():
     assert "https://example.com" in args
     assert "--config-path" in args
     assert "/home/user/.radtts/worker.json" in args
+
+
+def test_helper_profile_paths_and_labels_are_isolated():
+    assert normalize_helper_profile("development") == "dev"
+    assert normalize_helper_profile("production") == "prod"
+    assert str(default_worker_config_path(profile="dev")).endswith("/.radtts/worker-dev.json")
+    assert str(default_worker_config_path(profile="prod")).endswith("/.radtts/worker-prod.json")
+    assert helper_launch_label(profile="dev") == "com.radtts.worker.dev"
+    assert helper_service_name(profile="prod") == "radtts-worker-prod"
+    assert helper_task_name(profile="dev") == "RADTTS Worker (dev)"
 
 
 def test_linux_service_unit_contains_execstart_and_restart():

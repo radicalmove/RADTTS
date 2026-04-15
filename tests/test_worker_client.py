@@ -198,6 +198,72 @@ def test_worker_client_times_out_generation_and_reports_failure(tmp_path: Path, 
     assert "Normal quality first" in error_text
 
 
+def test_worker_client_reloads_updated_credentials_after_invalid_worker_error(tmp_path: Path, monkeypatch):
+    config_path = tmp_path / "worker.json"
+    config_path.write_text(
+        '{"server_url": "http://example.test", "worker_id": "worker-old", "api_key": "api-old", "worker_name": "test-worker"}',
+        encoding="utf-8",
+    )
+    client = WorkerClient(
+        server_url="http://example.test",
+        config_path=config_path,
+        worker_name="test-worker",
+        invite_token=None,
+        poll_seconds=5,
+    )
+
+    pull_attempts: list[tuple[str | None, str | None]] = []
+
+    def fake_post_json(path: str, payload: dict[str, object], timeout: int = 120):
+        if path == "/workers/pull":
+            pull_attempts.append((str(payload.get("worker_id")), str(payload.get("api_key"))))
+            if len(pull_attempts) == 1:
+                config_path.write_text(
+                    '{"server_url": "http://example.test", "worker_id": "worker-new", "api_key": "api-new", "worker_name": "test-worker"}',
+                    encoding="utf-8",
+                )
+                raise RuntimeError("403 http://example.test/workers/pull -> {\"detail\":\"invalid worker credentials\"}")
+            return {}
+        return {}
+
+    monkeypatch.setattr(client, "_post_json", fake_post_json)
+
+    client.run(once=True)
+
+    assert pull_attempts == [("worker-old", "api-old"), ("worker-new", "api-new")]
+    assert client.worker_id == "worker-new"
+    assert client.api_key == "api-new"
+
+
+def test_worker_client_handles_stale_credentials_without_crashing_once(tmp_path: Path, monkeypatch, caplog):
+    config_path = tmp_path / "worker.json"
+    config_path.write_text(
+        '{"server_url": "http://example.test", "worker_id": "worker-stale", "api_key": "api-stale", "worker_name": "test-worker"}',
+        encoding="utf-8",
+    )
+    client = WorkerClient(
+        server_url="http://example.test",
+        config_path=config_path,
+        worker_name="test-worker",
+        invite_token=None,
+        poll_seconds=5,
+    )
+
+    monkeypatch.setattr(
+        client,
+        "_post_json",
+        lambda path, payload, timeout=120: (_ for _ in ()).throw(
+            RuntimeError("403 http://example.test/workers/pull -> {\"detail\":\"invalid worker credentials\"}")
+        )
+        if path == "/workers/pull"
+        else {},
+    )
+
+    client.run(once=True)
+
+    assert "run helper setup from this environment" in caplog.text.lower()
+
+
 def test_worker_client_extends_generation_timeout_for_long_scripts(tmp_path: Path, monkeypatch):
     client = WorkerClient(
         server_url="http://example.test",

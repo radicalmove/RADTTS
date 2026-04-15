@@ -347,6 +347,7 @@ class JobRecord(BaseModel):
 class WorkerInviteResponse(BaseModel):
     invite_token: str
     expires_in_seconds: int
+    helper_profile: str = "default"
     install_command: str
     install_command_windows: str | None = None
     install_command_macos: str | None = None

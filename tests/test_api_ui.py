@@ -324,6 +324,33 @@ def test_worker_invite_includes_cross_platform_setup_commands():
     assert payload["macos_installer_url"].startswith("http://testserver/workers/bootstrap/macos.command?")
 
 
+def test_worker_invite_uses_environment_specific_helper_profile(monkeypatch):
+    client = TestClient(app)
+    monkeypatch.setattr(radtts_api, "APP_ENV", "development")
+
+    dev_response = client.post("/workers/invite", json={"capabilities": ["synthesize"]})
+
+    assert dev_response.status_code == 200
+    dev_payload = dev_response.json()
+    assert dev_payload["helper_profile"] == "dev"
+    assert "--helper-profile dev" in dev_payload["install_command"]
+    assert "--helper-profile dev" in dev_payload["install_command_windows"]
+    assert "--helper-profile dev" in dev_payload["install_command_macos"]
+    assert "--helper-profile dev" in dev_payload["install_command_linux"]
+
+    monkeypatch.setattr(radtts_api, "APP_ENV", "production")
+
+    prod_response = client.post("/workers/invite", json={"capabilities": ["synthesize"]})
+
+    assert prod_response.status_code == 200
+    prod_payload = prod_response.json()
+    assert prod_payload["helper_profile"] == "prod"
+    assert "--helper-profile prod" in prod_payload["install_command"]
+    assert "--helper-profile prod" in prod_payload["install_command_windows"]
+    assert "--helper-profile prod" in prod_payload["install_command_macos"]
+    assert "--helper-profile prod" in prod_payload["install_command_linux"]
+
+
 def test_workers_status_endpoint_returns_counts():
     client = TestClient(app)
     response = client.get("/workers/status")
@@ -374,8 +401,9 @@ def test_builtin_voice_preview_returns_audio(monkeypatch):
     assert payload["audio_b64"]
 
 
-def test_windows_worker_bootstrap_cmd_download():
+def test_windows_worker_bootstrap_cmd_download(monkeypatch):
     client = TestClient(app)
+    monkeypatch.setattr(radtts_api, "APP_ENV", "development")
     invite = client.post("/workers/invite", json={"capabilities": ["synthesize"]})
     assert invite.status_code == 200
     token = invite.json()["invite_token"]
@@ -384,12 +412,14 @@ def test_windows_worker_bootstrap_cmd_download():
     assert download.status_code == 200
     assert "radtts.worker_setup" in download.text
     assert token in download.text
+    assert "--helper-profile dev" in download.text
     disposition = download.headers.get("content-disposition", "")
     assert "radtts-worker-setup.cmd" in disposition
 
 
-def test_macos_worker_bootstrap_command_download():
+def test_macos_worker_bootstrap_command_download(monkeypatch):
     client = TestClient(app)
+    monkeypatch.setattr(radtts_api, "APP_ENV", "production")
     invite = client.post("/workers/invite", json={"capabilities": ["synthesize"]})
     assert invite.status_code == 200
     token = invite.json()["invite_token"]
@@ -399,6 +429,7 @@ def test_macos_worker_bootstrap_command_download():
     assert "radtts.worker_setup" in download.text
     assert 'RADTTS_VENV="$HOME/.radtts/venv"' in download.text
     assert "--python-exe \"$RADTTS_VENV/bin/python\"" in download.text
+    assert "--helper-profile prod" in download.text
     assert token in download.text
     disposition = download.headers.get("content-disposition", "")
     assert "radtts-worker-setup.command" in disposition

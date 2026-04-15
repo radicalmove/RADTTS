@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
+from radtts.worker_setup import DEFAULT_HELPER_PROFILE, default_worker_config_path, normalize_helper_profile
 
 try:
     import fcntl
@@ -104,6 +105,11 @@ def _friendly_reference_timeout_message(
     )
 
 
+def _looks_like_invalid_worker_credentials(message: str) -> bool:
+    lowered = str(message or "").lower()
+    return "invalid worker credentials" in lowered or ("403" in lowered and "/workers/" in lowered)
+
+
 @contextlib.contextmanager
 def _worker_single_instance(config_path: Path):
     if fcntl is None:
@@ -146,6 +152,7 @@ def _worker_single_instance(config_path: Path):
 
 class WorkerClient:
     HEARTBEAT_INTERVAL_SECONDS = 10.0
+    INVALID_CREDENTIALS_BACKOFF_SECONDS = 30.0
 
     def __init__(
         self,
@@ -256,6 +263,27 @@ class WorkerClient:
         self._save_config()
         LOG.info("registered worker worker_id=%s name=%s", self.worker_id, self.worker_name)
 
+    def _handle_invalid_worker_credentials(self, *, once: bool) -> bool:
+        previous_worker_id = self.worker_id
+        previous_api_key = self.api_key
+        self._load_config()
+        if self.worker_id != previous_worker_id or self.api_key != previous_api_key:
+            LOG.warning(
+                "worker credentials were rejected; reloaded updated credentials from %s",
+                self.config_path,
+            )
+            return True
+
+        LOG.error(
+            "worker credentials were rejected by this RADTTS environment; run helper setup from this environment "
+            "so this machine registers against the correct server (config=%s)",
+            self.config_path,
+        )
+        if once:
+            return False
+        time.sleep(max(float(self.poll_seconds), self.INVALID_CREDENTIALS_BACKOFF_SECONDS))
+        return True
+
     def run(self, *, once: bool = False) -> None:
         self.ensure_registered()
         assert self.worker_id and self.api_key
@@ -269,11 +297,19 @@ class WorkerClient:
         idle_polls = 0
 
         while True:
-            pull_response = self._post_json(
-                "/workers/pull",
-                {"worker_id": self.worker_id, "api_key": self.api_key},
-                timeout=180,
-            )
+            try:
+                pull_response = self._post_json(
+                    "/workers/pull",
+                    {"worker_id": self.worker_id, "api_key": self.api_key},
+                    timeout=180,
+                )
+            except RuntimeError as exc:
+                error_text = str(exc).strip()
+                if _looks_like_invalid_worker_credentials(error_text):
+                    if self._handle_invalid_worker_credentials(once=once):
+                        continue
+                    return
+                raise
             job = pull_response.get("job")
             if not job:
                 idle_polls += 1
@@ -566,8 +602,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--invite-token", help="Invite token from /workers/invite")
     parser.add_argument("--worker-name", default=socket.gethostname())
     parser.add_argument(
+        "--helper-profile",
+        default=DEFAULT_HELPER_PROFILE,
+        help="Helper profile name used to separate dev/prod worker configs on one machine",
+    )
+    parser.add_argument(
         "--config-path",
-        default=str(Path.home() / ".radtts" / "worker.json"),
+        default=None,
         help="Path for worker credentials cache",
     )
     parser.add_argument("--poll-seconds", type=int, default=5)
@@ -582,7 +623,12 @@ def main() -> None:
         force=True,
     )
     args = build_parser().parse_args()
-    config_path = Path(args.config_path)
+    helper_profile = normalize_helper_profile(args.helper_profile)
+    config_path = (
+        Path(args.config_path).expanduser()
+        if args.config_path
+        else default_worker_config_path(profile=helper_profile)
+    )
     with _worker_single_instance(config_path):
         client = WorkerClient(
             server_url=args.server_url,

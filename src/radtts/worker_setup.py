@@ -7,6 +7,7 @@ import json
 import os
 import platform
 import plistlib
+import re
 import shlex
 import socket
 import subprocess
@@ -14,6 +15,52 @@ import sys
 from pathlib import Path
 
 import requests
+
+DEFAULT_HELPER_PROFILE = "default"
+
+
+def normalize_helper_profile(value: str | None) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return DEFAULT_HELPER_PROFILE
+    aliases = {
+        "development": "dev",
+        "prod": "prod",
+        "production": "prod",
+        "default": DEFAULT_HELPER_PROFILE,
+    }
+    candidate = aliases.get(raw, raw)
+    cleaned = re.sub(r"[^a-z0-9_-]+", "-", candidate).strip("-_")
+    return cleaned or DEFAULT_HELPER_PROFILE
+
+
+def default_worker_config_path(*, profile: str) -> Path:
+    base = Path.home() / ".radtts"
+    normalized = normalize_helper_profile(profile)
+    if normalized == DEFAULT_HELPER_PROFILE:
+        return base / "worker.json"
+    return base / f"worker-{normalized}.json"
+
+
+def helper_launch_label(*, profile: str) -> str:
+    normalized = normalize_helper_profile(profile)
+    if normalized == DEFAULT_HELPER_PROFILE:
+        return "com.radtts.worker"
+    return f"com.radtts.worker.{normalized}"
+
+
+def helper_service_name(*, profile: str) -> str:
+    normalized = normalize_helper_profile(profile)
+    if normalized == DEFAULT_HELPER_PROFILE:
+        return "radtts-worker"
+    return f"radtts-worker-{normalized}"
+
+
+def helper_task_name(*, profile: str) -> str:
+    normalized = normalize_helper_profile(profile)
+    if normalized == DEFAULT_HELPER_PROFILE:
+        return "RADTTS Worker"
+    return f"RADTTS Worker ({normalized})"
 
 
 def default_worker_path() -> str:
@@ -218,8 +265,9 @@ def _install_linux_autostart(
     server_url: str,
     config_path: Path,
     poll_seconds: int,
+    profile: str,
 ) -> str:
-    service_path = Path.home() / ".config" / "systemd" / "user" / "radtts-worker.service"
+    service_path = Path.home() / ".config" / "systemd" / "user" / f"{helper_service_name(profile=profile)}.service"
     service_path.parent.mkdir(parents=True, exist_ok=True)
     service_path.write_text(
         linux_service_unit_text(
@@ -231,7 +279,7 @@ def _install_linux_autostart(
         encoding="utf-8",
     )
     _run_command(["systemctl", "--user", "daemon-reload"], required=False)
-    _run_command(["systemctl", "--user", "enable", "--now", "radtts-worker.service"], required=False)
+    _run_command(["systemctl", "--user", "enable", "--now", service_path.name], required=False)
     return f"Installed user service: {service_path}"
 
 
@@ -241,8 +289,9 @@ def _install_macos_autostart(
     server_url: str,
     config_path: Path,
     poll_seconds: int,
+    profile: str,
 ) -> str:
-    label = "com.radtts.worker"
+    label = helper_launch_label(profile=profile)
     plist_path = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
     plist_path.parent.mkdir(parents=True, exist_ok=True)
     payload = macos_launch_agent_payload(
@@ -268,8 +317,9 @@ def _install_windows_autostart(
     server_url: str,
     config_path: Path,
     poll_seconds: int,
+    profile: str,
 ) -> str:
-    task_name = "RADTTS Worker"
+    task_name = helper_task_name(profile=profile)
     command = windows_task_command(
         python_exe=python_exe,
         server_url=server_url,
@@ -310,8 +360,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--invite-token", help="Required for first-time registration")
     parser.add_argument("--worker-name", default=socket.gethostname())
     parser.add_argument(
+        "--helper-profile",
+        default=DEFAULT_HELPER_PROFILE,
+        help="Helper profile name used to separate dev/prod worker configs on one machine",
+    )
+    parser.add_argument(
         "--config-path",
-        default=str(Path.home() / ".radtts" / "worker.json"),
+        default=None,
         help="Worker credential cache path",
     )
     parser.add_argument("--poll-seconds", type=int, default=5)
@@ -337,7 +392,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
     server_url = args.server_url.rstrip("/")
-    config_path = Path(args.config_path).expanduser()
+    helper_profile = normalize_helper_profile(args.helper_profile)
+    config_path = (
+        Path(args.config_path).expanduser()
+        if args.config_path
+        else default_worker_config_path(profile=helper_profile)
+    )
     python_exe = Path(args.python_exe).expanduser()
     selected_platform = normalize_platform(args.platform)
 
@@ -358,6 +418,7 @@ def main() -> None:
                 server_url=server_url,
                 config_path=config_path,
                 poll_seconds=args.poll_seconds,
+                profile=helper_profile,
             )
         )
     elif selected_platform == "macos":
@@ -367,6 +428,7 @@ def main() -> None:
                 server_url=server_url,
                 config_path=config_path,
                 poll_seconds=args.poll_seconds,
+                profile=helper_profile,
             )
         )
     elif selected_platform == "windows":
@@ -376,6 +438,7 @@ def main() -> None:
                 server_url=server_url,
                 config_path=config_path,
                 poll_seconds=args.poll_seconds,
+                profile=helper_profile,
             )
         )
     else:  # pragma: no cover
