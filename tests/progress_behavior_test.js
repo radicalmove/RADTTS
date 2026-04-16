@@ -198,6 +198,7 @@ context.window = {
   matchMedia: () => ({ matches: false }),
   isSecureContext: true,
   open() {},
+  confirm() { return true; },
   prompt() {},
 };
 context.window.window = context.window;
@@ -334,6 +335,46 @@ assert.equal(
   documentStub.getElementById("progress-eta").textContent,
   "Time left to process: estimating...",
 );
+
+const heavyAssessment = vm.runInContext(
+  `
+    assessRunPreflight({
+      text: "Sentence one. Sentence two. Sentence three. Sentence four. Sentence five. Sentence six. Sentence seven. Sentence eight. Sentence nine. Sentence ten. Sentence eleven. Sentence twelve. Sentence thirteen. Sentence fourteen. Sentence fifteen. Sentence sixteen. Sentence seventeen. Sentence eighteen. Sentence nineteen. Sentence twenty.",
+      averageGapSeconds: 0.8,
+      addFillers: false,
+      voiceSource: "reference",
+      quality: "normal",
+      referenceDurationSeconds: 10,
+    })
+  `,
+  context,
+);
+assert.equal(heavyAssessment.severity, "heavy");
+assert.match(heavyAssessment.estimatedLocalRangeLabel, /^\d+-\d+ minutes$/);
+
+let confirmCalls = 0;
+context.window.confirm = () => {
+  confirmCalls += 1;
+  return false;
+};
+context.confirm = context.window.confirm;
+const confirmed = vm.runInContext(
+  `
+    confirmRunPreflightIfNeeded(
+      assessRunPreflight({
+        text: "Sentence one. Sentence two. Sentence three. Sentence four. Sentence five. Sentence six. Sentence seven. Sentence eight. Sentence nine. Sentence ten. Sentence eleven. Sentence twelve. Sentence thirteen. Sentence fourteen. Sentence fifteen. Sentence sixteen. Sentence seventeen. Sentence eighteen. Sentence nineteen. Sentence twenty.",
+        averageGapSeconds: 0.8,
+        addFillers: false,
+        voiceSource: "reference",
+        quality: "normal",
+        referenceDurationSeconds: 10,
+      })
+    )
+  `,
+  context,
+);
+assert.equal(confirmed, false);
+assert.equal(confirmCalls, 1);
 
 (async () => {
   context.fetch = async () => ({

@@ -176,6 +176,7 @@ const state = {
   referenceTrimPreviewObjectUrl: null,
   referenceTrimStopTimer: null,
   referenceSamples: [],
+  selectedReferenceDurationSeconds: null,
   voiceSource: "reference",
   builtinVoices: [],
   selectedBuiltInSpeaker: "",
@@ -1518,6 +1519,104 @@ function buildRunTimingProfile({ text, averageGapSeconds, addFillers, voiceSourc
   };
 }
 
+function currentReferenceDurationSeconds() {
+  if (Number.isFinite(state.selectedReferenceDurationSeconds) && state.selectedReferenceDurationSeconds > 0) {
+    return state.selectedReferenceDurationSeconds;
+  }
+  if (state.selectedAudioHash) {
+    const sample = findReferenceSampleByHash(state.selectedAudioHash);
+    const duration = Number(sample?.duration_seconds || 0);
+    if (Number.isFinite(duration) && duration > 0) {
+      return duration;
+    }
+  }
+  return null;
+}
+
+function estimateHelperChunkCount(profile, { voiceSource = "reference" } = {}) {
+  const sentenceCount = Math.max(1, Number(profile?.sentenceCount || 1));
+  if (voiceSource === "builtin") {
+    return Math.max(1, Math.ceil(sentenceCount * 0.85));
+  }
+  if (sentenceCount <= 2) {
+    return 1;
+  }
+  return Math.max(1, Math.ceil(sentenceCount * 0.48));
+}
+
+function estimateLocalHelperMinutes(profile, { voiceSource = "reference", quality = "normal", referenceDurationSeconds = null } = {}) {
+  const chunkCount = estimateHelperChunkCount(profile, { voiceSource });
+  const clipMinutes = Math.max(0.1, Number(profile?.estimatedClipSeconds || 0) / 60);
+  if (voiceSource === "builtin") {
+    const base = quality === "high" ? 2.5 : 1.5;
+    const perChunk = quality === "high" ? 1.2 : 0.7;
+    return Math.max(2, base + (chunkCount * perChunk) + (clipMinutes * 0.35));
+  }
+
+  const base = quality === "high" ? 5.5 : 3.8;
+  const perChunk = quality === "high" ? 4.9 : 3.4;
+  const referencePenalty = Number.isFinite(referenceDurationSeconds) && referenceDurationSeconds > 0
+    ? Math.max(0, (referenceDurationSeconds - 6) * 0.18)
+    : 0;
+  return Math.max(5, base + (chunkCount * perChunk) + (clipMinutes * 0.45) + referencePenalty);
+}
+
+function assessRunPreflight({ text, averageGapSeconds, addFillers, voiceSource, quality, referenceDurationSeconds }) {
+  const profile = buildRunTimingProfile({ text, averageGapSeconds, addFillers, voiceSource });
+  const chunkCount = estimateHelperChunkCount(profile, { voiceSource });
+  const estimatedLocalMinutes = estimateLocalHelperMinutes(profile, {
+    voiceSource,
+    quality,
+    referenceDurationSeconds,
+  });
+
+  let severity = "light";
+  if (estimatedLocalMinutes >= 20) {
+    severity = "heavy";
+  } else if (estimatedLocalMinutes >= 10) {
+    severity = "medium";
+  }
+
+  const lowerMinutes = Math.max(1, Math.round(estimatedLocalMinutes * 0.8));
+  const upperMinutes = Math.max(lowerMinutes + 1, Math.round(estimatedLocalMinutes * 1.25));
+
+  return {
+    profile,
+    chunkCount,
+    estimatedLocalMinutes,
+    estimatedLocalRangeLabel: `${lowerMinutes}-${upperMinutes} minutes`,
+    severity,
+  };
+}
+
+function confirmRunPreflightIfNeeded(assessment) {
+  if (!assessment) return true;
+  const voiceLabel = state.voiceSource === "builtin" ? "built-in voice" : "reference-voice";
+  const warning = `Estimated local helper time: about ${assessment.estimatedLocalRangeLabel}.`;
+
+  if (assessment.severity === "heavy") {
+    const message = [
+      `This looks like a heavy ${voiceLabel} job.`,
+      "",
+      warning,
+      `Estimated chunks: ${assessment.chunkCount}.`,
+      "",
+      "It may take a long time on the local helper and could still time out on slower machines.",
+      state.voiceSource === "reference"
+        ? "Consider splitting the script into smaller parts or using a shorter, cleaner reference sample."
+        : "Consider splitting the script into smaller parts if you need a quicker result.",
+      "",
+      "Do you want to continue?",
+    ].join("\n");
+    return window.confirm(message);
+  }
+
+  if (assessment.severity === "medium") {
+    setGenerateStatus(`${warning} Starting generation now.`);
+  }
+  return true;
+}
+
 function normalizeOutputHistoryRow(item) {
   const stageDurationsRaw = item && typeof item.stage_durations_seconds === "object"
     ? item.stage_durations_seconds
@@ -2415,6 +2514,7 @@ function requireActiveProject() {
 function setSelectedAudioFile(file) {
   state.selectedAudioFile = file || null;
   state.selectedAudioHash = null;
+  state.selectedReferenceDurationSeconds = null;
   if (savedSampleSelectNode) {
     savedSampleSelectNode.value = "";
   }
@@ -2458,6 +2558,8 @@ function applySavedSampleSelection(audioHash, { persist = false } = {}) {
 
   state.selectedAudioFile = null;
   state.selectedAudioHash = sample.audio_hash;
+  const duration = Number(sample.duration_seconds || 0);
+  state.selectedReferenceDurationSeconds = Number.isFinite(duration) && duration > 0 ? duration : null;
   if (audioFileInputNode) {
     audioFileInputNode.value = "";
   }
@@ -2473,7 +2575,6 @@ function applySavedSampleSelection(audioHash, { persist = false } = {}) {
     audioFileNameNode.textContent = `${sample.source_filename || "saved-sample"} (${stamped}${projectHint}${durationHint})`;
   }
   const ownerHint = sample.owner_label ? ` by ${sample.owner_label}` : "";
-  const duration = Number(sample.duration_seconds || 0);
   const durationHint = Number.isFinite(duration) && duration > 0 ? `, ${formatDurationSeconds(duration)}` : "";
   setSavedSampleStatus(
     `Using saved sample: ${sample.source_filename || sample.audio_hash.slice(0, 8)}${durationHint}${ownerHint}.`
@@ -2571,6 +2672,7 @@ async function handleDeleteSavedSample() {
 
     if (state.selectedAudioHash === sample.audio_hash) {
       state.selectedAudioHash = null;
+      state.selectedReferenceDurationSeconds = null;
       if (!state.selectedAudioFile) {
         if (audioDropzoneTitleNode) {
           audioDropzoneTitleNode.textContent = "Drop audio here or click to choose";
@@ -2827,6 +2929,7 @@ function openReferenceTrimModal(file, durationSeconds, originLabel) {
 async function handleSelectedReferenceFile(file, originLabel) {
   setSelectedAudioFile(file);
   const durationSeconds = await measureAudioDuration(file);
+  state.selectedReferenceDurationSeconds = durationSeconds;
   if (durationSeconds > 30) {
     setRecordStatus(
       `${originLabel} is ${formatDurationSeconds(durationSeconds)} long. Trim it to 30 seconds or less for faster cloning.`
@@ -3310,6 +3413,8 @@ async function handleGenerate() {
     const addUms = Boolean(umsToggleNode?.checked);
     const addAhs = Boolean(ahsToggleNode?.checked);
     const addFillers = addUms || addAhs;
+    const quality = qualityNode?.value || "normal";
+    const referenceDurationSeconds = state.voiceSource === "reference" ? currentReferenceDurationSeconds() : null;
 
     if (state.voiceSource === "reference" && !state.selectedAudioFile && !state.selectedAudioHash) {
       throw new Error("Please select, record, or choose a saved audio sample.");
@@ -3323,6 +3428,19 @@ async function handleGenerate() {
 
     await flushScriptSave("manual");
 
+    const preflight = assessRunPreflight({
+      text: scriptText,
+      averageGapSeconds,
+      addFillers,
+      voiceSource: state.voiceSource,
+      quality,
+      referenceDurationSeconds,
+    });
+    if (!confirmRunPreflightIfNeeded(preflight)) {
+      setGenerateStatus("Generation cancelled before start.");
+      return;
+    }
+
     setGenerateEnabled(false);
     setCancelVisible(false);
     setGenerateStatus("Uploading files and starting generation...");
@@ -3332,7 +3450,7 @@ async function handleGenerate() {
       project_id: projectId,
       text: scriptText,
       voice_source: state.voiceSource,
-      quality: qualityNode?.value || "normal",
+      quality,
       add_ums: addUms,
       add_ahs: addAhs,
       average_gap_seconds: averageGapSeconds,
