@@ -1272,7 +1272,7 @@ def _maybe_trigger_worker_fallback(
         logs = job_payload.get("logs")
         log_lines = logs if isinstance(logs, list) else []
         has_generation_chunk_progress = any(
-            isinstance(line, str) and re.search(r"generation chunk \d+/\d+", line, flags=re.IGNORECASE)
+            isinstance(line, str) and re.search(r"generation (?:chunk|batch) \d+/\d+", line, flags=re.IGNORECASE)
             for line in log_lines
         )
         stage_timeout_seconds = (

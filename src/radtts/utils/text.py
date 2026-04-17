@@ -72,6 +72,27 @@ def coalesce_reference_sentence_chunks(chunks: list[str]) -> list[str]:
     return coalesce_sentence_chunks(cleaned)
 
 
+def plan_reference_helper_batches(text: str, chunk_mode: str = "sentence") -> list[str]:
+    cleaned = normalize_whitespace(text)
+    if not cleaned:
+        return []
+    if str(chunk_mode).strip().lower() == "single":
+        return [cleaned]
+
+    sentences = split_sentences(cleaned) or [cleaned]
+    total_words = sum(word_count(sentence) for sentence in sentences)
+    total_sentences = len(sentences)
+
+    if total_words >= 180 or total_sentences >= 12:
+        planned = coalesce_sentence_chunks(sentences, target_words=22, max_words=32, max_chars=180)
+    elif total_words >= 120 or total_sentences >= 8:
+        planned = coalesce_sentence_chunks(sentences, target_words=24, max_words=36, max_chars=200)
+    else:
+        planned = coalesce_sentence_chunks(sentences, target_words=26, max_words=38, max_chars=220)
+
+    return planned or sentences
+
+
 def word_count(text: str) -> int:
     return len(_WORD_RE.findall(text))
 

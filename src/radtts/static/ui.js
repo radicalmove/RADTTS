@@ -2029,7 +2029,7 @@ function detailFromLogLine(line, currentStage) {
   const cleaned = stripLogTimestamp(line);
   if (!cleaned) return "";
   const lower = cleaned.toLowerCase();
-  const chunkMatch = lower.match(/^generation chunk (\d+)\/(\d+)$/);
+  const chunkMatch = lower.match(/^generation (chunk|batch) (\d+)\/(\d+)$/);
 
   if (lower.startsWith("heartbeat:")) {
     const stageMatch = lower.match(/stage=([a-z_]+)/);
@@ -2055,7 +2055,8 @@ function detailFromLogLine(line, currentStage) {
   }
 
   if (chunkMatch) {
-    return `Generating speech (${chunkMatch[1]}/${chunkMatch[2]} chunks complete)`;
+    const label = chunkMatch[1] === "batch" ? "batches" : "chunks";
+    return `Generating speech (${chunkMatch[2]}/${chunkMatch[3]} ${label} complete)`;
   }
 
   if (lower === "stitching chunks") {
@@ -2130,7 +2131,7 @@ function formatEta(seconds) {
 }
 
 function hasChunkProgressLog(logs) {
-  return (Array.isArray(logs) ? logs : []).some((line) => /generation chunk \d+\/\d+/i.test(String(line || "")));
+  return (Array.isArray(logs) ? logs : []).some((line) => /generation (?:chunk|batch) \d+\/\d+/i.test(String(line || "")));
 }
 
 function hasWorkerHeartbeatLog(logs) {

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import time
 
+import numpy as np
 import pytest
 
 from radtts.constants import SUPPORTED_BASE_MODELS, SUPPORTED_CUSTOM_MODELS
@@ -311,10 +312,9 @@ def test_worker_client_extends_generation_timeout_for_long_scripts(tmp_path: Pat
     payload = WorkerSynthesisEnqueueRequest(
         project_id="proj-worker",
         text=" ".join([f"Sentence {idx}." for idx in range(1, 41)]),
-        reference_audio_b64="QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw",
-        reference_audio_filename="reference.wav",
-        reference_text="hello",
-        model_id=SUPPORTED_BASE_MODELS[0],
+        voice_source="builtin",
+        model_id=SUPPORTED_CUSTOM_MODELS[0],
+        built_in_speaker="Vivian",
         max_new_tokens=1400,
         chunk_mode="sentence",
         pause_config=PauseConfig(seed=1),
@@ -358,6 +358,106 @@ def test_worker_client_uses_larger_timeout_floor_for_heavy_reference_model(tmp_p
     timeout = client._generation_timeout_for_request(payload, reference_duration_seconds=6.8)
 
     assert timeout >= 1800
+
+
+def test_worker_client_switches_heavy_reference_jobs_into_helper_batches(tmp_path: Path, monkeypatch):
+    client = WorkerClient(
+        server_url="http://example.test",
+        config_path=tmp_path / "worker.json",
+        worker_name="test-worker",
+        invite_token=None,
+        poll_seconds=5,
+    )
+    client.worker_id = "worker-1"
+    client.api_key = "api-key"
+
+    progress_calls: list[tuple[float, str | None, str | None]] = []
+    timeout_stage_names: list[str] = []
+
+    def fake_post_json(path: str, payload: dict[str, object], timeout: int = 120):
+        if path.endswith("/progress"):
+            progress_calls.append((float(payload["progress"]), payload.get("stage"), payload.get("detail")))
+        return {}
+
+    monkeypatch.setattr(client, "_post_json", fake_post_json)
+    monkeypatch.setattr("radtts.worker_client.probe_duration_seconds", lambda path: 10.0)
+    monkeypatch.setattr(
+        client.tts_service,
+        "load_model_with_runtime",
+        lambda model_id: (object(), f"tts model={model_id} runtime device=mps:0 dtype=torch.float32 cache=warm"),
+    )
+    monkeypatch.setattr(
+        client.quality_service,
+        "evaluate",
+        lambda **_: QualityReport(
+            speech_rate_wpm=120.0,
+            pause_stats={"min": 0.3, "max": 0.4, "mean": 0.35, "stddev": 0.05},
+            warnings=[],
+        ),
+    )
+
+    def fake_run_with_retry_timeout(*, stage_name, fn, timeout_seconds, retries, on_log):
+        timeout_stage_names.append(stage_name)
+        return fn()
+
+    monkeypatch.setattr("radtts.worker_client.run_with_retry_timeout", fake_run_with_retry_timeout)
+
+    def fake_synthesize(
+        req,
+        output_dir,
+        *,
+        on_progress=None,
+        cancel_check=None,
+        chunk_texts=None,
+        progress_label="chunk",
+        chunk_runner=None,
+    ):
+        assert progress_label == "batch"
+        assert chunk_texts is not None
+        assert len(chunk_texts) > 1
+        assert chunk_runner is not None
+        assert on_progress is not None
+        total = len(chunk_texts)
+        for idx, chunk in enumerate(chunk_texts, start=1):
+            chunk_runner(lambda: (np.ones(32, dtype=np.float32), 24000), chunk, idx, total)
+            on_progress(f"generation batch {idx}/{total}")
+        output_path = output_dir / f"{req.output_name}.wav"
+        output_path.write_bytes(b"RIFF")
+        return output_path, [], "reference text"
+
+    monkeypatch.setattr(client.tts_service, "synthesize", fake_synthesize)
+
+    payload = WorkerSynthesisEnqueueRequest(
+        project_id="proj-worker",
+        text=" ".join(
+            f"Sentence {idx} has several words to keep the helper batching path active."
+            for idx in range(1, 15)
+        ),
+        reference_audio_b64="QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw",
+        reference_audio_filename="reference.wav",
+        reference_text="hello",
+        model_id=SUPPORTED_BASE_MODELS[0],
+        max_new_tokens=1200,
+        chunk_mode="sentence",
+        pause_config=PauseConfig(seed=1),
+        output_format=OutputFormat.WAV,
+        output_name="worker-batched-reference",
+        generate_transcript=False,
+        voice_clone_authorized=True,
+    ).model_dump(mode="json")
+
+    client._process_synthesis_job("job-worker-batched-reference", payload)
+
+    assert any(
+        stage == "generation" and detail and detail.startswith("Planning long-run helper batches")
+        for _, stage, detail in progress_calls
+    )
+    assert any(
+        stage == "generation" and detail and detail.startswith("generation batch ")
+        for _, stage, detail in progress_calls
+    )
+    assert timeout_stage_names
+    assert all(name.startswith("worker_generation_batch_") for name in timeout_stage_names)
 
 
 def test_worker_client_emits_reference_validation_warning_progress(tmp_path: Path, monkeypatch):

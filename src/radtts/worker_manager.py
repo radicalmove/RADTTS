@@ -465,7 +465,7 @@ class WorkerManager:
             return normalized
 
         lower_detail = str(detail or "").strip().lower()
-        if lower_detail.startswith("generation chunk "):
+        if lower_detail.startswith("generation chunk ") or lower_detail.startswith("generation batch "):
             return "generation"
         if lower_detail.startswith("stitching"):
             return "stitching"

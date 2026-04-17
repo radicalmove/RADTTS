@@ -37,9 +37,13 @@ from radtts.services.quality import QualityService
 from radtts.services.tts import TTSService
 from radtts.utils.audio import probe_duration_seconds
 from radtts.utils.runtime import run_with_retry_timeout
-from radtts.utils.text import estimated_chunk_count, recommended_generation_timeout_seconds
+from radtts.utils.text import (
+    estimated_chunk_count,
+    plan_reference_helper_batches,
+    recommended_generation_timeout_seconds,
+)
 
-_GENERATION_CHUNK_RE = re.compile(r"^generation chunk (\d+)/(\d+)$", re.IGNORECASE)
+_GENERATION_PROGRESS_RE = re.compile(r"^generation (chunk|batch) (\d+)/(\d+)$", re.IGNORECASE)
 DEFAULT_WORKER_GENERATION_TIMEOUT_SECONDS = 600
 DEFAULT_HEAVY_REFERENCE_GENERATION_TIMEOUT_SECONDS = 1800
 LOG = logging.getLogger("radtts.worker")
@@ -211,6 +215,47 @@ class WorkerClient:
                 voice_source=req.voice_source,
                 reference_duration_seconds=reference_duration_seconds,
             ),
+        )
+
+    @staticmethod
+    def _should_use_reference_helper_batches(
+        req: WorkerSynthesisEnqueueRequest,
+        *,
+        estimated_chunks: int,
+        reference_duration_seconds: float | None,
+    ) -> bool:
+        voice_source = str(getattr(req.voice_source, "value", req.voice_source) or "").strip().lower()
+        if voice_source != "reference":
+            return False
+        if str(getattr(req.chunk_mode, "value", req.chunk_mode) or "").strip().lower() == "single":
+            return False
+        text_chars = len(str(req.text or ""))
+        if estimated_chunks >= 8:
+            return True
+        if text_chars >= 1400:
+            return True
+        if float(reference_duration_seconds or 0.0) >= 8.0:
+            return True
+        return False
+
+    def _batch_timeout_for_request(
+        self,
+        req: WorkerSynthesisEnqueueRequest,
+        batch_text: str,
+        *,
+        reference_duration_seconds: float | None,
+    ) -> float:
+        voice_source = str(getattr(req.voice_source, "value", req.voice_source) or "").strip().lower()
+        minimum_seconds = 420 if voice_source == "reference" else self.generation_timeout_seconds
+        maximum_seconds = max(1200, int(self._generation_timeout_for_request(req, reference_duration_seconds=reference_duration_seconds)))
+        return recommended_generation_timeout_seconds(
+            batch_text,
+            chunk_mode="single",
+            max_new_tokens=req.max_new_tokens,
+            minimum_seconds=minimum_seconds,
+            maximum_seconds=maximum_seconds,
+            voice_source=req.voice_source,
+            reference_duration_seconds=reference_duration_seconds,
         )
 
     def _post_json(self, path: str, payload: dict[str, Any], timeout: int = 120) -> dict[str, Any]:
@@ -413,14 +458,22 @@ class WorkerClient:
                 reference_duration_seconds=reference_duration_seconds,
             )
             estimated_chunks = estimated_chunk_count(req.text, req.chunk_mode, voice_source=req.voice_source)
+            helper_batches = plan_reference_helper_batches(req.text, req.chunk_mode)
+            use_helper_batching = self._should_use_reference_helper_batches(
+                req,
+                estimated_chunks=estimated_chunks,
+                reference_duration_seconds=reference_duration_seconds,
+            )
             LOG.info(
-                "starting synthesis job_id=%s reference_audio=%s reference_seconds=%s reference_text_chars=%s built_in_speaker=%s estimated_chunks=%s generation_timeout_seconds=%s",
+                "starting synthesis job_id=%s reference_audio=%s reference_seconds=%s reference_text_chars=%s built_in_speaker=%s estimated_chunks=%s helper_batches=%s use_helper_batching=%s generation_timeout_seconds=%s",
                 job_id,
                 req.reference_audio_filename,
                 reference_duration_seconds,
                 len(str(req.reference_text or "")),
                 req.built_in_speaker,
                 estimated_chunks,
+                len(helper_batches),
+                use_helper_batching,
                 generation_timeout_seconds,
             )
             stage_durations_seconds: dict[str, float] = {}
@@ -467,7 +520,7 @@ class WorkerClient:
                     nonlocal stitching_started_at
                     cleaned = str(message or "").strip()
                     lower = cleaned.lower()
-                    chunk_match = _GENERATION_CHUNK_RE.match(cleaned)
+                    chunk_match = _GENERATION_PROGRESS_RE.match(cleaned)
 
                     if lower == "reference transcription started":
                         emit_progress(0.33, stage="generation", detail=cleaned)
@@ -487,8 +540,8 @@ class WorkerClient:
 
                     if chunk_match:
                         progress = generation_progress_for_chunk(
-                            completed_chunks=int(chunk_match.group(1)),
-                            total_chunks=int(chunk_match.group(2)),
+                            completed_chunks=int(chunk_match.group(2)),
+                            total_chunks=int(chunk_match.group(3)),
                         )
                         emit_progress(progress, stage="generation", detail=cleaned)
                         return
@@ -520,17 +573,61 @@ class WorkerClient:
                     voice_clone_authorized=True,
                 )
                 try:
-                    output_path, pause_seconds, reference_text = run_with_retry_timeout(
-                        stage_name="worker_generation",
-                        fn=lambda: self.tts_service.synthesize(
-                            synth_req,
-                            output_dir=tmp_path,
-                            on_progress=on_tts_progress,
-                        ),
-                        timeout_seconds=generation_timeout_seconds,
-                        retries=0,
-                        on_log=lambda message: LOG.info("job_id=%s %s", job_id, message),
-                    )
+                    if use_helper_batching:
+                        emit_progress(
+                            0.31,
+                            stage="generation",
+                            detail=f"Planning long-run helper batches ({len(helper_batches)} batches).",
+                        )
+
+                        def run_batched_generation() -> tuple[Path, list[float], str]:
+                            def run_batch(
+                                fn: Any,
+                                batch_text: str,
+                                batch_index: int,
+                                total_batches: int,
+                            ) -> tuple[Any, Any]:
+                                batch_timeout_seconds = self._batch_timeout_for_request(
+                                    req,
+                                    batch_text,
+                                    reference_duration_seconds=reference_duration_seconds,
+                                )
+                                return run_with_retry_timeout(
+                                    stage_name=f"worker_generation_batch_{batch_index}",
+                                    fn=fn,
+                                    timeout_seconds=batch_timeout_seconds,
+                                    retries=0,
+                                    on_log=lambda message: LOG.info(
+                                        "job_id=%s batch=%s/%s %s",
+                                        job_id,
+                                        batch_index,
+                                        total_batches,
+                                        message,
+                                    ),
+                                )
+
+                            return self.tts_service.synthesize(
+                                synth_req,
+                                output_dir=tmp_path,
+                                on_progress=on_tts_progress,
+                                chunk_texts=helper_batches,
+                                progress_label="batch",
+                                chunk_runner=run_batch,
+                            )
+
+                        output_path, pause_seconds, reference_text = run_batched_generation()
+                    else:
+                        output_path, pause_seconds, reference_text = run_with_retry_timeout(
+                            stage_name="worker_generation",
+                            fn=lambda: self.tts_service.synthesize(
+                                synth_req,
+                                output_dir=tmp_path,
+                                on_progress=on_tts_progress,
+                            ),
+                            timeout_seconds=generation_timeout_seconds,
+                            retries=0,
+                            on_log=lambda message: LOG.info("job_id=%s %s", job_id, message),
+                        )
                 except Exception as exc:
                     error_text = str(exc).strip()
                     if req.voice_source == "reference" and "timed out" in error_text.lower():

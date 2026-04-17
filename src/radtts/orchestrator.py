@@ -26,7 +26,7 @@ from radtts.services.tts import TTSService
 from radtts.utils.audio import probe_duration_seconds
 from radtts.utils.runtime import Heartbeat, run_with_retry_timeout
 
-_GENERATION_CHUNK_RE = re.compile(r"^generation chunk (\d+)/(\d+)$", re.IGNORECASE)
+_GENERATION_CHUNK_RE = re.compile(r"^generation (?:chunk|batch) (\d+)/(\d+)$", re.IGNORECASE)
 
 
 class PipelineOrchestrator:

@@ -22,6 +22,7 @@ from radtts.utils.text import (
     coalesce_sentence_chunks,
     coalesce_reference_sentence_chunks,
     estimated_chunk_count,
+    plan_reference_helper_batches,
     recommended_generation_timeout_seconds,
     split_sentences,
 )
@@ -74,6 +75,20 @@ def test_coalesce_reference_sentence_chunks_is_more_aggressive_for_long_scripts(
 
     assert len(reference) < len(regular)
     assert len(reference) <= 4
+
+
+def test_plan_reference_helper_batches_prefers_smaller_batches_for_heavy_runs():
+    text = " ".join(
+        f"Sentence {idx} has several words to keep the helper batch realistic and bounded."
+        for idx in range(1, 15)
+    )
+
+    default_reference_chunks = coalesce_reference_sentence_chunks(split_sentences(text))
+    helper_batches = plan_reference_helper_batches(text)
+
+    assert len(helper_batches) > len(default_reference_chunks)
+    assert all(len(batch) <= 220 for batch in helper_batches)
+    assert all(batch.endswith(".") for batch in helper_batches)
 
 
 def test_coalesce_sentence_chunks_merges_short_neighbors():

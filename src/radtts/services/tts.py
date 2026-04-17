@@ -25,7 +25,12 @@ from radtts.exceptions import DependencyMissingError, ValidationError
 from radtts.models import ChunkMode, PauseConfig, SynthesisRequest, VoiceSource
 from radtts.services.asr import ASRService
 from radtts.utils.audio import concat_with_silence, convert_audio, probe_duration_seconds, read_audio, write_wav
-from radtts.utils.text import coalesce_reference_sentence_chunks, coalesce_sentence_chunks, split_sentences, word_count
+from radtts.utils.text import (
+    coalesce_reference_sentence_chunks,
+    coalesce_sentence_chunks,
+    split_sentences,
+    word_count,
+)
 
 
 class PausePlanner:
@@ -85,6 +90,13 @@ class TTSService:
         *,
         on_progress: Callable[[str], None] | None = None,
         cancel_check: Callable[[], bool] | None = None,
+        chunk_texts: list[str] | None = None,
+        progress_label: str = "chunk",
+        chunk_runner: Callable[
+            [Callable[[], tuple[np.ndarray, int]], str, int, int],
+            tuple[np.ndarray, int],
+        ]
+        | None = None,
     ) -> tuple[Path, list[float], str]:
         self.ensure_supported_model(req.model_id)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -114,7 +126,13 @@ class TTSService:
                     if on_progress:
                         on_progress("reference transcription complete")
 
-            chunks = self._build_chunks(req.text, req.chunk_mode, voice_source=req.voice_source)
+            chunks = [
+                str(chunk).strip()
+                for chunk in (chunk_texts if chunk_texts is not None else self._build_chunks(req.text, req.chunk_mode, voice_source=req.voice_source))
+                if str(chunk).strip()
+            ]
+            if not chunks:
+                chunks = [req.text.strip()]
             pauses = self._pause_planner.build(chunks, req.pause_config) if req.chunk_mode == ChunkMode.SENTENCE else []
 
             model = self._load_model(req.model_id)
@@ -124,24 +142,33 @@ class TTSService:
                     raise RuntimeError("job cancelled")
                 if req.voice_source == VoiceSource.REFERENCE:
                     assert reference_audio_path is not None
-                    audio, sample_rate = self._synthesize_reference_chunk(
-                        model=model,
-                        text=chunk,
-                        reference_audio_path=reference_audio_path,
-                        reference_text=reference_text or "",
-                        max_new_tokens=req.max_new_tokens,
-                    )
+
+                    def generate_audio() -> tuple[np.ndarray, int]:
+                        return self._synthesize_reference_chunk(
+                            model=model,
+                            text=chunk,
+                            reference_audio_path=reference_audio_path,
+                            reference_text=reference_text or "",
+                            max_new_tokens=req.max_new_tokens,
+                        )
                 else:
-                    audio, sample_rate = self._synthesize_builtin_chunk(
-                        model=model,
-                        text=chunk,
-                        speaker=req.built_in_speaker or "",
-                        instruct=req.built_in_instruct,
-                        max_new_tokens=req.max_new_tokens,
-                    )
+
+                    def generate_audio() -> tuple[np.ndarray, int]:
+                        return self._synthesize_builtin_chunk(
+                            model=model,
+                            text=chunk,
+                            speaker=req.built_in_speaker or "",
+                            instruct=req.built_in_instruct,
+                            max_new_tokens=req.max_new_tokens,
+                        )
+
+                if chunk_runner is not None:
+                    audio, sample_rate = chunk_runner(generate_audio, chunk, idx + 1, len(chunks))
+                else:
+                    audio, sample_rate = generate_audio()
                 chunk_audio.append((audio, sample_rate))
                 if on_progress:
-                    on_progress(f"generation chunk {idx + 1}/{len(chunks)}")
+                    on_progress(f"generation {progress_label} {idx + 1}/{len(chunks)}")
 
             if on_progress:
                 on_progress("stitching chunks")

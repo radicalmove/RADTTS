@@ -376,6 +376,12 @@ const confirmed = vm.runInContext(
 assert.equal(confirmed, false);
 assert.equal(confirmCalls, 1);
 
+const batchDetail = vm.runInContext(
+  `detailFromLogLine("generation batch 2/5", "generation")`,
+  context,
+);
+assert.equal(batchDetail, "Generating speech (2/5 batches complete)");
+
 (async () => {
   context.fetch = async () => ({
     ok: false,
