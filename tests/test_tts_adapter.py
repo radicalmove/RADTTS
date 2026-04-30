@@ -229,6 +229,38 @@ def test_load_model_with_runtime_reports_warm_cache_and_evicts_idle_models(
     assert "cache=fresh" in third_summary
 
 
+def test_load_model_with_runtime_evicts_previous_model_before_loading_another(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class FakeModel:
+        def __init__(self, model_id: str):
+            self.model_id = model_id
+            self.device = "mps"
+            self.dtype = "float32"
+
+    load_calls: list[str] = []
+
+    class FakeQwen3TTSModel:
+        @staticmethod
+        def from_pretrained(model_id: str, **kwargs):  # noqa: ANN003
+            load_calls.append(model_id)
+            return FakeModel(model_id)
+
+    monkeypatch.setitem(sys.modules, "qwen_tts", types.SimpleNamespace(Qwen3TTSModel=FakeQwen3TTSModel))
+
+    service = TTSService()
+    service.model_cache_max_models = 1
+
+    first_model_id = SUPPORTED_BASE_MODELS[0]
+    second_model_id = SUPPORTED_BASE_MODELS[1]
+
+    service.load_model_with_runtime(first_model_id)
+    service.load_model_with_runtime(second_model_id)
+
+    assert load_calls == [first_model_id, second_model_id]
+    assert list(service._model_cache) == [second_model_id]
+
+
 def test_validate_reference_audio_warns_for_quiet_or_clipped_audio(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

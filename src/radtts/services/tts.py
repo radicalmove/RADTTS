@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import gc
 import inspect
 import os
 import tempfile
@@ -61,6 +62,7 @@ class TTSService:
     MIN_REFERENCE_WORDS = 2
     MIN_REFERENCE_TEXT_CHARS = 8
     DEFAULT_MODEL_CACHE_IDLE_SECONDS = 1800
+    DEFAULT_MODEL_CACHE_MAX_MODELS = 1
 
     def __init__(self, *, auto_reference_asr_model: str = "small"):
         self._model_cache: dict[str, Any] = {}
@@ -77,6 +79,10 @@ class TTSService:
         self.model_cache_idle_seconds = max(
             0,
             int(os.environ.get("RADTTS_MODEL_CACHE_IDLE_SECONDS", self.DEFAULT_MODEL_CACHE_IDLE_SECONDS)),
+        )
+        self.model_cache_max_models = max(
+            1,
+            int(os.environ.get("RADTTS_MODEL_CACHE_MAX_MODELS", self.DEFAULT_MODEL_CACHE_MAX_MODELS)),
         )
 
     def ensure_supported_model(self, model_id: str) -> None:
@@ -369,8 +375,29 @@ class TTSService:
             if current - last_used > self.model_cache_idle_seconds
         ]
         for model_id in stale:
-            self._model_cache.pop(model_id, None)
-            self._model_cache_last_used.pop(model_id, None)
+            self._evict_model(model_id)
+
+    def _evict_model(self, model_id: str) -> None:
+        self._model_cache.pop(model_id, None)
+        self._model_cache_last_used.pop(model_id, None)
+        # Loading two Qwen TTS models at once can push 16GB Apple Silicon Macs into
+        # swap. Free promptly before moving the next model to MPS.
+        gc.collect()
+        with contextlib.suppress(Exception):
+            import torch
+
+            if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
+                torch.mps.empty_cache()
+
+    def _evict_models_for_new_load(self, model_id: str) -> None:
+        if model_id in self._model_cache:
+            return
+        while len(self._model_cache) >= self.model_cache_max_models:
+            oldest_model_id = min(
+                self._model_cache_last_used,
+                key=lambda cached_model_id: self._model_cache_last_used.get(cached_model_id, 0.0),
+            )
+            self._evict_model(oldest_model_id)
 
     def _is_model_warm(self, model_id: str, *, now: float | None = None) -> bool:
         self._evict_idle_models(now=now)
@@ -384,6 +411,7 @@ class TTSService:
         if model_id in self._model_cache:
             self._touch_model(model_id)
             return self._model_cache[model_id]
+        self._evict_models_for_new_load(model_id)
         try:
             from qwen_tts import Qwen3TTSModel
         except ImportError as exc:
