@@ -234,6 +234,54 @@ def test_project_outputs_endpoint_includes_audio_tuning_label():
             shutil.rmtree(project_root)
 
 
+def test_project_outputs_endpoint_includes_srt_and_vtt_download_urls():
+    client = TestClient(app)
+    project_id = f"ui-{uuid.uuid4().hex[:8]}"
+    project_root = Path("projects") / project_id
+
+    try:
+        created = client.post("/projects", json={"project_id": project_id})
+        assert created.status_code == 200
+
+        manifests = project_root / "manifests"
+        store = ManifestStore(manifests)
+        output_path = project_root / "assets" / "generated_audio" / "sample.mp3"
+        captions_dir = project_root / "captions"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        captions_dir.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"fake-mp3")
+        srt_path = captions_dir / "sample.srt"
+        vtt_path = captions_dir / "sample.vtt"
+        srt_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n", encoding="utf-8")
+        vtt_path.write_text("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHello\n", encoding="utf-8")
+        store.append_output(
+            OutputMetadata(
+                output_file=output_path,
+                duration_seconds=4.2,
+                model="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+                input_text="Hello world",
+                chunk_mode=ChunkMode.SINGLE,
+                pause_seconds=[],
+                max_new_tokens=400,
+                output_format=OutputFormat.MP3,
+                project_id=project_id,
+                job_id="job_test",
+                captions={"srt": srt_path, "vtt": vtt_path},
+            )
+        )
+
+        outputs = client.get(f"/projects/{project_id}/outputs")
+        assert outputs.status_code == 200
+        row = outputs.json()["outputs"][0]
+        assert row["srt_download_url"]
+        assert row["vtt_download_url"]
+        assert "sample.srt" in row["srt_download_url"]
+        assert "sample.vtt" in row["vtt_download_url"]
+    finally:
+        if project_root.exists():
+            shutil.rmtree(project_root)
+
+
 def test_project_outputs_endpoint_assigns_version_numbers_newest_first():
     client = TestClient(app)
     project_id = f"ui-{uuid.uuid4().hex[:8]}"

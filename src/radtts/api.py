@@ -2126,6 +2126,10 @@ def list_project_outputs(request: Request, project_id: str):
         srt_download_url = (
             f"/projects/{project_id}/artifact?path={quote(srt_path, safe='')}&download=true" if srt_path else None
         )
+        vtt_path = captions.get("vtt")
+        vtt_download_url = (
+            f"/projects/{project_id}/artifact?path={quote(vtt_path, safe='')}&download=true" if vtt_path else None
+        )
 
         outputs.append(
             {
@@ -2142,6 +2146,7 @@ def list_project_outputs(request: Request, project_id: str):
                 "audio_play_url": audio_play_url,
                 "captions": captions,
                 "srt_download_url": srt_download_url,
+                "vtt_download_url": vtt_download_url,
             }
         )
 

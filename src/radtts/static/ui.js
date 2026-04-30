@@ -3118,6 +3118,9 @@ function renderOutputs(outputs) {
     if (item.srt_download_url) {
       actions.push(`<a href="${escapeHtml(item.srt_download_url)}" target="_blank" rel="noopener">Open transcript (.srt)</a>`);
     }
+    if (item.vtt_download_url) {
+      actions.push(`<a href="${escapeHtml(item.vtt_download_url)}" target="_blank" rel="noopener">Open captions (.vtt)</a>`);
+    }
     if (item.folder_path) {
       actions.push(`<button class="copy-folder-btn" data-folder="${escapeHtml(item.folder_path)}" type="button">Copy folder path</button>`);
     }

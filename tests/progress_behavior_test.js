@@ -382,6 +382,23 @@ const batchDetail = vm.runInContext(
 );
 assert.equal(batchDetail, "Generating speech (2/5 batches complete)");
 
+vm.runInContext(
+  `
+    renderOutputs([
+      {
+        output_name: "sample",
+        version_number: 1,
+        audio_download_url: "/audio.mp3",
+        srt_download_url: "/sample.srt",
+        vtt_download_url: "/sample.vtt",
+      },
+    ]);
+  `,
+  context,
+);
+assert.match(documentStub.getElementById("output-list").innerHTML, /Open transcript \(\.srt\)/);
+assert.match(documentStub.getElementById("output-list").innerHTML, /Open captions \(\.vtt\)/);
+
 (async () => {
   context.fetch = async () => ({
     ok: false,
