@@ -46,6 +46,7 @@ from radtts.utils.text import (
 _GENERATION_PROGRESS_RE = re.compile(r"^generation (chunk|batch) (\d+)/(\d+)$", re.IGNORECASE)
 DEFAULT_WORKER_GENERATION_TIMEOUT_SECONDS = 600
 DEFAULT_HEAVY_REFERENCE_GENERATION_TIMEOUT_SECONDS = 1800
+DEFAULT_HEAVY_REFERENCE_BATCH_TIMEOUT_SECONDS = 1200
 LOG = logging.getLogger("radtts.worker")
 
 
@@ -247,6 +248,15 @@ class WorkerClient:
     ) -> float:
         voice_source = str(getattr(req.voice_source, "value", req.voice_source) or "").strip().lower()
         minimum_seconds = 420 if voice_source == "reference" else self.generation_timeout_seconds
+        if (
+            voice_source == "reference"
+            and "1.7b" in str(req.model_id).lower()
+            and int(req.max_new_tokens) >= 1200
+        ):
+            minimum_seconds = max(
+                minimum_seconds,
+                int(os.environ.get("RADTTS_HEAVY_REFERENCE_BATCH_TIMEOUT_SECONDS", DEFAULT_HEAVY_REFERENCE_BATCH_TIMEOUT_SECONDS)),
+            )
         maximum_seconds = max(1200, int(self._generation_timeout_for_request(req, reference_duration_seconds=reference_duration_seconds)))
         return recommended_generation_timeout_seconds(
             batch_text,
