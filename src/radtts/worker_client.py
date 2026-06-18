@@ -50,6 +50,13 @@ DEFAULT_HEAVY_REFERENCE_BATCH_TIMEOUT_SECONDS = 1200
 LOG = logging.getLogger("radtts.worker")
 
 
+class _WorkerJobNoLongerRunning(RuntimeError):
+    def __init__(self, job_id: str, status: str):
+        self.job_id = job_id
+        self.status = status
+        super().__init__(f"worker job {job_id} is no longer running on the server: {status}")
+
+
 def _pid_is_running(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -406,6 +413,12 @@ class WorkerClient:
                     complete_payload.get("duration_seconds"),
                     complete_payload.get("stage_durations_seconds"),
                 )
+            except _WorkerJobNoLongerRunning as exc:
+                LOG.info(
+                    "job stopped remotely job_id=%s status=%s; worker is returning to polling",
+                    exc.job_id,
+                    exc.status,
+                )
             except Exception as exc:  # noqa: BLE001
                 error_text = str(exc).strip() or f"{exc.__class__.__name__}: {exc!r}"
                 LOG.exception("job failed job_id=%s error=%s", job_id, error_text)
@@ -427,7 +440,7 @@ class WorkerClient:
         progress: float,
         stage: str | None = None,
         detail: str | None = None,
-    ) -> None:
+    ) -> str | None:
         assert self.worker_id and self.api_key
         payload = {
             "worker_id": self.worker_id,
@@ -439,10 +452,12 @@ class WorkerClient:
         if detail:
             payload["detail"] = detail
         try:
-            self._post_json(f"/workers/jobs/{job_id}/progress", payload, timeout=60)
+            response = self._post_json(f"/workers/jobs/{job_id}/progress", payload, timeout=60)
         except Exception:
             # Progress updates are best-effort; synthesis should continue even if they fail.
-            return
+            return None
+        status = response.get("status") if isinstance(response, dict) else None
+        return str(status) if status else None
 
     def _process_synthesis_job(self, job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         normalized_payload = dict(payload)
@@ -494,25 +509,42 @@ class WorkerClient:
             }
             progress_lock = threading.Lock()
             stop_heartbeat = threading.Event()
+            server_stopped = threading.Event()
+            server_stop_status = {"status": None}
+
+            def mark_server_stopped(status: str) -> None:
+                server_stop_status["status"] = status
+                server_stopped.set()
+
+            def ensure_job_still_running() -> bool:
+                if server_stopped.is_set():
+                    raise _WorkerJobNoLongerRunning(job_id, str(server_stop_status["status"] or "stopped"))
+                return False
 
             def emit_progress(progress: float, *, stage: str | None = None, detail: str | None = None) -> None:
                 with progress_lock:
                     progress_state["progress"] = max(0.0, min(1.0, float(progress)))
                     progress_state["stage"] = stage or progress_state["stage"]
                     progress_state["detail"] = detail
-                self._post_progress_update(job_id, progress=progress, stage=stage, detail=detail)
+                status = self._post_progress_update(job_id, progress=progress, stage=stage, detail=detail)
+                if status and status != "running":
+                    mark_server_stopped(status)
+                    raise _WorkerJobNoLongerRunning(job_id, status)
 
             def heartbeat_worker() -> None:
                 while not stop_heartbeat.wait(self.HEARTBEAT_INTERVAL_SECONDS):
                     with progress_lock:
                         progress = float(progress_state["progress"])
                         stage = str(progress_state["stage"] or "worker_running")
-                    self._post_progress_update(
+                    status = self._post_progress_update(
                         job_id,
                         progress=progress,
                         stage=stage,
                         detail=f"heartbeat: stage={stage}",
                     )
+                    if status and status != "running":
+                        mark_server_stopped(status)
+                        return
 
             heartbeat_thread = threading.Thread(target=heartbeat_worker, name="radtts-worker-heartbeat", daemon=True)
             heartbeat_thread.start()
@@ -597,12 +629,13 @@ class WorkerClient:
                                 batch_index: int,
                                 total_batches: int,
                             ) -> tuple[Any, Any]:
+                                ensure_job_still_running()
                                 batch_timeout_seconds = self._batch_timeout_for_request(
                                     req,
                                     batch_text,
                                     reference_duration_seconds=reference_duration_seconds,
                                 )
-                                return run_with_retry_timeout(
+                                result = run_with_retry_timeout(
                                     stage_name=f"worker_generation_batch_{batch_index}",
                                     fn=fn,
                                     timeout_seconds=batch_timeout_seconds,
@@ -615,11 +648,14 @@ class WorkerClient:
                                         message,
                                     ),
                                 )
+                                ensure_job_still_running()
+                                return result
 
                             return self.tts_service.synthesize(
                                 synth_req,
                                 output_dir=tmp_path,
                                 on_progress=on_tts_progress,
+                                cancel_check=ensure_job_still_running,
                                 chunk_texts=helper_batches,
                                 progress_label="batch",
                                 chunk_runner=run_batch,
@@ -633,6 +669,7 @@ class WorkerClient:
                                 synth_req,
                                 output_dir=tmp_path,
                                 on_progress=on_tts_progress,
+                                cancel_check=ensure_job_still_running,
                             ),
                             timeout_seconds=generation_timeout_seconds,
                             retries=0,
@@ -661,6 +698,7 @@ class WorkerClient:
                 captions_srt = None
                 captions_vtt = None
                 if req.generate_transcript:
+                    ensure_job_still_running()
                     caption_started_at = time.monotonic()
                     emit_progress(CAPTIONING_PROGRESS_START, stage="captioning", detail="captioning started")
                     try:

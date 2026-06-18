@@ -199,6 +199,63 @@ def test_worker_client_times_out_generation_and_reports_failure(tmp_path: Path, 
     assert "Normal quality first" in error_text
 
 
+def test_worker_client_stops_when_server_no_longer_has_job_running(tmp_path: Path, monkeypatch):
+    client = WorkerClient(
+        server_url="http://example.test",
+        config_path=tmp_path / "worker.json",
+        worker_name="test-worker",
+        invite_token=None,
+        poll_seconds=5,
+    )
+    client.worker_id = "worker-1"
+    client.api_key = "api-key"
+
+    calls: list[str] = []
+    payload = WorkerSynthesisEnqueueRequest(
+        project_id="proj-worker",
+        text="One sentence.",
+        reference_audio_b64="QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw",
+        reference_audio_filename="reference.wav",
+        reference_text="hello",
+        model_id=SUPPORTED_BASE_MODELS[0],
+        max_new_tokens=400,
+        chunk_mode="single",
+        pause_config=PauseConfig(seed=1),
+        output_format=OutputFormat.WAV,
+        output_name="worker-cancelled-remotely",
+        generate_transcript=False,
+        voice_clone_authorized=True,
+    ).model_dump(mode="json")
+
+    def fake_post_json(path: str, payload: dict[str, object], timeout: int = 120):
+        calls.append(path)
+        if path == "/workers/pull":
+            return {
+                "job": {
+                    "job_id": "job-cancelled-remotely",
+                    "project_id": "proj-worker",
+                    "payload": payload_data,
+                }
+            }
+        if path.endswith("/progress"):
+            return {"status": "cancelled"}
+        return {}
+
+    payload_data = payload
+    monkeypatch.setattr(client, "_post_json", fake_post_json)
+    monkeypatch.setattr("radtts.worker_client.probe_duration_seconds", lambda path: 4.2)
+
+    def should_not_load_model(model_id):
+        raise AssertionError("helper should stop before loading a cancelled job")
+
+    monkeypatch.setattr(client.tts_service, "load_model_with_runtime", should_not_load_model)
+
+    client.run(once=True)
+
+    assert f"/workers/jobs/job-cancelled-remotely/fail" not in calls
+    assert f"/workers/jobs/job-cancelled-remotely/complete" not in calls
+
+
 def test_worker_client_reloads_updated_credentials_after_invalid_worker_error(tmp_path: Path, monkeypatch):
     config_path = tmp_path / "worker.json"
     config_path.write_text(
